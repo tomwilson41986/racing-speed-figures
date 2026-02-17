@@ -6,14 +6,16 @@ Computes speed figures for UK/Ireland flat racing from Timeform data.
 Target variable: timefigure (Timeform's published time figure)
 
 Pipeline stages:
-  1. Load & filter data (UK/IRE, flat, with valid finishing times)
-  2. Compute standard times per course/distance/surface
-  3. Compute going allowances per meeting
+  0. Load & filter data (UK/IRE, flat, with valid finishing times)
+  1. Compute standard times per track/distance/surface
+  2. Compute course-specific lbs-per-length from standard times
+  3. Compute going allowances per track per day (across all races at meeting)
   4. Compute winner speed figures
-  5. Extend to all runners via beaten lengths
+  5. Extend to all runners via beaten lengths (using course-specific lpl)
   6. Apply weight-carried adjustment
   7. Apply weight-for-age (WFA) adjustment
-  8. Validate against Timeform timefigure
+  8. Apply sex allowance
+  9. Calibrate & validate against Timeform timefigure
 """
 
 import pandas as pd
@@ -37,22 +39,26 @@ LBS_PER_SECOND_5F = 22     # Industry standard at 5 furlongs
 BENCHMARK_FURLONGS = 5.0   # Anchor distance
 
 # Minimum sample sizes
-MIN_RACES_STANDARD_TIME = 15   # Minimum winners for a standard time
+MIN_RACES_STANDARD_TIME = 15   # Minimum winners for a reliable standard time
 MIN_RACES_GOING_ALLOWANCE = 3  # Minimum races on a card for going allowance
 
-# Class adjustments in seconds per mile (8 furlongs) — subtract from raw times
-# to normalise to a "Class 4" baseline before computing standard times
+# Class adjustments in seconds per mile (8 furlongs).
+# These are subtracted from raw finishing times to normalise to a common
+# class baseline before computing standard times.  All values are negative
+# so that subtracting them ADDS time — slower classes add more time,
+# bringing them up to match the natural pace of the fastest classes.
 CLASS_ADJUSTMENT_PER_MILE = {
-    "1": -3.6,   # Group/Graded
-    "2": -4.8,   # Listed/Premier Hcap
+    "1": -3.6,   # Group/Graded — fastest
+    "2": -4.8,   # Listed/Premier Handicap
     "3": -6.0,
-    "4": -7.2,   # Reference class
+    "4": -7.2,   # Middle of the road
     "5": -8.4,
     "6": -9.6,
-    "7": -10.8,
+    "7": -10.8,  # Slowest
 }
 
-# UK and Ireland course sets
+# ── UK & Ireland course sets ──
+
 UK_COURSES = {
     "ASCOT", "AYR", "BATH", "BEVERLEY", "BRIGHTON", "CARLISLE",
     "CATTERICK", "CHELMSFORD CITY", "CHELTENHAM", "CHEPSTOW", "CHESTER",
@@ -77,8 +83,9 @@ IRE_COURSES = {
     "THURLES", "TIPPERARY", "TRAMORE", "WEXFORD",
 }
 
-# Going descriptions considered "Good/Standard" ground (for standard time compilation)
-# Includes both full names and abbreviations used in the data
+# Going descriptions considered "Good/Standard" ground for standard-time
+# compilation.  Includes both full names and the abbreviated forms that
+# appear in the Timeform data for All-Weather meetings.
 GOOD_GOING = {
     # Turf
     "Good", "Standard", "Good To Firm", "Good to Firm",
@@ -88,8 +95,22 @@ GOOD_GOING = {
     "Std", "Std/Slow", "Std/Fast", "Standard/Slow",
 }
 
-# WFA table: 3yo vs 4+ (approximate BHA 2025, in lbs)
-# Keys: month number. Values: dict of distance_furlongs → allowance_lbs
+# ── Sex allowance (flat) ──
+# In open (mixed-sex) races fillies/mares receive a weight allowance.
+# Since our weight-carried adjustment already accounts for the actual
+# weight carried (which is reduced by the sex allowance), we must ADD
+# the sex allowance back to filly/mare figures so they are on an equal
+# footing with colts/geldings.  In sex-restricted races (fillies-only,
+# mares-only) there is no allowance.
+SEX_ALLOWANCE_SUMMER = 3   # lbs, May–September
+SEX_ALLOWANCE_WINTER = 5   # lbs, October–April
+
+# Female horse-gender codes in the data
+FEMALE_GENDERS = {"f", "m"}  # f = filly, m = mare
+
+# ── Weight-for-Age tables (BHA 2025 unified European scale, approximate) ──
+# Keys: month.  Values: {distance_furlongs: allowance_lbs}
+
 WFA_3YO = {
     1:  {5: 11, 6: 12, 7: 13, 8: 14, 10: 15, 12: 16, 14: 17, 16: 18},
     2:  {5: 11, 6: 12, 7: 13, 8: 14, 10: 15, 12: 16, 14: 17, 16: 18},
@@ -105,7 +126,6 @@ WFA_3YO = {
     12: {5: 0,  6: 0,  7: 0,  8: 1,  10: 2,  12: 3,  14: 4,  16: 5},
 }
 
-# WFA for 2yo vs 4+ (approximate, May-Nov only — 2yos don't race Jan-Apr)
 WFA_2YO = {
     5:  {5: 24, 6: 26, 7: 28, 8: 30},
     6:  {5: 20, 6: 22, 7: 24, 8: 26},
@@ -118,9 +138,9 @@ WFA_2YO = {
 }
 
 
-# ─────────────────────────────────────────────────────────────────────
-# STAGE 0: DATA LOADING & FILTERING
-# ─────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+# STAGE 0 — DATA LOADING & FILTERING
+# ═════════════════════════════════════════════════════════════════════
 
 def load_data(years=range(2015, 2027)):
     """Load and concatenate all yearly CSV files."""
@@ -138,7 +158,7 @@ def load_data(years=range(2015, 2027)):
 
 
 def filter_uk_ire_flat(df):
-    """Filter to UK/IRE flat racing with valid data."""
+    """Filter to UK/IRE flat racing with valid finishing times."""
     all_courses = UK_COURSES | IRE_COURSES
 
     mask = (
@@ -159,21 +179,24 @@ def filter_uk_ire_flat(df):
         if col in filtered.columns:
             filtered[col] = pd.to_numeric(filtered[col], errors="coerce")
 
-    # Build race ID
+    # Build race ID (unique per race)
     filtered["race_id"] = (
         filtered["meetingDate"].astype(str) + "_" +
         filtered["courseName"].astype(str) + "_" +
         filtered["raceNumber"].astype(str)
     )
 
-    # Meeting ID (for going allowance) — separate by surface so turf/AW get own GA
+    # Meeting ID — one per track per day per surface.
+    # The going allowance is computed across ALL races sharing this key,
+    # because ground conditions are properties of the *meeting*, not a
+    # single race.  Turf and AW at the same venue get separate GAs.
     filtered["meeting_id"] = (
         filtered["meetingDate"].astype(str) + "_" +
         filtered["courseName"].astype(str) + "_" +
         filtered["raceSurfaceName"].astype(str)
     )
 
-    # Standard time key: course + rounded distance + surface
+    # Standard-time key — one per track + rounded distance + surface.
     filtered["dist_round"] = filtered["distance"].round(1)
     filtered["std_key"] = (
         filtered["courseName"].astype(str) + "_" +
@@ -181,8 +204,10 @@ def filter_uk_ire_flat(df):
         filtered["raceSurfaceName"].astype(str)
     )
 
-    # Parse month from meeting date for WFA
-    filtered["month"] = pd.to_datetime(filtered["meetingDate"], errors="coerce").dt.month
+    # Parse month from meeting date (for WFA and sex allowance)
+    filtered["month"] = pd.to_datetime(
+        filtered["meetingDate"], errors="coerce"
+    ).dt.month
 
     print(f"  After UK/IRE flat filter: {len(filtered):,} rows")
     print(f"    Unique courses: {filtered['courseName'].nunique()}")
@@ -190,51 +215,54 @@ def filter_uk_ire_flat(df):
     return filtered
 
 
-# ─────────────────────────────────────────────────────────────────────
-# STAGE 1: STANDARD TIMES
-# ─────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+# STAGE 1 — STANDARD TIMES  (per track / distance / surface)
+# ═════════════════════════════════════════════════════════════════════
 
 def compute_class_adjustment(race_class, distance_furlongs):
-    """Compute class adjustment in seconds for a given class and distance."""
+    """
+    Class adjustment in seconds for a given class and distance.
+    Adjusts raw time so that different classes can be compared on
+    the same baseline.
+    """
     cls_str = str(race_class).strip()
-    # Try to extract numeric class
     if cls_str in CLASS_ADJUSTMENT_PER_MILE:
         adj_per_mile = CLASS_ADJUSTMENT_PER_MILE[cls_str]
     else:
-        # Default to class 4 (no adjustment relative to reference)
         adj_per_mile = CLASS_ADJUSTMENT_PER_MILE["4"]
     return (adj_per_mile * distance_furlongs) / 8.0
 
 
 def compute_standard_times(df):
     """
-    Compute standard times per course/distance/surface.
+    Standard times per track / distance / surface.
 
-    Method: Take winners on good going, apply class adjustment to normalise
-    times, then take the median. This gives the expected time for an average
-    horse on good going at each course/distance.
+    For every unique (course, rounded distance, surface) combination:
+      1. Collect all winning times
+      2. Prefer races on good/standard going; fall back to all goings
+         for combos with sparse good-going data
+      3. Apply class adjustment to normalise times
+      4. Take the median → this is the standard time
     """
-    print("\n  Computing standard times...")
+    print("\n  Computing standard times (per track / distance / surface)...")
 
-    # Filter to winners only
     winners = df[df["positionOfficial"] == 1].copy()
-
-    # Prefer good going, but include all if insufficient data
     winners_good = winners[winners["going"].isin(GOOD_GOING)].copy()
-    print(f"    Winners total: {len(winners):,}")
-    print(f"    Winners on good going: {len(winners_good):,}")
 
-    # Apply class adjustment: normalise times to a "class 4" baseline
+    print(f"    Winners total: {len(winners):,}")
+    print(f"    Winners on good/standard going: {len(winners_good):,}")
+
+    # Class-adjust and compute median for good-going winners
     winners_good["class_adj"] = winners_good.apply(
         lambda r: compute_class_adjustment(r["raceClass"], r["distance"]),
-        axis=1
+        axis=1,
     )
-    winners_good["adj_time"] = winners_good["finishingTime"] - winners_good["class_adj"]
+    winners_good["adj_time"] = (
+        winners_good["finishingTime"] - winners_good["class_adj"]
+    )
 
-    # Compute median adjusted time per course/distance/surface
     std_times = (
-        winners_good
-        .groupby("std_key")
+        winners_good.groupby("std_key")
         .agg(
             median_time=("adj_time", "median"),
             mean_time=("adj_time", "mean"),
@@ -246,21 +274,26 @@ def compute_standard_times(df):
         .reset_index()
     )
 
-    # For combos with insufficient good-going data (or none at all), fall back to all goings
+    # Identify combos that need the all-going fallback
     all_std_keys = set(winners["std_key"].unique())
-    good_std_keys = set(std_times[std_times["n_races"] >= MIN_RACES_STANDARD_TIME]["std_key"])
-    sparse_or_missing = all_std_keys - good_std_keys
+    good_keys = set(
+        std_times.loc[
+            std_times["n_races"] >= MIN_RACES_STANDARD_TIME, "std_key"
+        ]
+    )
+    needs_fallback = all_std_keys - good_keys
 
-    if sparse_or_missing:
+    if needs_fallback:
         winners_all = winners.copy()
         winners_all["class_adj"] = winners_all.apply(
             lambda r: compute_class_adjustment(r["raceClass"], r["distance"]),
-            axis=1
+            axis=1,
         )
-        winners_all["adj_time"] = winners_all["finishingTime"] - winners_all["class_adj"]
-
+        winners_all["adj_time"] = (
+            winners_all["finishingTime"] - winners_all["class_adj"]
+        )
         fallback = (
-            winners_all[winners_all["std_key"].isin(sparse_or_missing)]
+            winners_all[winners_all["std_key"].isin(needs_fallback)]
             .groupby("std_key")
             .agg(
                 median_time=("adj_time", "median"),
@@ -272,524 +305,599 @@ def compute_standard_times(df):
             )
             .reset_index()
         )
-        # Keep good-going entries that met the threshold, add fallback entries
-        std_times = std_times[std_times["std_key"].isin(good_std_keys)]
+        std_times = std_times[std_times["std_key"].isin(good_keys)]
         std_times = pd.concat([std_times, fallback], ignore_index=True)
 
-    # Filter to combos with enough data
+    # Keep only combos with enough data
     valid = std_times[std_times["n_races"] >= MIN_RACES_STANDARD_TIME].copy()
-    print(f"    Standard time combos (>= {MIN_RACES_STANDARD_TIME} races): {len(valid):,}")
+    print(
+        f"    Standard-time combos (≥ {MIN_RACES_STANDARD_TIME} races): "
+        f"{len(valid):,}"
+    )
     print(f"    Dropped (insufficient data): {len(std_times) - len(valid):,}")
 
-    # Build lookup dict
     std_dict = dict(zip(valid["std_key"], valid["median_time"]))
     return std_dict, valid
 
 
-# ─────────────────────────────────────────────────────────────────────
-# STAGE 2: GOING ALLOWANCE
-# ─────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+# STAGE 2 — COURSE-SPECIFIC LBS PER LENGTH
+# ═════════════════════════════════════════════════════════════════════
+
+def generic_lbs_per_length(distance_furlongs):
+    """
+    Generic lbs-per-length from the distance alone.
+    lpl = seconds_per_length × lbs_per_second_at_distance
+    lbs_per_second = 22 × (5 / distance)
+    """
+    lbs_per_sec = LBS_PER_SECOND_5F * (BENCHMARK_FURLONGS / distance_furlongs)
+    return SECONDS_PER_LENGTH * lbs_per_sec
+
+
+def compute_course_lpl(std_df):
+    """
+    Derive course-specific lbs-per-length for each standard-time combo.
+
+    Method:
+      1. Compute seconds-per-furlong (spf) = standard_time / distance
+         for every combo.
+      2. Compute the mean spf across ALL courses at each distance band.
+      3. Course correction = mean_spf / this_course_spf
+         (faster courses → higher lpl because horses spread out more
+          at higher speed)
+      4. course_lpl = generic_lpl × correction
+
+    Returns a dict: std_key → lbs_per_length
+    """
+    print("\n  Computing course-specific lbs-per-length...")
+
+    std_df = std_df.copy()
+    std_df["spf"] = std_df["median_time"] / std_df["distance"]
+
+    # Mean spf at each (rounded) distance across all courses
+    std_df["dist_band"] = std_df["distance"].round(0)
+    mean_spf = std_df.groupby("dist_band")["spf"].mean()
+    std_df["mean_spf"] = std_df["dist_band"].map(mean_spf)
+
+    # Course correction factor
+    std_df["correction"] = std_df["mean_spf"] / std_df["spf"]
+
+    # Generic lpl at this distance
+    std_df["generic_lpl"] = std_df["distance"].apply(generic_lbs_per_length)
+
+    # Course-specific lpl
+    std_df["course_lpl"] = std_df["generic_lpl"] * std_df["correction"]
+
+    lpl_dict = dict(zip(std_df["std_key"], std_df["course_lpl"]))
+
+    # Report some examples
+    fast = std_df.nlargest(5, "course_lpl")
+    slow = std_df.nsmallest(5, "course_lpl")
+    print(f"    Computed lpl for {len(lpl_dict):,} track/distance combos")
+    print(f"    Highest lpl: {fast[['std_key','course_lpl','correction']].to_string(index=False)}")
+    print(f"    Lowest  lpl: {slow[['std_key','course_lpl','correction']].to_string(index=False)}")
+
+    return lpl_dict
+
+
+# ═════════════════════════════════════════════════════════════════════
+# STAGE 3 — GOING ALLOWANCE  (per track, per day)
+# ═════════════════════════════════════════════════════════════════════
 
 def compute_going_allowances(df, std_times):
     """
-    Compute going allowance per meeting (seconds per furlong).
+    Going allowance per meeting in seconds-per-furlong (s/f).
 
-    For each race on the card, compute deviation from standard time per furlong.
-    Remove the highest and lowest deviations, then average the rest.
+    The going allowance captures how the ground at a specific track on a
+    specific day affected ALL horses.  It is computed by:
 
-    Positive = ground faster than standard (firm)
-    Negative = ground slower than standard (soft/heavy)
+      1. For every WINNER on the card whose course/distance has a known
+         standard time, compute:
+            deviation_per_furlong = (class_adj_time − standard_time) / distance
+
+      2. Drop extreme global outliers (1st/99th percentile across dataset).
+
+      3. Within each meeting (= track + day + surface), trim the highest
+         and lowest deviation, then average the rest.  This card-wide
+         average IS the going allowance.
+
+      4. Meetings with fewer than MIN_RACES_GOING_ALLOWANCE winners are
+         excluded (unreliable).
+
+    Convention:
+      positive GA → ground slower than standard (soft)
+      negative GA → ground faster than standard (firm)
     """
-    print("\n  Computing going allowances...")
+    print("\n  Computing going allowances (per track / day)...")
 
-    # Only use winners with valid standard times
     winners = df[df["positionOfficial"] == 1].copy()
     winners = winners[winners["std_key"].isin(std_times)].copy()
     winners["standard_time"] = winners["std_key"].map(std_times)
 
-    # Apply class adjustment to actual time before comparing to standard
+    # Class-adjust actual time before comparing to class-adjusted standard
     winners["class_adj"] = winners.apply(
         lambda r: compute_class_adjustment(r["raceClass"], r["distance"]),
-        axis=1
+        axis=1,
     )
     winners["adj_time"] = winners["finishingTime"] - winners["class_adj"]
 
-    # Deviation per furlong
+    # Per-furlong deviation from standard
     winners["deviation"] = winners["adj_time"] - winners["standard_time"]
     winners["dev_per_furlong"] = winners["deviation"] / winners["distance"]
 
-    # Drop extreme outlier deviations (likely timing errors or non-triers)
-    q_low = winners["dev_per_furlong"].quantile(0.01)
-    q_high = winners["dev_per_furlong"].quantile(0.99)
+    # Global outlier removal
+    q_lo = winners["dev_per_furlong"].quantile(0.01)
+    q_hi = winners["dev_per_furlong"].quantile(0.99)
     winners = winners[
-        (winners["dev_per_furlong"] >= q_low) &
-        (winners["dev_per_furlong"] <= q_high)
+        winners["dev_per_furlong"].between(q_lo, q_hi)
     ]
 
-    # Compute going allowance per meeting with outlier trimming
-    def trimmed_mean(group):
+    # Trimmed mean within each meeting
+    def _trimmed_mean(group):
         vals = group.sort_values().values
         n = len(vals)
         if n <= 2:
             return np.mean(vals)
-        elif n <= 4:
-            # Remove single highest and lowest
-            return np.mean(vals[1:-1])
-        else:
-            # Remove top and bottom
-            return np.mean(vals[1:-1])
+        # Drop highest and lowest
+        return np.mean(vals[1:-1])
 
     ga_series = (
         winners.groupby("meeting_id")["dev_per_furlong"]
-        .apply(trimmed_mean)
+        .apply(_trimmed_mean)
+    )
+    ga_count = (
+        winners.groupby("meeting_id")["dev_per_furlong"].count()
     )
 
-    # Also track how many races contributed
-    ga_count = winners.groupby("meeting_id")["dev_per_furlong"].count()
-
-    # Filter to meetings with enough races
-    valid_meetings = ga_count[ga_count >= MIN_RACES_GOING_ALLOWANCE].index
-    ga_dict = ga_series[ga_series.index.isin(valid_meetings)].to_dict()
+    # Keep only meetings with enough races
+    valid_ids = ga_count[ga_count >= MIN_RACES_GOING_ALLOWANCE].index
+    ga_dict = ga_series[ga_series.index.isin(valid_ids)].to_dict()
 
     print(f"    Meetings with going allowance: {len(ga_dict):,}")
-    print(f"    GA range: {min(ga_dict.values()):.3f} to {max(ga_dict.values()):.3f} s/f")
+    print(
+        f"    GA range: {min(ga_dict.values()):.3f} to "
+        f"{max(ga_dict.values()):.3f} s/f"
+    )
     print(f"    GA mean:  {np.mean(list(ga_dict.values())):.3f} s/f")
 
     return ga_dict
 
 
-# ─────────────────────────────────────────────────────────────────────
-# STAGE 3: LBS PER LENGTH
-# ─────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+# STAGE 4 — WINNER SPEED FIGURES
+# ═════════════════════════════════════════════════════════════════════
 
-def lbs_per_length(distance_furlongs):
+def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
     """
-    Compute lbs per length at a given distance.
+    Speed figures for race winners.
 
-    Formula: lbs_per_length = seconds_per_length × lbs_per_second_at_distance
-    lbs_per_second_at_distance = 22 × (5 / distance_in_furlongs)
-    """
-    lbs_per_second = LBS_PER_SECOND_5F * (BENCHMARK_FURLONGS / distance_furlongs)
-    return SECONDS_PER_LENGTH * lbs_per_second
+    For each winner whose course/distance has a standard time AND whose
+    meeting has a going allowance:
 
-
-def lbs_per_second(distance_furlongs):
-    """Lbs per second at a given distance."""
-    return LBS_PER_SECOND_5F * (BENCHMARK_FURLONGS / distance_furlongs)
-
-
-# ─────────────────────────────────────────────────────────────────────
-# STAGE 4: WINNER SPEED FIGURES
-# ─────────────────────────────────────────────────────────────────────
-
-def compute_winner_figures(df, std_times, going_allowances):
-    """
-    Compute raw speed figures for race winners.
-
-    Steps:
-      1. Subtract going allowance from actual time → going-corrected time
-      2. Subtract class adjustment → class-normalised time
-      3. Compute deviation from standard time
-      4. Convert deviation to lbs
-      5. winner_figure = BASE_RATING - deviation_lbs
+      1. going-corrected time = actual_time − class_adj − (GA × distance)
+      2. deviation = corrected_time − standard_time
+      3. deviation_lbs = deviation_seconds / seconds_per_length × lpl
+      4. winner_figure = BASE_RATING − deviation_lbs
     """
     print("\n  Computing winner speed figures...")
 
-    winners = df[df["positionOfficial"] == 1].copy()
-    winners = winners[
-        winners["std_key"].isin(std_times) &
-        winners["meeting_id"].isin(going_allowances)
+    w = df[df["positionOfficial"] == 1].copy()
+    w = w[
+        w["std_key"].isin(std_times) &
+        w["meeting_id"].isin(going_allowances)
     ].copy()
 
-    winners["standard_time"] = winners["std_key"].map(std_times)
-    winners["going_allowance"] = winners["meeting_id"].map(going_allowances)
+    w["standard_time"] = w["std_key"].map(std_times)
+    w["going_allowance"] = w["meeting_id"].map(going_allowances)
 
     # Class adjustment
-    winners["class_adj"] = winners.apply(
+    w["class_adj"] = w.apply(
         lambda r: compute_class_adjustment(r["raceClass"], r["distance"]),
-        axis=1
+        axis=1,
     )
 
     # Going-corrected, class-adjusted time
-    winners["corrected_time"] = (
-        winners["finishingTime"]
-        - winners["class_adj"]
-        - (winners["going_allowance"] * winners["distance"])
+    w["corrected_time"] = (
+        w["finishingTime"]
+        - w["class_adj"]
+        - (w["going_allowance"] * w["distance"])
     )
 
-    # Deviation from standard (negative = faster than standard = better)
-    winners["deviation_seconds"] = winners["corrected_time"] - winners["standard_time"]
+    # Deviation from standard
+    w["deviation_seconds"] = w["corrected_time"] - w["standard_time"]
+    w["deviation_lengths"] = w["deviation_seconds"] / SECONDS_PER_LENGTH
 
-    # Convert to lengths
-    winners["deviation_lengths"] = winners["deviation_seconds"] / SECONDS_PER_LENGTH
+    # Course-specific lbs-per-length (fall back to generic if missing)
+    w["lpl"] = w["std_key"].map(lpl_dict)
+    missing_lpl = w["lpl"].isna()
+    if missing_lpl.any():
+        w.loc[missing_lpl, "lpl"] = w.loc[missing_lpl, "distance"].apply(
+            generic_lbs_per_length
+        )
 
-    # Convert to lbs (using distance-specific lbs_per_length)
-    winners["lpl"] = winners["distance"].apply(lbs_per_length)
-    winners["deviation_lbs"] = winners["deviation_lengths"] * winners["lpl"]
+    w["deviation_lbs"] = w["deviation_lengths"] * w["lpl"]
+    w["raw_figure"] = BASE_RATING - w["deviation_lbs"]
 
-    # Raw winner figure: BASE_RATING minus deviation (faster = higher figure)
-    winners["raw_figure"] = BASE_RATING - winners["deviation_lbs"]
+    print(f"    Winner figures computed: {len(w):,}")
+    print(f"    Range: {w['raw_figure'].min():.0f} to {w['raw_figure'].max():.0f}")
+    print(f"    Mean:  {w['raw_figure'].mean():.1f}")
+    print(f"    Median:{w['raw_figure'].median():.1f}")
 
-    print(f"    Winner figures computed: {len(winners):,}")
-    print(f"    Raw figure range: {winners['raw_figure'].min():.0f} to {winners['raw_figure'].max():.0f}")
-    print(f"    Raw figure mean:  {winners['raw_figure'].mean():.1f}")
-    print(f"    Raw figure median:{winners['raw_figure'].median():.1f}")
-
-    # Build race_id → winner_figure lookup
-    winner_fig_dict = dict(zip(winners["race_id"], winners["raw_figure"]))
-
-    return winners, winner_fig_dict
+    winner_fig = dict(zip(w["race_id"], w["raw_figure"]))
+    return w, winner_fig
 
 
-# ─────────────────────────────────────────────────────────────────────
-# STAGE 5: ALL-RUNNER SPEED FIGURES (BEATEN LENGTHS)
-# ─────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+# STAGE 5 — ALL-RUNNER FIGURES  (beaten lengths)
+# ═════════════════════════════════════════════════════════════════════
 
-def compute_all_figures(df, winner_fig_dict):
+def compute_all_figures(df, winner_fig_dict, lpl_dict):
     """
-    Extend speed figures to all runners using cumulative beaten lengths.
+    Extend figures to every runner via cumulative beaten lengths.
 
-    For non-winners: figure = winner_figure - (cumulative_beaten_lengths × lbs_per_length)
-    For winners: figure = winner_figure
+    horse_figure = winner_figure − (cum_beaten_lengths × course_lpl)
+
+    Beaten lengths are capped at 30 (unreliable beyond that).
     """
     print("\n  Extending figures to all runners...")
 
-    # Filter to races that have a winner figure
-    df_valid = df[df["race_id"].isin(winner_fig_dict)].copy()
+    out = df[df["race_id"].isin(winner_fig_dict)].copy()
+    out["winner_figure"] = out["race_id"].map(winner_fig_dict)
 
-    # Map winner figure to every runner in that race
-    df_valid["winner_figure"] = df_valid["race_id"].map(winner_fig_dict)
+    # Course-specific lpl, with generic fallback
+    out["lpl"] = out["std_key"].map(lpl_dict)
+    missing = out["lpl"].isna()
+    if missing.any():
+        out.loc[missing, "lpl"] = out.loc[missing, "distance"].apply(
+            generic_lbs_per_length
+        )
 
-    # Lbs per length at this distance
-    df_valid["lpl"] = df_valid["distance"].apply(lbs_per_length)
+    is_winner = out["positionOfficial"] == 1
+    cum = out["distanceCumulative"].fillna(0).clip(lower=0, upper=30)
 
-    # For winners (pos=1): figure = winner_figure
-    # For non-winners: figure = winner_figure - (cumulative_beaten_lengths * lpl)
-    is_winner = df_valid["positionOfficial"] == 1
-    cum_beaten = df_valid["distanceCumulative"].fillna(0).clip(lower=0)
+    out["lbs_behind"] = cum * out["lpl"]
+    out.loc[is_winner, "lbs_behind"] = 0.0
+    out["raw_figure"] = out["winner_figure"] - out["lbs_behind"]
 
-    # Cap extreme beaten distances at 30 lengths (unreliable beyond that)
-    cum_beaten = cum_beaten.clip(upper=30)
-
-    df_valid["lbs_behind"] = cum_beaten * df_valid["lpl"]
-    df_valid.loc[is_winner, "lbs_behind"] = 0
-
-    df_valid["raw_figure"] = df_valid["winner_figure"] - df_valid["lbs_behind"]
-
-    print(f"    All-runner figures: {len(df_valid):,}")
-    return df_valid
+    print(f"    All-runner figures: {len(out):,}")
+    return out
 
 
-# ─────────────────────────────────────────────────────────────────────
-# STAGE 6: WEIGHT-CARRIED ADJUSTMENT
-# ─────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+# STAGE 6 — WEIGHT-CARRIED ADJUSTMENT
+# ═════════════════════════════════════════════════════════════════════
 
 def apply_weight_adjustment(df):
     """
-    Adjust figures for weight carried.
+    Adjust for weight carried.
 
-    Method: figure += (weight_carried - base_weight)
-    A horse carrying more than 9st 0lb gets a positive adjustment.
+    figure += (weight_carried − base_weight)
+
+    A horse carrying more than 9st 0lb gets a positive adjustment
+    (it achieved its time despite carrying extra weight, so it is
+    credited for the additional burden).
     """
     print("\n  Applying weight-carried adjustment...")
 
-    has_weight = df["weightCarried"].notna()
-    print(f"    Runners with weight data: {has_weight.sum():,} / {len(df):,}")
+    has_w = df["weightCarried"].notna()
+    print(f"    Runners with weight data: {has_w.sum():,} / {len(df):,}")
 
     df["weight_adj"] = 0.0
-    df.loc[has_weight, "weight_adj"] = df.loc[has_weight, "weightCarried"] - BASE_WEIGHT_LBS
-
+    df.loc[has_w, "weight_adj"] = (
+        df.loc[has_w, "weightCarried"] - BASE_WEIGHT_LBS
+    )
     df["figure_after_weight"] = df["raw_figure"] + df["weight_adj"]
-
     return df
 
 
-# ─────────────────────────────────────────────────────────────────────
-# STAGE 7: WEIGHT FOR AGE (WFA) ADJUSTMENT
-# ─────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+# STAGE 7 — WEIGHT FOR AGE  (WFA)
+# ═════════════════════════════════════════════════════════════════════
 
 def get_wfa_allowance(age, month, distance):
     """
-    Look up the WFA allowance in lbs for a given age, month, and distance.
-    Returns the allowance to ADD to the figure.
+    WFA allowance in lbs for a given age, month, and distance.
+    Returns the amount to ADD to the figure.
+
+    Uses linear interpolation between distance brackets.
     """
     if pd.isna(age) or pd.isna(month) or pd.isna(distance):
         return 0.0
 
-    age = int(age)
-    month = int(month)
-    distance = float(distance)
+    age, month, distance = int(age), int(month), float(distance)
 
-    # 4+ year olds: no WFA adjustment
     if age >= 4:
         return 0.0
 
-    # Choose table
-    if age == 3:
-        table = WFA_3YO
-    elif age == 2:
-        table = WFA_2YO
-    else:
+    table = WFA_3YO if age == 3 else (WFA_2YO if age == 2 else None)
+    if table is None or month not in table:
         return 0.0
 
-    if month not in table:
-        return 0.0
+    mt = table[month]
+    dists = sorted(mt.keys())
 
-    month_table = table[month]
-    distances = sorted(month_table.keys())
+    if distance <= dists[0]:
+        return float(mt[dists[0]])
+    if distance >= dists[-1]:
+        return float(mt[dists[-1]])
 
-    # Find closest distance bracket
-    if distance <= distances[0]:
-        return float(month_table[distances[0]])
-    elif distance >= distances[-1]:
-        return float(month_table[distances[-1]])
-    else:
-        # Linear interpolation between brackets
-        for i in range(len(distances) - 1):
-            if distances[i] <= distance <= distances[i + 1]:
-                d_lo, d_hi = distances[i], distances[i + 1]
-                v_lo, v_hi = month_table[d_lo], month_table[d_hi]
-                frac = (distance - d_lo) / (d_hi - d_lo)
-                return v_lo + frac * (v_hi - v_lo)
+    # Interpolate between distance brackets
+    for i in range(len(dists) - 1):
+        if dists[i] <= distance <= dists[i + 1]:
+            lo, hi = dists[i], dists[i + 1]
+            frac = (distance - lo) / (hi - lo)
+            return mt[lo] + frac * (mt[hi] - mt[lo])
     return 0.0
 
 
 def apply_wfa_adjustment(df):
     """
-    Apply weight-for-age adjustment.
-
-    Younger horses get an upward adjustment to compensate for immaturity.
+    Weight-for-age adjustment.
+    Younger horses (2yo, 3yo) receive an upward adjustment that
+    compensates for physical immaturity.
     """
     print("\n  Applying WFA adjustment...")
 
     df["wfa_adj"] = df.apply(
         lambda r: get_wfa_allowance(r["horseAge"], r["month"], r["distance"]),
-        axis=1
+        axis=1,
     )
 
-    # Count adjustments
-    has_wfa = df["wfa_adj"] > 0
-    print(f"    Runners with WFA adjustment: {has_wfa.sum():,} / {len(df):,}")
-    if has_wfa.sum() > 0:
-        print(f"    WFA range: {df.loc[has_wfa, 'wfa_adj'].min():.1f} to {df.loc[has_wfa, 'wfa_adj'].max():.1f} lbs")
+    has = df["wfa_adj"] > 0
+    print(f"    Runners with WFA: {has.sum():,} / {len(df):,}")
+    if has.any():
+        print(
+            f"    WFA range: {df.loc[has, 'wfa_adj'].min():.1f} – "
+            f"{df.loc[has, 'wfa_adj'].max():.1f} lbs"
+        )
 
-    df["figure_final"] = df["figure_after_weight"] + df["wfa_adj"]
-
+    df["figure_after_wfa"] = df["figure_after_weight"] + df["wfa_adj"]
     return df
 
 
-# ─────────────────────────────────────────────────────────────────────
-# STAGE 8: VALIDATION AGAINST TIMEFIGURE
-# ─────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+# STAGE 8 — SEX ALLOWANCE
+# ═════════════════════════════════════════════════════════════════════
+
+def apply_sex_allowance(df):
+    """
+    Sex allowance for fillies/mares in open (mixed-sex) races.
+
+    Flat racing rules:
+      • May–September: fillies/mares receive 3 lb from colts/geldings
+      • October–April:  fillies/mares receive 5 lb from colts/geldings
+      • In fillies-only or mares-only races: no allowance
+
+    The weight the horse carried already reflects this reduction, and
+    our weight-carried adjustment has already lowered the filly's figure
+    accordingly.  To avoid double-penalising fillies we add the sex
+    allowance back so that figures are sex-neutral.
+    """
+    print("\n  Applying sex allowance...")
+
+    # Determine if race is sex-restricted
+    # A race where ALL runners are female is treated as sex-restricted
+    race_has_male = (
+        df[~df["horseGender"].isin(FEMALE_GENDERS)]
+        .groupby("race_id")["horseGender"]
+        .count()
+    )
+    open_races = set(race_has_male[race_has_male > 0].index)
+
+    is_female = df["horseGender"].isin(FEMALE_GENDERS)
+    is_open = df["race_id"].isin(open_races)
+    is_summer = df["month"].between(5, 9)
+
+    df["sex_adj"] = 0.0
+    # Summer: 3 lbs
+    df.loc[is_female & is_open & is_summer, "sex_adj"] = SEX_ALLOWANCE_SUMMER
+    # Winter: 5 lbs
+    df.loc[is_female & is_open & ~is_summer, "sex_adj"] = SEX_ALLOWANCE_WINTER
+
+    n_adj = (df["sex_adj"] > 0).sum()
+    print(f"    Open races identified: {len(open_races):,}")
+    print(f"    Fillies/mares adjusted: {n_adj:,} / {is_female.sum():,}")
+
+    df["figure_final"] = df["figure_after_wfa"] + df["sex_adj"]
+    return df
+
+
+# ═════════════════════════════════════════════════════════════════════
+# STAGE 9 — CALIBRATION & VALIDATION
+# ═════════════════════════════════════════════════════════════════════
 
 def calibrate_figures(df):
     """
-    Calibrate figures to match Timeform's timefigure scale.
+    Linear calibration to the Timeform timefigure scale.
 
-    Uses ordinary least squares on the training set (years 2015-2023)
-    to find the optimal linear mapping: calibrated = a * figure + b
+    Fits  timefigure ≈ a × figure_final + b  on 2015–2023 data,
+    then applies the mapping to all rows.
     """
     print("\n  Calibrating to Timeform scale...")
 
-    # Use rows with valid, non-extreme timefigure for fitting
-    # Filter out timefigure outliers (data errors in some years)
     mask = (
-        df["timefigure"].notna() &
-        (df["timefigure"] != 0) &
-        (df["timefigure"] > -200) &
-        (df["timefigure"] < 200) &
-        df["figure_final"].notna()
+        df["timefigure"].notna()
+        & (df["timefigure"] != 0)
+        & df["timefigure"].between(-200, 200)
+        & df["figure_final"].notna()
     )
-    fit_data = df[mask].copy()
+    fit = df[mask & (df["source_year"] <= 2023)]
+    print(f"    Calibration set: {len(fit):,} rows")
 
-    # Temporal split: train on 2015-2023, test on 2024+
-    train = fit_data[fit_data["source_year"] <= 2023]
-    print(f"    Calibration training set: {len(train):,} rows")
-
-    if len(train) < 100:
-        print("    Insufficient data for calibration — skipping")
+    if len(fit) < 100:
+        print("    Insufficient data — skipping calibration")
         df["figure_calibrated"] = df["figure_final"]
         return df, 1.0, 0.0
 
-    # Fit linear regression: timefigure = a * figure_final + b
-    x = train["figure_final"].values
-    y = train["timefigure"].values
+    x = fit["figure_final"].values
+    y = fit["timefigure"].values
     A = np.vstack([x, np.ones(len(x))]).T
-    result = np.linalg.lstsq(A, y, rcond=None)
-    a, b = result[0]
+    (a, b), *_ = np.linalg.lstsq(A, y, rcond=None)
 
-    print(f"    Calibration: timefigure ≈ {a:.4f} × figure + {b:.2f}")
-
-    # Apply calibration
+    print(f"    timefigure ≈ {a:.4f} × figure + {b:.2f}")
     df["figure_calibrated"] = a * df["figure_final"] + b
 
     return df, a, b
 
 
 def validate_figures(df):
-    """Validate computed figures against Timeform's timefigure."""
+    """Validate calibrated figures against Timeform timefigure."""
     print("\n" + "=" * 70)
     print("VALIDATION AGAINST TIMEFIGURE")
     print("=" * 70)
 
-    # Filter to rows with non-zero timefigure, excluding extreme outliers
     valid = df[
-        (df["timefigure"].notna()) &
-        (df["timefigure"] != 0) &
-        (df["timefigure"] > -200) &
-        (df["timefigure"] < 200)
+        df["timefigure"].notna()
+        & (df["timefigure"] != 0)
+        & df["timefigure"].between(-200, 200)
     ].copy()
     print(f"\n  Rows with valid timefigure: {len(valid):,}")
-
     if len(valid) == 0:
-        print("  No valid timefigure rows for validation!")
-        return
+        print("  No rows — skipping")
+        return None
 
-    # Use calibrated figure for comparison
-    fig_col = "figure_calibrated" if "figure_calibrated" in valid.columns else "figure_final"
+    fc = (
+        "figure_calibrated"
+        if "figure_calibrated" in valid.columns
+        else "figure_final"
+    )
 
-    # Correlation
-    corr = valid[fig_col].corr(valid["timefigure"])
-    print(f"  Correlation ({fig_col} vs timefigure): {corr:.4f}")
+    corr = valid[fc].corr(valid["timefigure"])
+    err = valid[fc] - valid["timefigure"]
+    mae = err.abs().mean()
+    rmse = np.sqrt((err ** 2).mean())
 
-    # Error metrics
-    errors = valid[fig_col] - valid["timefigure"]
-    mae = errors.abs().mean()
-    rmse = np.sqrt((errors ** 2).mean())
-    median_ae = errors.abs().median()
-    mean_error = errors.mean()
+    print(f"  Correlation: {corr:.4f}")
+    print(f"  MAE:  {mae:.2f} lbs")
+    print(f"  RMSE: {rmse:.2f} lbs")
+    print(f"  Bias: {err.mean():+.2f} lbs")
 
-    print(f"  MAE:         {mae:.2f} lbs")
-    print(f"  RMSE:        {rmse:.2f} lbs")
-    print(f"  Median AE:   {median_ae:.2f} lbs")
-    print(f"  Mean error:  {mean_error:+.2f} lbs (bias)")
-
-    # Distribution of errors
     print(f"\n  Error distribution:")
-    for threshold in [1, 2, 3, 5, 10, 15, 20]:
-        pct = (errors.abs() <= threshold).mean() * 100
-        print(f"    Within ±{threshold:>2} lbs: {pct:.1f}%")
+    for t in [1, 2, 3, 5, 10, 15, 20]:
+        pct = (err.abs() <= t).mean() * 100
+        print(f"    ±{t:>2} lbs: {pct:.1f}%")
 
-    # By position
-    print(f"\n  Correlation by finishing position:")
+    print(f"\n  By finishing position:")
     for pos in [1, 2, 3, 4, 5]:
-        sub = valid[valid["positionOfficial"] == pos]
-        if len(sub) > 100:
-            c = sub[fig_col].corr(sub["timefigure"])
-            m = (sub[fig_col] - sub["timefigure"]).abs().mean()
-            print(f"    Pos {pos}: corr={c:.4f}, MAE={m:.2f} ({len(sub):,} runners)")
+        s = valid[valid["positionOfficial"] == pos]
+        if len(s) > 100:
+            c = s[fc].corr(s["timefigure"])
+            m = (s[fc] - s["timefigure"]).abs().mean()
+            print(f"    Pos {pos}: r={c:.4f}  MAE={m:.2f}  (n={len(s):,})")
 
-    # By surface
-    print(f"\n  Correlation by surface:")
+    print(f"\n  By surface:")
     for surf in valid["raceSurfaceName"].unique():
-        sub = valid[valid["raceSurfaceName"] == surf]
-        if len(sub) > 100:
-            c = sub[fig_col].corr(sub["timefigure"])
-            m = (sub[fig_col] - sub["timefigure"]).abs().mean()
-            print(f"    {surf:<15}: corr={c:.4f}, MAE={m:.2f} ({len(sub):,} runners)")
+        s = valid[valid["raceSurfaceName"] == surf]
+        if len(s) > 100:
+            c = s[fc].corr(s["timefigure"])
+            m = (s[fc] - s["timefigure"]).abs().mean()
+            print(f"    {surf:<15} r={c:.4f}  MAE={m:.2f}  (n={len(s):,})")
 
-    # By year
-    print(f"\n  Correlation by year:")
-    for year in sorted(valid["source_year"].unique()):
-        sub = valid[valid["source_year"] == year]
-        if len(sub) > 100:
-            c = sub[fig_col].corr(sub["timefigure"])
-            m = (sub[fig_col] - sub["timefigure"]).abs().mean()
-            print(f"    {year}: corr={c:.4f}, MAE={m:.2f} ({len(sub):,} runners)")
+    print(f"\n  By year:")
+    for yr in sorted(valid["source_year"].unique()):
+        s = valid[valid["source_year"] == yr]
+        if len(s) > 100:
+            c = s[fc].corr(s["timefigure"])
+            m = (s[fc] - s["timefigure"]).abs().mean()
+            print(f"    {yr}: r={c:.4f}  MAE={m:.2f}  (n={len(s):,})")
 
-    # Summary stats comparison
-    print(f"\n  Summary comparison:")
-    print(f"    {'Metric':<15} {'Our Figure':>12} {'Timefigure':>12}")
-    print(f"    {'Mean':<15} {valid[fig_col].mean():>12.1f} {valid['timefigure'].mean():>12.1f}")
-    print(f"    {'Median':<15} {valid[fig_col].median():>12.1f} {valid['timefigure'].median():>12.1f}")
-    print(f"    {'Std':<15} {valid[fig_col].std():>12.1f} {valid['timefigure'].std():>12.1f}")
-    print(f"    {'Min':<15} {valid[fig_col].min():>12.1f} {valid['timefigure'].min():>12.1f}")
-    print(f"    {'Max':<15} {valid[fig_col].max():>12.1f} {valid['timefigure'].max():>12.1f}")
+    print(f"\n  Scale comparison:")
+    print(f"    {'':15} {'Ours':>10} {'TFig':>10}")
+    print(f"    {'Mean':15} {valid[fc].mean():10.1f} {valid['timefigure'].mean():10.1f}")
+    print(f"    {'Median':15} {valid[fc].median():10.1f} {valid['timefigure'].median():10.1f}")
+    print(f"    {'Std':15} {valid[fc].std():10.1f} {valid['timefigure'].std():10.1f}")
 
     return valid
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
 # MAIN PIPELINE
-# ─────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
 
 def run_pipeline():
-    """Execute the full speed figure pipeline."""
+    """Execute the full speed-figure pipeline."""
     print("=" * 70)
     print("SPEED FIGURE PIPELINE")
     print("=" * 70)
 
-    # Stage 0: Load data
-    print("\nSTAGE 0: Loading data...")
+    # 0 — Load data
+    print("\nSTAGE 0: Loading data")
     df = load_data()
     df = filter_uk_ire_flat(df)
 
-    # Stage 1: Standard times
+    # 1 — Standard times (per track / distance / surface)
     print("\nSTAGE 1: Standard times")
     std_times, std_df = compute_standard_times(df)
 
-    # Stage 2: Going allowances
-    print("\nSTAGE 2: Going allowances")
+    # 2 — Course-specific lbs per length
+    print("\nSTAGE 2: Lbs per length (per track / distance)")
+    lpl_dict = compute_course_lpl(std_df)
+
+    # 3 — Going allowance (per track / day, across all races at meeting)
+    print("\nSTAGE 3: Going allowances")
     going_allowances = compute_going_allowances(df, std_times)
 
-    # Stage 3: Winner figures
-    print("\nSTAGE 3: Winner speed figures")
-    winners, winner_fig_dict = compute_winner_figures(df, std_times, going_allowances)
+    # 4 — Winner figures
+    print("\nSTAGE 4: Winner speed figures")
+    winners, winner_fig_dict = compute_winner_figures(
+        df, std_times, going_allowances, lpl_dict
+    )
 
-    # Stage 4: All-runner figures
-    print("\nSTAGE 4: All-runner figures")
-    all_figs = compute_all_figures(df, winner_fig_dict)
+    # 5 — All-runner figures via beaten lengths
+    print("\nSTAGE 5: All-runner figures (beaten lengths)")
+    all_figs = compute_all_figures(df, winner_fig_dict, lpl_dict)
 
-    # Stage 5: Weight adjustment
-    print("\nSTAGE 5: Weight adjustment")
+    # 6 — Weight-carried adjustment
+    print("\nSTAGE 6: Weight-carried adjustment")
     all_figs = apply_weight_adjustment(all_figs)
 
-    # Stage 6: WFA adjustment
-    print("\nSTAGE 6: WFA adjustment")
+    # 7 — Weight for age
+    print("\nSTAGE 7: Weight for age (WFA)")
     all_figs = apply_wfa_adjustment(all_figs)
 
-    # Stage 7: Calibration
-    print("\nSTAGE 7: Calibration to Timeform scale")
+    # 8 — Sex allowance
+    print("\nSTAGE 8: Sex allowance")
+    all_figs = apply_sex_allowance(all_figs)
+
+    # 9 — Calibration & validation
+    print("\nSTAGE 9: Calibration")
     all_figs, cal_a, cal_b = calibrate_figures(all_figs)
 
-    # Stage 8: Validation
-    print("\nSTAGE 8: Validation")
-    valid = validate_figures(all_figs)
+    print("\nSTAGE 10: Validation")
+    validate_figures(all_figs)
 
-    # Save output
+    # ── Save outputs ──
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    output_cols = [
+
+    out_cols = [
         "meetingDate", "courseName", "raceNumber", "race_id",
         "horseName", "horseCode", "positionOfficial",
         "distance", "going", "raceSurfaceName", "raceClass",
         "horseAge", "horseGender", "weightCarried",
         "finishingTime", "distanceCumulative",
-        "raw_figure", "weight_adj", "wfa_adj", "figure_final",
-        "figure_calibrated",
+        "raw_figure", "weight_adj", "wfa_adj", "sex_adj",
+        "figure_final", "figure_calibrated",
         "timefigure", "performanceRating",
         "source_year",
     ]
-    # Only include columns that exist
-    output_cols = [c for c in output_cols if c in all_figs.columns]
-    output_df = all_figs[output_cols].copy()
+    out_cols = [c for c in out_cols if c in all_figs.columns]
+    out_df = all_figs[out_cols]
 
-    output_path = os.path.join(OUTPUT_DIR, "speed_figures.csv")
-    output_df.to_csv(output_path, index=False)
-    print(f"\n  Output saved: {output_path} ({len(output_df):,} rows)")
+    fig_path = os.path.join(OUTPUT_DIR, "speed_figures.csv")
+    out_df.to_csv(fig_path, index=False)
+    print(f"\n  Figures: {fig_path} ({len(out_df):,} rows)")
 
-    # Save standard times
     std_path = os.path.join(OUTPUT_DIR, "standard_times.csv")
     std_df.to_csv(std_path, index=False)
-    print(f"  Standard times saved: {std_path} ({len(std_df):,} entries)")
+    print(f"  Standard times: {std_path} ({len(std_df):,} entries)")
 
-    # Save going allowances
     ga_df = pd.DataFrame(
         list(going_allowances.items()),
-        columns=["meeting_id", "going_allowance_spf"]
+        columns=["meeting_id", "going_allowance_spf"],
     )
     ga_path = os.path.join(OUTPUT_DIR, "going_allowances.csv")
     ga_df.to_csv(ga_path, index=False)
-    print(f"  Going allowances saved: {ga_path} ({len(ga_df):,} meetings)")
+    print(f"  Going allowances: {ga_path} ({len(ga_df):,} meetings)")
 
     print("\n" + "=" * 70)
     print("PIPELINE COMPLETE")
