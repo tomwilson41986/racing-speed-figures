@@ -8,13 +8,15 @@ Target: timefigure (Timeform)
 Goal: MAE < 3
 """
 
+import re
+
 import pandas as pd
 import numpy as np
 import os
 import warnings
-from sklearn.model_selection import GroupKFold
 from sklearn.metrics import mean_absolute_error
 import xgboost as xgb
+import lightgbm as lgb
 
 warnings.filterwarnings("ignore")
 
@@ -39,10 +41,14 @@ def load_raw_extra_cols(years=range(2015, 2027)):
         "numberOfRunners", "draw", "raceCode",
         "ispDecimal", "betfairWinSP",
         "performanceRating", "preRaceMasterRating",
+        "preRaceAdjustedRating",
         "eligibilitySexLimit", "courseExtraId",
         "jockeyFullName", "trainerFullName",
+        "jockeyUpLift", "trainerUpLift",
         "prizeFund", "prizeFundWinner",
         "raceType", "raceSurfaceName", "positionOfficial",
+        "tfwfa", "horseAge",
+        "sectionalFinishingTime",
     ]
     for year in years:
         path = os.path.join(DATA_DIR, f"timeform_{year}.csv")
@@ -86,9 +92,11 @@ def build_features(df, raw_extra):
         "distanceYards", "distanceFurlongs",
         "numberOfRunners", "draw",
         "ispDecimal", "betfairWinSP",
-        "preRaceMasterRating",
+        "preRaceMasterRating", "preRaceAdjustedRating",
         "eligibilitySexLimit", "courseExtraId",
+        "jockeyUpLift", "trainerUpLift",
         "prizeFund", "prizeFundWinner",
+        "tfwfa", "sectionalFinishingTime",
     ]
     extra_only = [c for c in extra_only if c in raw_extra.columns]
     merge_df = raw_extra[["_merge_key"] + extra_only].drop_duplicates("_merge_key")
@@ -224,6 +232,42 @@ def build_features(df, raw_extra):
     else:
         df["log_prize_per_runner"] = 0
 
+    # ── Jockey / trainer uplift ──
+    for col in ["jockeyUpLift", "trainerUpLift", "preRaceAdjustedRating",
+                "sectionalFinishingTime"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    if "jockeyUpLift" in df.columns:
+        df["jockey_uplift"] = df["jockeyUpLift"].fillna(0)
+    else:
+        df["jockey_uplift"] = 0
+
+    if "trainerUpLift" in df.columns:
+        df["trainer_uplift"] = df["trainerUpLift"].fillna(0)
+    else:
+        df["trainer_uplift"] = 0
+
+    if "preRaceAdjustedRating" in df.columns:
+        df["adj_rating"] = pd.to_numeric(
+            df["preRaceAdjustedRating"], errors="coerce"
+        ).fillna(0)
+    else:
+        df["adj_rating"] = 0
+
+    # Sectional finishing time (if available)
+    if "sectionalFinishingTime" in df.columns:
+        df["sectional_time"] = df["sectionalFinishingTime"].fillna(0)
+    else:
+        df["sectional_time"] = 0
+
+    # ── Parse Timeform WFA (tfwfa field) ──
+    # Format: "TWFA [age] [stone]-[lbs]" e.g. "TWFA 3 9-6"
+    # The lbs component IS the WFA allowance (since base = 9st 0lb = 126 lbs).
+    # For races with multiple ages: "TWFA 3 9-3 TWFA 4 9-13" → compute
+    # the allowance relative to the oldest age's weight.
+    df["tf_wfa"] = _parse_tfwfa_column(df)
+
     # ── Pipeline going allowance ──
     # Load the per-meeting going allowance computed by the traditional pipeline.
     ga_path = os.path.join(OUTPUT_DIR, "going_allowances.csv")
@@ -247,6 +291,55 @@ def build_features(df, raw_extra):
 
     print(f"  Features built: {len(df):,} rows")
     return df
+
+
+def _parse_tfwfa_column(df):
+    """
+    Parse the tfwfa field to extract per-runner WFA allowance in lbs.
+
+    Format: "TWFA <age> <stone>-<lbs>" — can contain multiple entries for
+    multi-age races, e.g. "TWFA 3 9-4 TWFA 4 9-13".
+
+    Returns the WFA allowance: max_weight − weight_for_horse_age.
+    Older horses get 0 (no allowance); younger horses get a positive value.
+    """
+    pattern = re.compile(r"TWFA\s+(\d+)\s+(\d+)-(\d+)")
+
+    # Parse unique tfwfa strings → {age: total_lbs}
+    unique_vals = df["tfwfa"].dropna().unique()
+    tfwfa_parsed = {}
+    for val in unique_vals:
+        matches = pattern.findall(str(val))
+        if matches:
+            age_weight = {int(a): int(s) * 14 + int(l) for a, s, l in matches}
+            tfwfa_parsed[val] = age_weight
+
+    result = pd.Series(np.nan, index=df.index)
+
+    for tfwfa_val, age_weight in tfwfa_parsed.items():
+        max_wt = max(age_weight.values())
+        mask = df["tfwfa"] == tfwfa_val
+
+        # Exact age matches
+        for age, wt in age_weight.items():
+            age_mask = mask & (df["horseAge"] == age)
+            result[age_mask] = max_wt - wt
+
+        # Horses older than all listed ages → 0 allowance
+        oldest = max(age_weight.keys())
+        result[mask & (df["horseAge"] > oldest)] = 0
+
+        # Horses younger than youngest listed → use youngest weight
+        youngest = min(age_weight.keys())
+        youngest_wt = age_weight[youngest]
+        result[mask & (df["horseAge"] < youngest) & result.isna()] = (
+            max_wt - youngest_wt
+        )
+
+    n_parsed = result.notna().sum()
+    print(f"    tfwfa parsed: {n_parsed:,} rows, "
+          f"mean allowance={result.dropna().mean():.1f} lbs")
+    return result
 
 
 def _add_horse_history_features(df):
@@ -389,6 +482,13 @@ def get_feature_cols():
 
         # Pipeline intermediate: going allowance (seconds per furlong)
         "pipeline_ga",
+
+        # New external features
+        "jockey_uplift",
+        "trainer_uplift",
+        "adj_rating",
+        "sectional_time",
+        "tf_wfa",
     ]
 
 
@@ -478,32 +578,71 @@ def train_model(df):
     print(f"Train: {len(X_train):,} rows (2015–2023)")
     print(f"Test:  {len(X_test):,} rows (2024+)")
 
-    # XGBoost parameters — tuned for generalisation
-    params = {
-        "objective": "reg:squarederror",
-        "eval_metric": "mae",
-        "max_depth": 6,
-        "learning_rate": 0.02,
-        "subsample": 0.8,
-        "colsample_bytree": 0.8,
-        "min_child_weight": 50,
-        "reg_alpha": 0.1,
-        "reg_lambda": 1.0,
-        "n_estimators": 8000,
-        "early_stopping_rounds": 150,
-        "verbosity": 0,
-    }
-
-    model = xgb.XGBRegressor(**params)
-    model.fit(
-        X_train, y_train,
-        eval_set=[(X_test, y_test)],
-        verbose=200,
+    # ── Model 1: XGBoost MSE (good for extremes / correlation) ──
+    print("\n  Training XGBoost MSE model...")
+    xgb_mse = xgb.XGBRegressor(
+        objective="reg:squarederror", eval_metric="mae",
+        max_depth=8, learning_rate=0.02, subsample=0.8,
+        colsample_bytree=0.7, min_child_weight=20,
+        reg_alpha=0.05, reg_lambda=0.5,
+        n_estimators=8000, early_stopping_rounds=150, verbosity=0,
     )
+    xgb_mse.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=500)
+    print(f"    XGB-MSE test MAE: {mean_absolute_error(y_test, xgb_mse.predict(X_test)):.4f}")
 
-    # Predictions
-    train_pred = model.predict(X_train)
-    test_pred = model.predict(X_test)
+    # ── Model 2: XGBoost MAE (directly optimises our metric) ──
+    print("\n  Training XGBoost MAE model...")
+    xgb_mae = xgb.XGBRegressor(
+        objective="reg:absoluteerror", eval_metric="mae",
+        max_depth=8, learning_rate=0.02, subsample=0.8,
+        colsample_bytree=0.8, min_child_weight=30,
+        reg_alpha=0.05, reg_lambda=0.5,
+        n_estimators=8000, early_stopping_rounds=150, verbosity=0,
+    )
+    xgb_mae.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=500)
+    print(f"    XGB-MAE test MAE: {mean_absolute_error(y_test, xgb_mae.predict(X_test)):.4f}")
+
+    # ── Model 3: LightGBM MSE ──
+    print("\n  Training LightGBM MSE model...")
+    lgb_ds_tr = lgb.Dataset(X_train, y_train)
+    lgb_ds_te = lgb.Dataset(X_test, y_test, reference=lgb_ds_tr)
+    lgb_mse = lgb.train(
+        {"objective": "regression", "metric": "mae", "num_leaves": 127,
+         "learning_rate": 0.02, "feature_fraction": 0.8,
+         "bagging_fraction": 0.8, "bagging_freq": 5,
+         "min_child_samples": 30, "verbose": -1},
+        lgb_ds_tr, num_boost_round=8000, valid_sets=[lgb_ds_te],
+        callbacks=[lgb.early_stopping(150), lgb.log_evaluation(500)],
+    )
+    print(f"    LGB-MSE test MAE: {mean_absolute_error(y_test, lgb_mse.predict(X_test)):.4f}")
+
+    # ── Model 4: LightGBM MAE ──
+    print("\n  Training LightGBM MAE model...")
+    lgb_ds_tr2 = lgb.Dataset(X_train, y_train)
+    lgb_ds_te2 = lgb.Dataset(X_test, y_test, reference=lgb_ds_tr2)
+    lgb_mae = lgb.train(
+        {"objective": "mae", "metric": "mae", "num_leaves": 127,
+         "learning_rate": 0.02, "feature_fraction": 0.8,
+         "bagging_fraction": 0.8, "bagging_freq": 5,
+         "min_child_samples": 30, "verbose": -1},
+        lgb_ds_tr2, num_boost_round=8000, valid_sets=[lgb_ds_te2],
+        callbacks=[lgb.early_stopping(150), lgb.log_evaluation(500)],
+    )
+    print(f"    LGB-MAE test MAE: {mean_absolute_error(y_test, lgb_mae.predict(X_test)):.4f}")
+
+    # ── 4-model equal blend ──
+    train_pred = 0.25 * (
+        xgb_mse.predict(X_train) + xgb_mae.predict(X_train)
+        + lgb_mse.predict(X_train) + lgb_mae.predict(X_train)
+    )
+    test_pred = 0.25 * (
+        xgb_mse.predict(X_test) + xgb_mae.predict(X_test)
+        + lgb_mse.predict(X_test) + lgb_mae.predict(X_test)
+    )
+    print(f"\n  4-model blend test MAE: {mean_absolute_error(y_test, test_pred):.4f}")
+
+    # Use XGBoost MSE model for feature importance (most stable)
+    model = xgb_mse
 
     train_mae = mean_absolute_error(y_train, train_pred)
     test_mae = mean_absolute_error(y_test, test_pred)
