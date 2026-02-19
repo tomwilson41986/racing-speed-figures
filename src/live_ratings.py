@@ -43,6 +43,9 @@ from speed_figures import (
     SECONDS_PER_LENGTH,
     LBS_PER_SECOND_5F,
     BENCHMARK_FURLONGS,
+    SEX_ALLOWANCE_SUMMER,
+    SEX_ALLOWANCE_WINTER,
+    FEMALE_GENDERS,
     UK_COURSES,
     IRE_COURSES,
     WFA_3YO,
@@ -680,6 +683,7 @@ class LiteRatingEngine:
         df = self._compute_winner_figures(df)
         df = self._extend_to_all_runners(df)
         df = self._apply_wfa(df)
+        df = self._compute_sex_allowance(df)
         df = self._apply_calibration(df)
 
         return df
@@ -882,6 +886,8 @@ class LiteRatingEngine:
         log.info("Extending to all runners...")
 
         df["raw_figure"] = np.nan
+        df["standard_time"] = np.nan
+        df["est_time"] = np.nan
 
         in_race = df["race_id"].isin(self._winner_figs)
         df_in = df[in_race].copy()
@@ -890,6 +896,9 @@ class LiteRatingEngine:
             return df
 
         df_in["winner_figure"] = df_in["race_id"].map(self._winner_figs)
+
+        # Standard time from lookup
+        df_in["standard_time"] = df_in["std_key"].map(self.std_times)
 
         # LPL
         df_in["lpl"] = df_in["std_key"].map(self.lpl_dict)
@@ -907,8 +916,26 @@ class LiteRatingEngine:
         df_in.loc[is_winner, "lbs_behind"] = 0.0
         df_in["raw_figure"] = df_in["winner_figure"] - df_in["lbs_behind"]
 
+        # Estimated finish times:
+        #   Winner = actual comptime (finishingTime)
+        #   Others = winner_time + cumulative_beaten_lengths * SECONDS_PER_LENGTH
+        winner_times = (
+            df_in.loc[is_winner, ["race_id", "finishingTime"]]
+            .drop_duplicates("race_id")
+            .set_index("race_id")["finishingTime"]
+        )
+        df_in["winner_time"] = df_in["race_id"].map(winner_times)
+        df_in["est_time"] = df_in["winner_time"]
+        non_winner = ~is_winner & df_in["distanceCumulative"].notna()
+        df_in.loc[non_winner, "est_time"] = (
+            df_in.loc[non_winner, "winner_time"]
+            + df_in.loc[non_winner, "distanceCumulative"] * SECONDS_PER_LENGTH
+        )
+
         # Write back
         df.loc[df_in.index, "raw_figure"] = df_in["raw_figure"]
+        df.loc[df_in.index, "standard_time"] = df_in["standard_time"]
+        df.loc[df_in.index, "est_time"] = df_in["est_time"]
         log.info(f"  All-runner figures: {df['raw_figure'].notna().sum()}")
         return df
 
@@ -928,6 +955,24 @@ class LiteRatingEngine:
         if has_wfa.any():
             log.info(f"  WFA applied to {has_wfa.sum()} runners")
 
+        return df
+
+    def _compute_sex_allowance(self, df):
+        """Compute sex allowance indicator for fillies/mares."""
+        log.info("Computing sex allowance...")
+
+        def _sex_alw(row):
+            if row.get("horseGender") not in FEMALE_GENDERS:
+                return 0
+            m = row.get("month", 1)
+            if 5 <= m <= 9:
+                return SEX_ALLOWANCE_SUMMER
+            return SEX_ALLOWANCE_WINTER
+
+        df["sex_allowance"] = df.apply(_sex_alw, axis=1)
+        n = (df["sex_allowance"] > 0).sum()
+        if n > 0:
+            log.info(f"  Sex allowance flagged for {n} runners")
         return df
 
     def _apply_calibration(self, df):
@@ -1034,7 +1079,8 @@ def format_email_html(df, target_date, run_time):
         )
         html += (
             "<table><tr><th>Pos</th><th>Horse</th><th>Age</th>"
-            "<th>Wgt</th><th>Beaten</th><th>Raw</th>"
+            "<th>Wgt</th><th>Beaten</th><th>Time</th><th>Std</th>"
+            "<th>Alw</th><th>Raw</th>"
             "<th>WFA</th><th>Figure</th></tr>"
         )
 
@@ -1056,10 +1102,26 @@ def format_email_html(df, target_date, run_time):
                 else "-"
             )
             beaten = (
-                f'{r["distanceCumulative"]:.1f}'
+                f'{r["distanceCumulative"]:.2f}'
                 if pd.notna(r.get("distanceCumulative"))
                 and r.get("distanceCumulative", 0) > 0
                 else "-"
+            )
+            est_time = (
+                f'{r["est_time"]:.2f}'
+                if pd.notna(r.get("est_time"))
+                else "-"
+            )
+            std_time = (
+                f'{r["standard_time"]:.2f}'
+                if pd.notna(r.get("standard_time"))
+                else "-"
+            )
+            alw = (
+                f'{int(r["sex_allowance"])}'
+                if pd.notna(r.get("sex_allowance"))
+                and r.get("sex_allowance", 0) > 0
+                else ""
             )
             raw = (
                 f'{r["raw_figure"]:.0f}'
@@ -1082,6 +1144,8 @@ def format_email_html(df, target_date, run_time):
             html += (
                 f"<tr><td>{pos}</td><td><b>{horse}</b></td>"
                 f"<td>{age}</td><td>{wgt}</td><td>{beaten}</td>"
+                f"<td>{est_time}</td><td>{std_time}</td>"
+                f"<td>{alw}</td>"
                 f'<td>{raw}</td><td>{wfa}</td>'
                 f'<td class="{cls}">{fig_str}</td></tr>'
             )
