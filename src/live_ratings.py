@@ -58,14 +58,14 @@ OUTPUT_DIR = ROOT_DIR / "output"
 LIVE_DIR = ROOT_DIR / "data" / "live"
 
 # ─── Configuration (environment variables) ───────────────────────────
-RECIPIENT = "tomwilson41986@gmail.com"
+RECIPIENT = os.environ.get("RECIPIENT", "tomwilson41986@gmail.com")
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASS = os.environ.get("SMTP_PASS", "")
 HRB_USER = os.environ.get("HRB_USER", "")
 HRB_PASS = os.environ.get("HRB_PASS", "")
-HRB_USER_ID = os.environ.get("HRB_USER_ID", "10327")
+HRB_USER_ID = os.environ.get("HRB_USER_ID", "")
 
 # ─── Logging ─────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -166,6 +166,8 @@ def _fetch_from_hrb(target_date):
         log.info("HRB credentials not set (HRB_USER / HRB_PASS) — skipping")
         return None
 
+    log.info(f"HRB_USER={hrb_user[:3]}***, HRB_USER_ID={HRB_USER_ID}")
+
     session = requests.Session()
     session.headers.update({
         "User-Agent": (
@@ -176,15 +178,38 @@ def _fetch_from_hrb(target_date):
     })
 
     try:
-        # Step 1: Get CSRF token
+        # Step 1: Get CSRF token from multiple pages
         log.info("Logging into HorseRaceBase...")
-        resp = session.get(
+
+        csrf = ""
+        for page_url in [
             "https://www.horseracebase.com/horse-racing-results.php",
-            timeout=15,
-        )
-        soup = BeautifulSoup(resp.text, "html.parser")
-        csrf_input = soup.find("input", {"name": "CSRFtoken"})
-        csrf = csrf_input["value"] if csrf_input else ""
+            "https://www.horseracebase.com/horsebase1.php",
+            "https://www.horseracebase.com/",
+        ]:
+            resp = session.get(page_url, timeout=15)
+            soup = BeautifulSoup(resp.text, "html.parser")
+            csrf_input = soup.find("input", {"name": "CSRFtoken"})
+            if csrf_input:
+                csrf = csrf_input["value"]
+                log.info(f"  CSRF token found on {page_url}")
+                break
+
+        if not csrf:
+            # Try extracting from raw HTML via regex (JS-rendered forms)
+            import re
+            match = re.search(
+                r'name=["\']CSRFtoken["\']\s+value=["\']([^"\']+)',
+                resp.text,
+            )
+            if match:
+                csrf = match.group(1)
+                log.info("  CSRF token found via regex")
+            else:
+                log.warning(
+                    "  No CSRF token found — login may fail. "
+                    "Attempting without it."
+                )
 
         # Step 2: Login
         login_resp = session.post(
@@ -197,40 +222,127 @@ def _fetch_from_hrb(target_date):
             timeout=15,
         )
         if login_resp.status_code != 200:
-            log.warning(f"HRB login returned {login_resp.status_code}")
+            log.error(f"HRB login returned HTTP {login_resp.status_code}")
             return None
 
         # Verify login succeeded
-        if "log out" not in login_resp.text.lower():
-            log.warning("HRB login may have failed — no 'log out' found")
+        login_ok = "log out" in login_resp.text.lower()
+        if not login_ok:
+            # Check for other success indicators
+            login_ok = (
+                "my horseracebase" in login_resp.text.lower()
+                or "welcome" in login_resp.text.lower()
+            )
 
-        # Step 3: Download date-specific CSV
-        log.info(f"Downloading results CSV for {target_date}...")
+        if not login_ok:
+            log.error(
+                "HRB login FAILED — 'log out' not found in response. "
+                "Check HRB_USER and HRB_PASS secrets are correct. "
+                f"Response length: {len(login_resp.text)} chars, "
+                f"cookies: {list(session.cookies.keys())}"
+            )
+            # Show a snippet of the response for debugging
+            snippet = login_resp.text[:500].replace("\n", " ")
+            log.error(f"Response snippet: {snippet}")
+            return None
+
+        log.info("  Login successful")
+
+        # Step 3: Resolve user ID for CSV download
+        user_id = HRB_USER_ID
+        if not user_id:
+            # Try to extract from the authenticated page
+            import re
+            uid_match = re.search(
+                r'user["\s=:]+["\']?(\d{3,})', login_resp.text
+            )
+            if uid_match:
+                user_id = uid_match.group(1)
+                log.info(f"  Auto-detected HRB user ID: {user_id}")
+            else:
+                # Try the results page as fallback
+                results_resp = session.get(
+                    "https://www.horseracebase.com/"
+                    "horse-racing-results.php",
+                    timeout=15,
+                )
+                uid_match = re.search(
+                    r'user["\s=:]+["\']?(\d{3,})', results_resp.text
+                )
+                if uid_match:
+                    user_id = uid_match.group(1)
+                    log.info(
+                        f"  Auto-detected HRB user ID "
+                        f"from results page: {user_id}"
+                    )
+                else:
+                    log.error(
+                        "Cannot determine HRB user ID. "
+                        "Set HRB_USER_ID env var or GitHub secret. "
+                        "Find it on HRB under your account/profile page."
+                    )
+                    return None
+
+        # Step 4: Download date-specific CSV
+        log.info(
+            f"Downloading results CSV for {target_date} "
+            f"(user_id={user_id})..."
+        )
         csv_resp = session.post(
             "https://www.horseracebase.com/excelresults.php",
             data={
                 "csv": "1",
-                "user": HRB_USER_ID,
+                "user": user_id,
                 "racedate": target_date,
             },
             timeout=30,
         )
 
         if csv_resp.status_code != 200:
-            log.warning(f"CSV download returned {csv_resp.status_code}")
+            log.error(f"CSV download returned HTTP {csv_resp.status_code}")
             return None
 
         content = csv_resp.text.strip()
-        if not content or content.count("\n") < 1:
-            log.warning("CSV download returned empty data")
+
+        # Validate that the response is actually CSV, not an HTML error page
+        if "<html" in content.lower() or "<!doctype" in content.lower():
+            log.error(
+                "CSV download returned HTML instead of CSV data. "
+                "This usually means authentication failed or "
+                "HRB_USER_ID is incorrect. "
+                f"Set the HRB_USER_ID secret to your HorseRaceBase user ID."
+            )
+            snippet = content[:500].replace("\n", " ")
+            log.error(f"Response snippet: {snippet}")
             return None
 
-        df = pd.read_csv(io.StringIO(content))
+        if not content or content.count("\n") < 1:
+            log.warning(
+                f"CSV download returned empty data for {target_date}. "
+                "There may be no racing on this date."
+            )
+            return None
+
+        try:
+            df = pd.read_csv(io.StringIO(content))
+        except Exception as e:
+            log.error(
+                f"Failed to parse CSV response: {e}. "
+                f"Content starts with: {content[:200]}"
+            )
+            return None
+
         log.info(f"Downloaded {len(df)} rows from HorseRaceBase")
+
+        if len(df) == 0:
+            log.warning(f"CSV parsed but contained 0 rows for {target_date}")
+            return None
+
+        log.info(f"  Columns: {list(df.columns)}")
         return _transform_hrb_data(df)
 
     except Exception as e:
-        log.warning(f"HRB fetch failed: {e}")
+        log.error(f"HRB fetch failed: {e}", exc_info=True)
         return None
 
 
@@ -849,6 +961,12 @@ def _fig_class(fig):
 
 def send_email(html, target_date, run_time, recipient=RECIPIENT):
     """Send the ratings email via SMTP."""
+    log.info(
+        f"Email config: SMTP_USER={'set' if SMTP_USER else 'EMPTY'}, "
+        f"SMTP_PASS={'set' if SMTP_PASS else 'EMPTY'}, "
+        f"host={SMTP_HOST}:{SMTP_PORT}, recipient={recipient}"
+    )
+
     if not SMTP_USER or not SMTP_PASS:
         log.error(
             "Email not configured. Set SMTP_USER and SMTP_PASS env vars. "
@@ -872,16 +990,28 @@ def send_email(html, target_date, run_time, recipient=RECIPIENT):
     msg.attach(MIMEText(html, "html"))
 
     try:
+        log.info(f"Connecting to {SMTP_HOST}:{SMTP_PORT}...")
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
             server.ehlo()
             server.starttls()
             server.ehlo()
+            log.info(f"Authenticating as {SMTP_USER}...")
             server.login(SMTP_USER, SMTP_PASS)
             server.sendmail(SMTP_USER, recipient, msg.as_string())
-        log.info(f"Email sent to {recipient}")
+        log.info(f"Email sent successfully to {recipient}")
         return True
+    except smtplib.SMTPAuthenticationError as e:
+        log.error(
+            f"SMTP authentication failed: {e}. "
+            "Check that SMTP_USER is a valid Gmail address and "
+            "SMTP_PASS is a 16-character Gmail App Password "
+            "(NOT your regular Google password). "
+            "Generate one at: Google Account → Security → "
+            "2-Step Verification → App Passwords."
+        )
+        return False
     except Exception as e:
-        log.error(f"Failed to send email: {e}")
+        log.error(f"Failed to send email: {e}", exc_info=True)
         return False
 
 
