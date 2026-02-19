@@ -335,12 +335,23 @@ def _fetch_from_hrb(target_date):
 
             resp_text = csv_resp.text.strip()
 
-            # Skip HTML error pages
-            if "<html" in resp_text.lower() or "<!doctype" in resp_text.lower():
+            # Skip HTML error pages (including bare <p> tags from HRB)
+            if (
+                "<html" in resp_text.lower()
+                or "<!doctype" in resp_text.lower()
+                or resp_text.lstrip().startswith("<")
+            ):
                 snippet = resp_text[:300].replace("\n", " ")
-                log.warning(
-                    f"CSV download returned HTML (not CSV): {snippet}"
-                )
+                if "membership" in resp_text.lower():
+                    log.error(
+                        "HRB account does not have a valid membership. "
+                        "CSV download requires an active HorseRaceBase "
+                        "subscription. Response: " + snippet
+                    )
+                else:
+                    log.warning(
+                        f"CSV download returned HTML (not CSV): {snippet}"
+                    )
                 continue
 
             if not resp_text or resp_text.count("\n") < 1:
@@ -378,6 +389,20 @@ def _fetch_from_hrb(target_date):
             return None
 
         log.info(f"  Columns: {list(df.columns)}")
+
+        # Validate that essential columns exist (guards against HTML/error
+        # responses that pandas may parse as a single-column DataFrame)
+        required_cols = {"racedate", "track", "horse_name"}
+        missing = required_cols - set(df.columns)
+        if missing:
+            log.error(
+                f"CSV is missing required columns: {missing}. "
+                f"Actual columns: {list(df.columns)}. "
+                "This usually means the HRB account lacks a valid "
+                "membership or the download URL has changed."
+            )
+            return None
+
         return _transform_hrb_data(df)
 
     except Exception as e:
