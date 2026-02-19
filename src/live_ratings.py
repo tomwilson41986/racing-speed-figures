@@ -178,6 +178,8 @@ def _fetch_from_hrb(target_date):
     })
 
     try:
+        import re
+
         # Step 1: Get CSRF token from multiple pages
         log.info("Logging into HorseRaceBase...")
 
@@ -197,7 +199,6 @@ def _fetch_from_hrb(target_date):
 
         if not csrf:
             # Try extracting from raw HTML via regex (JS-rendered forms)
-            import re
             match = re.search(
                 r'name=["\']CSRFtoken["\']\s+value=["\']([^"\']+)',
                 resp.text,
@@ -250,76 +251,114 @@ def _fetch_from_hrb(target_date):
 
         # Step 3: Resolve user ID for CSV download
         user_id = HRB_USER_ID
+
         if not user_id:
-            # Try to extract from the authenticated page
-            import re
-            uid_match = re.search(
-                r'user["\s=:]+["\']?(\d{3,})', login_resp.text
+            log.info("  HRB_USER_ID not set — attempting auto-detection...")
+
+            # Strategy A: Look for user ID in authenticated pages
+            search_pages = [
+                ("login response", login_resp.text),
+            ]
+            # Fetch additional pages that may contain the user ID
+            for page_name, page_url in [
+                ("results page", "https://www.horseracebase.com/horse-racing-results.php"),
+                ("excel results page", "https://www.horseracebase.com/excelresults.php"),
+                ("account page", "https://www.horseracebase.com/payments.php"),
+                ("profile page", "https://www.horseracebase.com/myhrb.php"),
+            ]:
+                try:
+                    page_resp = session.get(page_url, timeout=15)
+                    search_pages.append((page_name, page_resp.text))
+                except Exception:
+                    pass
+
+            # Search patterns that might contain the user ID
+            patterns = [
+                r'["\']user["\'][,:\s]+["\']?(\d{3,})',
+                r'user_?id["\s=:]+["\']?(\d{3,})',
+                r'userid["\s=:]+["\']?(\d{3,})',
+                r'name=["\']user["\'][^>]*value=["\'](\d{3,})',
+                r'value=["\'](\d{3,})["\'][^>]*name=["\']user',
+                r'excelresults\.php\?[^"\']*user=(\d{3,})',
+                r'/user/(\d{3,})',
+            ]
+
+            for page_name, page_text in search_pages:
+                for pattern in patterns:
+                    uid_match = re.search(pattern, page_text, re.IGNORECASE)
+                    if uid_match:
+                        user_id = uid_match.group(1)
+                        log.info(
+                            f"  Auto-detected HRB user ID: {user_id} "
+                            f"(from {page_name}, pattern: {pattern})"
+                        )
+                        break
+                if user_id:
+                    break
+
+        if not user_id:
+            log.warning(
+                "Could not auto-detect HRB user ID. "
+                "Will attempt CSV download without it. "
+                "If this fails, set HRB_USER_ID as a GitHub secret."
             )
-            if uid_match:
-                user_id = uid_match.group(1)
-                log.info(f"  Auto-detected HRB user ID: {user_id}")
-            else:
-                # Try the results page as fallback
-                results_resp = session.get(
-                    "https://www.horseracebase.com/"
-                    "horse-racing-results.php",
-                    timeout=15,
-                )
-                uid_match = re.search(
-                    r'user["\s=:]+["\']?(\d{3,})', results_resp.text
-                )
-                if uid_match:
-                    user_id = uid_match.group(1)
-                    log.info(
-                        f"  Auto-detected HRB user ID "
-                        f"from results page: {user_id}"
-                    )
-                else:
-                    log.error(
-                        "Cannot determine HRB user ID. "
-                        "Set HRB_USER_ID env var or GitHub secret. "
-                        "Find it on HRB under your account/profile page."
-                    )
-                    return None
 
         # Step 4: Download date-specific CSV
-        log.info(
-            f"Downloading results CSV for {target_date} "
-            f"(user_id={user_id})..."
-        )
-        csv_resp = session.post(
-            "https://www.horseracebase.com/excelresults.php",
-            data={
-                "csv": "1",
-                "user": user_id,
-                "racedate": target_date,
-            },
-            timeout=30,
-        )
-
-        if csv_resp.status_code != 200:
-            log.error(f"CSV download returned HTTP {csv_resp.status_code}")
-            return None
-
-        content = csv_resp.text.strip()
-
-        # Validate that the response is actually CSV, not an HTML error page
-        if "<html" in content.lower() or "<!doctype" in content.lower():
-            log.error(
-                "CSV download returned HTML instead of CSV data. "
-                "This usually means authentication failed or "
-                "HRB_USER_ID is incorrect. "
-                f"Set the HRB_USER_ID secret to your HorseRaceBase user ID."
+        # Try with user ID first, then without
+        download_attempts = []
+        if user_id:
+            download_attempts.append(
+                {"csv": "1", "user": user_id, "racedate": target_date}
             )
-            snippet = content[:500].replace("\n", " ")
-            log.error(f"Response snippet: {snippet}")
-            return None
+        # Also try without user ID (server may infer from session)
+        download_attempts.append(
+            {"csv": "1", "racedate": target_date}
+        )
 
-        if not content or content.count("\n") < 1:
-            log.warning(
-                f"CSV download returned empty data for {target_date}. "
-                "There may be no racing on this date."
+        content = None
+        for attempt_data in download_attempts:
+            log.info(
+                f"Downloading results CSV for {target_date} "
+                f"(params={attempt_data})..."
+            )
+            csv_resp = session.post(
+                "https://www.horseracebase.com/excelresults.php",
+                data=attempt_data,
+                timeout=30,
+            )
+
+            if csv_resp.status_code != 200:
+                log.warning(
+                    f"CSV download returned HTTP {csv_resp.status_code}"
+                )
+                continue
+
+            resp_text = csv_resp.text.strip()
+
+            # Skip HTML error pages
+            if "<html" in resp_text.lower() or "<!doctype" in resp_text.lower():
+                snippet = resp_text[:300].replace("\n", " ")
+                log.warning(
+                    f"CSV download returned HTML (not CSV): {snippet}"
+                )
+                continue
+
+            if not resp_text or resp_text.count("\n") < 1:
+                log.warning(
+                    f"CSV download returned empty data for {target_date}."
+                )
+                continue
+
+            content = resp_text
+            break
+
+        if content is None:
+            log.error(
+                f"All CSV download attempts failed for {target_date}. "
+                "If you haven't set HRB_USER_ID, find your numeric user "
+                "ID on HorseRaceBase (check your profile/account page or "
+                "the URL when you download results) and add it as a "
+                "GitHub secret named HRB_USER_ID."
             )
             return None
 
