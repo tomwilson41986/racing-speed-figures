@@ -128,18 +128,18 @@ def fetch_results(target_date):
     Fetch race results for a given date.
 
     Tries:
-      1. HorseRaceBase CSV download (requires credentials)
-      2. Manual CSV file in data/live/<date>.csv or data/live/today.csv
+      1. Manual CSV override in data/live/<date>.csv or data/live/today.csv
+      2. HorseRaceBase CSV download (requires credentials)
     """
     log.info(f"Fetching results for {target_date}")
 
-    # Strategy 1: HorseRaceBase
-    df = _fetch_from_hrb(target_date)
+    # Strategy 1: Manual CSV (takes priority — lets you test with your own data)
+    df = _load_manual_csv(target_date)
     if df is not None and len(df) > 0:
         return df
 
-    # Strategy 2: Manual CSV
-    df = _load_manual_csv(target_date)
+    # Strategy 2: HorseRaceBase
+    df = _fetch_from_hrb(target_date)
     if df is not None and len(df) > 0:
         return df
 
