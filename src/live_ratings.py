@@ -249,19 +249,55 @@ def _fetch_from_hrb(target_date):
 
         log.info("  Login successful")
 
-        # Step 3: Resolve user ID for CSV download
+        # Step 3: Get the results page for the target date and parse
+        # the CSV download form to extract the correct parameters
+        # (including the user ID embedded as a hidden field).
+        results_url = (
+            "https://www.horseracebase.com/horse-racing-results.php"
+            f"?racedate={target_date}"
+        )
+        log.info(f"Fetching results page: {results_url}")
+        results_resp = session.get(results_url, timeout=15)
+        results_soup = BeautifulSoup(results_resp.text, "html.parser")
+
+        # Find the form that submits to excelresults.php (the CSV form)
+        csv_form_params = None
+        for form in results_soup.find_all("form"):
+            action = (form.get("action") or "").lower()
+            if "excelresults" in action:
+                csv_form_params = {}
+                for inp in form.find_all("input"):
+                    name = inp.get("name")
+                    value = inp.get("value", "")
+                    if name:
+                        csv_form_params[name] = value
+                log.info(
+                    f"  Found CSV form (action={form.get('action')}), "
+                    f"fields: {csv_form_params}"
+                )
+                break
+
+        if csv_form_params is None:
+            # Log all forms found for debugging
+            all_forms = results_soup.find_all("form")
+            log.warning(
+                f"  No CSV form found on results page. "
+                f"Found {len(all_forms)} form(s) with actions: "
+                f"{[f.get('action') for f in all_forms]}"
+            )
+
+        # Also try to find the user ID via regex as a fallback
         user_id = HRB_USER_ID
-
+        if not user_id and csv_form_params:
+            user_id = csv_form_params.get("user", "")
         if not user_id:
+            # Search across multiple pages for patterns containing user ID
             log.info("  HRB_USER_ID not set — attempting auto-detection...")
-
-            # Strategy A: Look for user ID in authenticated pages
             search_pages = [
                 ("login response", login_resp.text),
+                ("results page", results_resp.text),
             ]
-            # Fetch additional pages that may contain the user ID
             for page_name, page_url in [
-                ("results page", "https://www.horseracebase.com/horse-racing-results.php"),
                 ("excel results page", "https://www.horseracebase.com/excelresults.php"),
                 ("account page", "https://www.horseracebase.com/payments.php"),
                 ("profile page", "https://www.horseracebase.com/myhrb.php"),
@@ -272,7 +308,6 @@ def _fetch_from_hrb(target_date):
                 except Exception:
                     pass
 
-            # Search patterns that might contain the user ID
             patterns = [
                 r'["\']user["\'][,:\s]+["\']?(\d{3,})',
                 r'user_?id["\s=:]+["\']?(\d{3,})',
@@ -304,8 +339,15 @@ def _fetch_from_hrb(target_date):
             )
 
         # Step 4: Download date-specific CSV
-        # Try with user ID first, then without
+        # Strategy A: Use the exact form fields parsed from the results page
+        # Strategy B: Build parameters manually (with/without user ID)
         download_attempts = []
+        if csv_form_params:
+            # Use form fields, ensure csv=1 and correct date
+            form_data = dict(csv_form_params)
+            form_data["csv"] = "1"
+            form_data["racedate"] = target_date
+            download_attempts.append(form_data)
         if user_id:
             download_attempts.append(
                 {"csv": "1", "user": user_id, "racedate": target_date}
@@ -335,12 +377,23 @@ def _fetch_from_hrb(target_date):
 
             resp_text = csv_resp.text.strip()
 
-            # Skip HTML error pages
-            if "<html" in resp_text.lower() or "<!doctype" in resp_text.lower():
+            # Skip HTML error pages (including bare <p> tags from HRB)
+            if (
+                "<html" in resp_text.lower()
+                or "<!doctype" in resp_text.lower()
+                or resp_text.lstrip().startswith("<")
+            ):
                 snippet = resp_text[:300].replace("\n", " ")
-                log.warning(
-                    f"CSV download returned HTML (not CSV): {snippet}"
-                )
+                if "membership" in resp_text.lower():
+                    log.error(
+                        "HRB account does not have a valid membership. "
+                        "CSV download requires an active HorseRaceBase "
+                        "subscription. Response: " + snippet
+                    )
+                else:
+                    log.warning(
+                        f"CSV download returned HTML (not CSV): {snippet}"
+                    )
                 continue
 
             if not resp_text or resp_text.count("\n") < 1:
@@ -378,6 +431,20 @@ def _fetch_from_hrb(target_date):
             return None
 
         log.info(f"  Columns: {list(df.columns)}")
+
+        # Validate that essential columns exist (guards against HTML/error
+        # responses that pandas may parse as a single-column DataFrame)
+        required_cols = {"racedate", "track", "horse_name"}
+        missing = required_cols - set(df.columns)
+        if missing:
+            log.error(
+                f"CSV is missing required columns: {missing}. "
+                f"Actual columns: {list(df.columns)}. "
+                "This usually means the HRB account lacks a valid "
+                "membership or the download URL has changed."
+            )
+            return None
+
         return _transform_hrb_data(df)
 
     except Exception as e:
