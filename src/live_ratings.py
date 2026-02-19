@@ -462,7 +462,8 @@ def _transform_hrb_data(df):
     HRB Column          → Pipeline Column
     racedate            → meetingDate
     track               → courseName (UPPER CASE)
-    Dist_Furlongs       → distance
+    Yards + RailMove    → distanceYards → distance (actual furlongs)
+    Dist_Furlongs       → distanceNominal (catalogue distance)
     going_description   → going
     surfacetype         → raceSurfaceName (Polytrack→AW, else→Turf)
     race_class          → raceClass (parse "Class 5" → 5)
@@ -475,6 +476,9 @@ def _transform_hrb_data(df):
     TotalDstBt          → distanceCumulative
     CardNo              → raceNumber
     stall               → draw
+    official_rating     → officialRating
+    MedianOR            → medianOR
+    MaxORinRace         → maxOR
     """
     log.info("Transforming HRB data...")
 
@@ -493,8 +497,14 @@ def _transform_hrb_data(df):
     )
     out["raceNumber"] = race_order
     out["raceTime"] = df["racetime"]
-    out["distance"] = pd.to_numeric(df["Dist_Furlongs"], errors="coerce")
-    out["distanceYards"] = pd.to_numeric(df["Yards"], errors="coerce")
+
+    # Distance: use Yards + RailMove for actual race distance
+    yards = pd.to_numeric(df["Yards"], errors="coerce")
+    rail_move = pd.to_numeric(df["RailMove"], errors="coerce").fillna(0)
+    out["distanceYards"] = yards + rail_move
+    out["distance"] = out["distanceYards"] / 220.0
+    out["distanceNominal"] = pd.to_numeric(df["Dist_Furlongs"], errors="coerce")
+
     out["going"] = df["going_description"]
     out["raceClass"] = df["race_class"].astype(str).str.extract(r"(\d+)")[0]
     out["raceClass"] = pd.to_numeric(out["raceClass"], errors="coerce")
@@ -507,6 +517,11 @@ def _transform_hrb_data(df):
     out["draw"] = pd.to_numeric(df["stall"], errors="coerce")
     out["odds"] = pd.to_numeric(df["odds"], errors="coerce")
     out["race_name"] = df["race_name"]
+
+    # Official ratings
+    out["officialRating"] = pd.to_numeric(df["official_rating"], errors="coerce")
+    out["medianOR"] = pd.to_numeric(df["MedianOR"], errors="coerce")
+    out["maxOR"] = pd.to_numeric(df["MaxORinRace"], errors="coerce")
 
     # Position: parse numeric, mark non-finishers as NaN
     out["positionOfficial"] = pd.to_numeric(
@@ -700,10 +715,10 @@ class LiteRatingEngine:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # Round distance to nearest 0.5f
+        # Round distance to nearest 0.5f for std_key lookup
+        # Use actual yards (includes rail movements) when available
         if "distanceYards" in df.columns and df["distanceYards"].notna().any():
-            total_yards = df["distance"] * 220
-            df["dist_round"] = (total_yards / 110).round() * 110 / 220
+            df["dist_round"] = (df["distanceYards"] / 110).round() * 110 / 220
         else:
             df["dist_round"] = (df["distance"] * 2).round(0) / 2
 
@@ -1063,24 +1078,46 @@ def format_email_html(df, target_date, run_time):
     ):
         first = race_df.iloc[0]
         dist = first.get("distance", "?")
+        dist_yards = first.get("distanceYards", "?")
         going = first.get("going", "?")
         surface = first.get("raceSurfaceName", "?")
         rc = first.get("raceClass", "?")
         ga = first.get("going_allowance", 0)
         name = first.get("race_name", "")
+        median_or = first.get("medianOR", 0)
+        max_or = first.get("maxOR", 0)
+
+        # Format distance: show yards if available
+        if pd.notna(dist_yards) and dist_yards > 0:
+            dist_str = f"{int(dist_yards)}y ({dist:.1f}f)"
+        elif pd.notna(dist):
+            dist_str = f"{dist}f"
+        else:
+            dist_str = "?"
 
         html += f"<h3>{course} &mdash; Race {int(race_num)}</h3>"
         if name:
             html += f'<p class="meta"><em>{name}</em></p>'
         html += (
-            f'<p class="meta">{dist}f &middot; {going} &middot; '
+            f'<p class="meta">{dist_str} &middot; {going} &middot; '
             f'{surface} &middot; Class {rc}</p>'
-            f'<p class="note">Going allowance: {ga:+.3f} s/f</p>'
         )
+        # OR info line
+        or_parts = []
+        if pd.notna(median_or) and median_or > 0:
+            or_parts.append(f"Median OR: {median_or:.0f}")
+        if pd.notna(max_or) and max_or > 0:
+            or_parts.append(f"Max OR: {max_or:.0f}")
+        or_str = " &middot; ".join(or_parts) if or_parts else ""
+        if or_str:
+            html += f'<p class="note">{or_str} &middot; Going allowance: {ga:+.3f} s/f</p>'
+        else:
+            html += f'<p class="note">Going allowance: {ga:+.3f} s/f</p>'
+
         html += (
             "<table><tr><th>Pos</th><th>Horse</th><th>Age</th>"
-            "<th>Wgt</th><th>Beaten</th><th>Time</th><th>Std</th>"
-            "<th>Alw</th><th>Raw</th>"
+            "<th>Wgt</th><th>OR</th><th>Beaten</th><th>Time</th>"
+            "<th>Std</th><th>Alw</th><th>Raw</th>"
             "<th>WFA</th><th>Figure</th></tr>"
         )
 
@@ -1099,6 +1136,12 @@ def format_email_html(df, target_date, run_time):
             wgt = (
                 f'{int(r["weightCarried"])}'
                 if pd.notna(r.get("weightCarried"))
+                else "-"
+            )
+            or_val = (
+                f'{int(r["officialRating"])}'
+                if pd.notna(r.get("officialRating"))
+                and r.get("officialRating", 0) > 0
                 else "-"
             )
             beaten = (
@@ -1143,7 +1186,8 @@ def format_email_html(df, target_date, run_time):
 
             html += (
                 f"<tr><td>{pos}</td><td><b>{horse}</b></td>"
-                f"<td>{age}</td><td>{wgt}</td><td>{beaten}</td>"
+                f"<td>{age}</td><td>{wgt}</td><td>{or_val}</td>"
+                f"<td>{beaten}</td>"
                 f"<td>{est_time}</td><td>{std_time}</td>"
                 f"<td>{alw}</td>"
                 f'<td>{raw}</td><td>{wfa}</td>'
