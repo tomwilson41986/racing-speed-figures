@@ -523,8 +523,17 @@ def _transform_hrb_data(df):
     out["_raceType"] = df["RaceType"]
 
     # Filter to flat racing only (exclude hurdles, chases, NH flat)
-    is_nh = out["_raceType"].isin(NH_RACE_TYPES)
+    # Use both the explicit set AND keyword matching for robustness
+    _rt_lower = out["_raceType"].astype(str).str.lower()
+    is_nh = out["_raceType"].isin(NH_RACE_TYPES) | _rt_lower.str.contains(
+        r"hurdle|chase|bumper|nh flat|national hunt|n\.?h\.?\s",
+        regex=True, na=False,
+    )
     n_before = len(out)
+    if is_nh.sum() < n_before:
+        # Log which race types survived the filter
+        surviving_types = out.loc[~is_nh, "_raceType"].unique()
+        log.info(f"  Flat race types: {sorted(surviving_types)}")
     out = out[~is_nh].copy()
     log.info(f"  Flat filter: {n_before} → {len(out)} runners (excluded {is_nh.sum()} NH)")
 
@@ -790,6 +799,45 @@ class LiteRatingEngine:
     def _compute_winner_figures(self, df):
         """Compute raw speed figures for race winners."""
         log.info("Computing winner figures...")
+
+        # Diagnostic: explain which condition(s) fail
+        all_winners = df[df["positionOfficial"] == 1]
+        n_winners = len(all_winners)
+        if n_winners == 0:
+            log.warning(
+                "  No runners with positionOfficial==1 found. "
+                "Unique positions: "
+                f"{sorted(df['positionOfficial'].dropna().unique()[:10].tolist())}"
+            )
+        else:
+            has_time = all_winners["finishingTime"].notna() & (
+                all_winners["finishingTime"] > 0
+            )
+            has_std = all_winners["std_key"].isin(self.std_times)
+            log.info(
+                f"  {n_winners} winners: "
+                f"{has_time.sum()} with finishingTime, "
+                f"{has_std.sum()} with std_key match"
+            )
+            if has_time.sum() == 0:
+                log.info(
+                    "  finishingTime values (first 5 winners): "
+                    f"{all_winners['finishingTime'].head().tolist()}"
+                )
+            if has_std.sum() == 0:
+                log.info(
+                    "  std_keys with no match (first 5): "
+                    f"{all_winners['std_key'].head().tolist()}"
+                )
+                # Show what keys exist in std_times for these courses
+                for crs in all_winners["courseName"].unique():
+                    avail = [
+                        k for k in self.std_times if k.startswith(crs + "_")
+                    ]
+                    log.info(
+                        f"  Standard times for {crs}: "
+                        f"{avail[:5]} ({len(avail)} total)"
+                    )
 
         w = df[
             (df["positionOfficial"] == 1)
