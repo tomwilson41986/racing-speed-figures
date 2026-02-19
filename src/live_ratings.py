@@ -40,6 +40,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(__file__))
 from speed_figures import (
     BASE_RATING,
+    BASE_WEIGHT_LBS,
     SECONDS_PER_LENGTH,
     LBS_PER_SECOND_5F,
     BENCHMARK_FURLONGS,
@@ -697,6 +698,7 @@ class LiteRatingEngine:
         df = self._estimate_going_allowances(df)
         df = self._compute_winner_figures(df)
         df = self._extend_to_all_runners(df)
+        df = self._apply_weight_adjustment(df)
         df = self._apply_wfa(df)
         df = self._compute_sex_allowance(df)
         df = self._apply_calibration(df)
@@ -952,6 +954,33 @@ class LiteRatingEngine:
         df.loc[df_in.index, "standard_time"] = df_in["standard_time"]
         df.loc[df_in.index, "est_time"] = df_in["est_time"]
         log.info(f"  All-runner figures: {df['raw_figure'].notna().sum()}")
+        return df
+
+    def _apply_weight_adjustment(self, df):
+        """
+        Adjust for weight carried (matching training pipeline Stage 6).
+
+        figure += (weightCarried - BASE_WEIGHT_LBS)
+
+        A horse carrying more than 9st 0lb (126 lbs) gets a positive
+        adjustment — it achieved its time despite the extra burden.
+        """
+        log.info("Applying weight adjustment...")
+
+        df["weight_adj"] = 0.0
+        has_w = df["weightCarried"].notna() & df["raw_figure"].notna()
+        if has_w.any():
+            df.loc[has_w, "weight_adj"] = (
+                df.loc[has_w, "weightCarried"] - BASE_WEIGHT_LBS
+            )
+            df["raw_figure"] = df["raw_figure"] + df["weight_adj"]
+            log.info(
+                f"  {has_w.sum()} runners adjusted "
+                f"(base={BASE_WEIGHT_LBS} lbs, "
+                f"range: {df.loc[has_w, 'weight_adj'].min():+.0f} to "
+                f"{df.loc[has_w, 'weight_adj'].max():+.0f})"
+            )
+
         return df
 
     def _apply_wfa(self, df):
