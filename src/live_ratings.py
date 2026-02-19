@@ -11,7 +11,7 @@ Scheduled to run at 6pm and 10pm GMT daily.
 Configuration (environment variables):
   HRB_USER         HorseRaceBase username
   HRB_PASS         HorseRaceBase password
-  SMTP_USER        Sender email address (Gmail)
+  SMTP_USER        Sender email address (e.g. racingsquared@gmail.com)
   SMTP_PASS        Gmail App Password (16-char)
 
 Usage:
