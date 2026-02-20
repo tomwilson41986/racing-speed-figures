@@ -1171,7 +1171,7 @@ def format_email_html(df, target_date, run_time):
         html += (
             "<table><tr><th>Pos</th><th>Horse</th><th>Age</th>"
             "<th>Wgt</th><th>OR</th><th>Beaten</th><th>Time</th>"
-            "<th>Std</th><th>Alw</th><th>Raw</th>"
+            "<th>Alw</th>"
             "<th>WFA</th><th>Figure</th></tr>"
         )
 
@@ -1209,21 +1209,11 @@ def format_email_html(df, target_date, run_time):
                 if pd.notna(r.get("est_time"))
                 else "-"
             )
-            std_time = (
-                f'{r["standard_time"]:.2f}'
-                if pd.notna(r.get("standard_time"))
-                else "-"
-            )
             alw = (
                 f'{int(r["sex_allowance"])}'
                 if pd.notna(r.get("sex_allowance"))
                 and r.get("sex_allowance", 0) > 0
                 else ""
-            )
-            raw = (
-                f'{r["raw_figure"]:.0f}'
-                if pd.notna(r.get("raw_figure"))
-                else "-"
             )
             wfa = (
                 f'+{r["wfa_adj"]:.0f}'
@@ -1242,9 +1232,9 @@ def format_email_html(df, target_date, run_time):
                 f"<tr><td>{pos}</td><td><b>{horse}</b></td>"
                 f"<td>{age}</td><td>{wgt}</td><td>{or_val}</td>"
                 f"<td>{beaten}</td>"
-                f"<td>{est_time}</td><td>{std_time}</td>"
+                f"<td>{est_time}</td>"
                 f"<td>{alw}</td>"
-                f'<td>{raw}</td><td>{wfa}</td>'
+                f'<td>{wfa}</td>'
                 f'<td class="{cls}">{fig_str}</td></tr>'
             )
 
