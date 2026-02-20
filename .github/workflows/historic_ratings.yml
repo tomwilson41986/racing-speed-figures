@@ -1,0 +1,121 @@
+name: Historic Ratings (Manual Test)
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Race date to process (YYYY-MM-DD)'
+        required: true
+        type: string
+      send_email:
+        description: 'Send email with results?'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  historic-ratings:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Verify historic CSV exists
+        run: |
+          DATE="${{ github.event.inputs.date }}"
+          # Try both zero-padded and non-padded filenames
+          PADDED="data/historic/results_${DATE}.csv"
+          # Strip leading zeros from month/day
+          ALT_DATE=$(python3 -c "
+          from datetime import datetime
+          d = datetime.strptime('${DATE}', '%Y-%m-%d')
+          print(f'{d.year}-{d.month}-{d.day}')
+          ")
+          NONPADDED="data/historic/results_${ALT_DATE}.csv"
+
+          if [ -f "$PADDED" ]; then
+            echo "Found: $PADDED"
+            wc -l "$PADDED"
+          elif [ -f "$NONPADDED" ]; then
+            echo "Found: $NONPADDED"
+            wc -l "$NONPADDED"
+          else
+            echo "ERROR: No results file found for ${DATE}"
+            echo "Expected one of:"
+            echo "  $PADDED"
+            echo "  $NONPADDED"
+            echo ""
+            echo "Available files in data/historic/:"
+            ls -la data/historic/ 2>/dev/null || echo "  (folder does not exist)"
+            echo ""
+            echo "Upload the HRB CSV to data/historic/ first, then re-run."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pandas numpy scikit-learn requests beautifulsoup4
+
+      - name: Extract data archives
+        run: |
+          sudo apt-get update && sudo apt-get install -y p7zip-full
+          cd data/raw
+          for f in *.7z; do
+            [ -f "$f" ] && 7z x -y "$f"
+          done
+
+      - name: Run full pipeline (generate standard times)
+        run: python src/speed_figures.py
+
+      - name: Run historic ratings
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+        run: |
+          DATE="${{ github.event.inputs.date }}"
+          SEND_EMAIL="${{ github.event.inputs.send_email }}"
+          if [ "$SEND_EMAIL" = "true" ]; then
+            python src/live_ratings.py --date "$DATE"
+          else
+            python src/live_ratings.py --date "$DATE" --no-email
+          fi
+
+      - name: Show results summary
+        run: |
+          DATE="${{ github.event.inputs.date }}"
+          CSV="data/live/ratings_${DATE}.csv"
+          if [ -f "$CSV" ]; then
+            echo "=== Ratings Summary ==="
+            python3 -c "
+          import pandas as pd
+          df = pd.read_csv('${CSV}')
+          rated = df[df['figure_calibrated'].notna()]
+          print(f'Runners rated: {len(rated)}/{len(df)}')
+          print(f'Races: {df[\"raceNumber\"].nunique()}')
+          print(f'Courses: {\", \".join(df[\"courseName\"].unique())}')
+          print()
+          print('Top 10:')
+          top = rated.nlargest(10, 'figure_calibrated')
+          for _, r in top.iterrows():
+              print(f'  {r[\"horseName\"]:25s}  {r[\"courseName\"]:15s}  R{int(r[\"raceNumber\"])}  '
+                    f'Pos {int(r[\"positionOfficial\"])}  OR {int(r[\"officialRating\"]) if r[\"officialRating\"] > 0 else \"-\":>3}  '
+                    f'Wgt {int(r[\"weightCarried\"])}  Fig {r[\"figure_calibrated\"]:.0f}')
+          "
+          else
+            echo "No ratings CSV generated"
+          fi
+
+      - name: Upload ratings artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: historic-ratings-${{ github.event.inputs.date }}
+          path: |
+            data/live/ratings_${{ github.event.inputs.date }}.csv
+            data/live/ratings_${{ github.event.inputs.date }}.html
+          retention-days: 90

@@ -574,12 +574,37 @@ def _transform_hrb_data(df):
     return out
 
 
+HISTORIC_DIR = ROOT_DIR / "data" / "historic"
+
+
 def _load_manual_csv(target_date):
-    """Load results from a manually-placed CSV file."""
+    """
+    Load results from a manually-placed CSV file.
+
+    Search order:
+      1. data/live/<date>.csv  or  data/live/today.csv
+      2. data/historic/results_<date>.csv  (zero-padded and non-padded)
+    """
     LIVE_DIR.mkdir(parents=True, exist_ok=True)
 
-    for filename in [f"{target_date}.csv", "today.csv"]:
-        path = LIVE_DIR / filename
+    # Build candidate paths in priority order
+    candidates = [
+        LIVE_DIR / f"{target_date}.csv",
+        LIVE_DIR / "today.csv",
+    ]
+
+    # Historic folder: try both zero-padded (2026-02-18) and
+    # non-padded (2026-2-18) since HRB exports use non-padded dates
+    candidates.append(HISTORIC_DIR / f"results_{target_date}.csv")
+    try:
+        d = datetime.strptime(target_date, "%Y-%m-%d")
+        alt_date = f"{d.year}-{d.month}-{d.day}"
+        if alt_date != target_date:
+            candidates.append(HISTORIC_DIR / f"results_{alt_date}.csv")
+    except ValueError:
+        pass
+
+    for path in candidates:
         if path.exists():
             log.info(f"Loading manual CSV: {path}")
             df = pd.read_csv(path, low_memory=False)
