@@ -484,7 +484,10 @@ def _transform_hrb_data(df):
     log.info("Transforming HRB data...")
 
     out = pd.DataFrame()
-    out["meetingDate"] = df["racedate"]
+    # Normalize date format to YYYY-MM-DD (HRB can use DD/MM/YYYY or YYYY-MM-DD)
+    out["meetingDate"] = pd.to_datetime(
+        df["racedate"], dayfirst=True, errors="coerce"
+    ).dt.strftime("%Y-%m-%d")
     out["courseName"] = df["track"].str.strip().str.upper().map(
         lambda c: HRB_TO_TIMEFORM_COURSE.get(c, c)
     )
@@ -771,7 +774,7 @@ class LiteRatingEngine:
         )
 
         df["month"] = pd.to_datetime(
-            df["meetingDate"], errors="coerce"
+            df["meetingDate"], errors="coerce", format="%Y-%m-%d"
         ).dt.month
 
         return df
