@@ -104,6 +104,14 @@ GOING_GA_ESTIMATES = {
     "Fast": -0.08,
 }
 
+# ─── Beaten-distance text codes (lengths) ─────────────────────────
+BEATEN_DIST_CODES = {
+    "NK": 0.15, "nk": 0.15,     # Neck
+    "HD": 0.10, "hd": 0.10,     # Head
+    "SH": 0.05, "sh": 0.05,     # Short Head
+    "NSE": 0.03, "nse": 0.03,   # Nose
+}
+
 # AW surface types from HorseRaceBase
 AW_SURFACE_TYPES = {"Polytrack", "Tapeta", "Fibresand"}
 
@@ -486,7 +494,7 @@ def _transform_hrb_data(df):
     out = pd.DataFrame()
     # Normalize date format to YYYY-MM-DD (HRB can use DD/MM/YYYY or YYYY-MM-DD)
     out["meetingDate"] = pd.to_datetime(
-        df["racedate"], dayfirst=True, errors="coerce"
+        df["racedate"], dayfirst=True, format="mixed", errors="coerce"
     ).dt.strftime("%Y-%m-%d")
     out["courseName"] = df["track"].str.strip().str.upper().map(
         lambda c: HRB_TO_TIMEFORM_COURSE.get(c, c)
@@ -518,6 +526,45 @@ def _transform_hrb_data(df):
     out["weightCarried"] = pd.to_numeric(df["pounds"], errors="coerce")
     out["finishingTime"] = pd.to_numeric(df["comptime_numeric"], errors="coerce")
     out["distanceCumulative"] = pd.to_numeric(df["TotalDstBt"], errors="coerce")
+
+    # Position: parse numeric, mark non-finishers as NaN
+    # (needed early for TotalDstBt reconstruction below)
+    out["positionOfficial"] = pd.to_numeric(
+        df["placing_numerical"], errors="coerce"
+    )
+
+    # Reconstruct cumulative beaten distance from individual distbt when
+    # TotalDstBt is missing.  HRB sometimes publishes individual margins
+    # before cumulative distances are available.
+    if "distbt" in df.columns:
+        def _parse_distbt(val):
+            if pd.isna(val):
+                return 0.0
+            val = str(val).strip()
+            if val in BEATEN_DIST_CODES:
+                return BEATEN_DIST_CODES[val]
+            try:
+                return float(val)
+            except ValueError:
+                return 0.0
+
+        needs_rebuild = (
+            out["distanceCumulative"].isna()
+            & out["positionOfficial"].notna()
+            & (out["positionOfficial"] > 1)
+        )
+        if needs_rebuild.any():
+            log.info(
+                f"  Rebuilding TotalDstBt from distbt for "
+                f"{needs_rebuild.sum()} runners"
+            )
+            parsed = df["distbt"].apply(_parse_distbt)
+            # Group by race (racedate + track + racetime) and cumsum
+            race_key = df["racedate"].astype(str) + "_" + df["track"].astype(str) + "_" + df["racetime"].astype(str)
+            cumulative = parsed.groupby(race_key).cumsum()
+            # Only fill where TotalDstBt is missing AND horse finished
+            out.loc[needs_rebuild, "distanceCumulative"] = cumulative.loc[needs_rebuild]
+
     out["draw"] = pd.to_numeric(df["stall"], errors="coerce")
     out["odds"] = pd.to_numeric(df["odds"], errors="coerce")
     out["race_name"] = df["race_name"]
@@ -526,11 +573,6 @@ def _transform_hrb_data(df):
     out["officialRating"] = pd.to_numeric(df["official_rating"], errors="coerce")
     out["medianOR"] = pd.to_numeric(df["MedianOR"], errors="coerce")
     out["maxOR"] = pd.to_numeric(df["MaxORinRace"], errors="coerce")
-
-    # Position: parse numeric, mark non-finishers as NaN
-    out["positionOfficial"] = pd.to_numeric(
-        df["placing_numerical"], errors="coerce"
-    )
 
     # Surface: map AW surfaces, everything else is Turf
     out["raceSurfaceName"] = df["surfacetype"].apply(
@@ -569,6 +611,44 @@ def _transform_hrb_data(df):
 
     # Drop the temporary column
     out = out.drop(columns=["_raceType"])
+
+    # Filter out races that haven't run yet.
+    # At the 6pm run, later races may appear in HRB with no results:
+    # comptime_numeric=0, no placing, no beaten distances.
+    # Detect by checking if the race has a valid winner time.
+    race_key = (
+        out["meetingDate"].astype(str) + "_"
+        + out["courseName"].astype(str) + "_"
+        + out["raceTime"].astype(str)
+    )
+    # A race has "run" if at least one runner has finishingTime > 0
+    # and a valid positionOfficial
+    has_result = (
+        (out["finishingTime"] > 0) & out["positionOfficial"].notna()
+    )
+    races_with_results = set(race_key[has_result])
+    race_has_run = race_key.isin(races_with_results)
+
+    n_unrun = (~race_has_run).sum()
+    if n_unrun > 0:
+        unrun_races = race_key[~race_has_run].unique()
+        log.info(
+            f"  Excluded {n_unrun} runners from {len(unrun_races)} "
+            f"unrun race(s)"
+        )
+        out = out[race_has_run].copy()
+
+    # Warn if finishers are missing beaten distances (data quality)
+    finishers_no_beaten = (
+        out["positionOfficial"].notna()
+        & (out["positionOfficial"] > 1)
+        & out["distanceCumulative"].isna()
+    )
+    if finishers_no_beaten.any():
+        log.warning(
+            f"  {finishers_no_beaten.sum()} finishers missing beaten "
+            f"distance — figures will be approximate"
+        )
 
     log.info(
         f"  Final: {len(out)} runners across "
