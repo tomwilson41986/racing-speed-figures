@@ -62,7 +62,7 @@ OUTPUT_DIR = ROOT_DIR / "output"
 LIVE_DIR = ROOT_DIR / "data" / "live"
 
 # ─── Configuration (environment variables) ───────────────────────────
-RECIPIENT = os.environ.get("RECIPIENT", "tomwilson41986@gmail.com")
+RECIPIENT = os.environ.get("RECIPIENT", "racingsquared@gmail.com")
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
