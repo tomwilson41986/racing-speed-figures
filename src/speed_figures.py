@@ -109,34 +109,83 @@ SEX_ALLOWANCE_WINTER = 5   # lbs, October–April
 # Female horse-gender codes in the data
 FEMALE_GENDERS = {"f", "m"}  # f = filly, m = mare
 
-# ── Weight-for-Age tables (BHA 2025 unified European scale, approximate) ──
-# Keys: month.  Values: {distance_furlongs: allowance_lbs}
+# ── Weight-for-Age tables (empirical, derived from Timeform 2015-2023) ──
+# Separate tables for Turf and All-Weather, as AW WFA is consistently
+# higher (younger horses are at a greater disadvantage on artificial
+# surfaces).  Keys: month → {distance_furlongs: allowance_lbs}.
+#
+# Methodology: calibrated raw_figure + weight_adj against Timeform's
+# timefigure using 4-6yo as the zero baseline.  The mean residual for
+# 2yo/3yo at each (month, distance) cell is the empirical WFA.
+# Smoothed with a 3-month weighted average and rounded to integers.
+# Negative residuals (younger horse outperforms baseline) are capped at 0.
 
-WFA_3YO = {
-    1:  {5: 11, 6: 12, 7: 13, 8: 14, 10: 15, 12: 16, 14: 17, 16: 18},
-    2:  {5: 11, 6: 12, 7: 13, 8: 14, 10: 15, 12: 16, 14: 17, 16: 18},
-    3:  {5: 10, 6: 11, 7: 12, 8: 13, 10: 14, 12: 15, 14: 16, 16: 17},
-    4:  {5: 9,  6: 10, 7: 11, 8: 12, 10: 13, 12: 14, 14: 15, 16: 16},
-    5:  {5: 7,  6: 8,  7: 9,  8: 10, 10: 11, 12: 12, 14: 13, 16: 14},
-    6:  {5: 5,  6: 6,  7: 7,  8: 8,  10: 9,  12: 10, 14: 11, 16: 12},
-    7:  {5: 3,  6: 4,  7: 5,  8: 7,  10: 8,  12: 9,  14: 10, 16: 11},
-    8:  {5: 2,  6: 3,  7: 4,  8: 5,  10: 6,  12: 7,  14: 8,  16: 9},
-    9:  {5: 0,  6: 1,  7: 2,  8: 3,  10: 5,  12: 6,  14: 7,  16: 8},
-    10: {5: 0,  6: 0,  7: 1,  8: 2,  10: 3,  12: 4,  14: 5,  16: 6},
-    11: {5: 0,  6: 0,  7: 0,  8: 1,  10: 2,  12: 3,  14: 4,  16: 5},
-    12: {5: 0,  6: 0,  7: 0,  8: 1,  10: 2,  12: 3,  14: 4,  16: 5},
+WFA_3YO_TURF = {
+    1:  {5: 10, 6: 10, 7: 8,  8: 9,  10: 8,  12: 5},
+    2:  {5: 10, 6: 10, 7: 8,  8: 9,  10: 8,  12: 5},
+    3:  {5: 10, 6: 10, 7: 8,  8: 9,  10: 8,  12: 4},
+    4:  {5: 9,  6: 9,  7: 7,  8: 8,  10: 9,  12: 4},
+    5:  {5: 7,  6: 8,  7: 5,  8: 10, 10: 9,  12: 3},
+    6:  {5: 8,  6: 5,  7: 3,  8: 7,  10: 3,  12: 6,  14: 4},
+    7:  {5: 7,  6: 3,  7: 0,  8: 3,  10: 1,  12: 4,  14: 0,  16: 0},
+    8:  {5: 6,  6: 2,  7: 0,  8: 2,  10: 1,  12: 0,  14: 3,  16: 0},
+    9:  {5: 5,  6: 5,  7: 1,  8: 5,  10: 4,  12: 2,  14: 3,  16: 2},
+    10: {5: 5,  6: 4,  7: 4,  8: 4,  10: 4,  12: 4,  14: 4,  16: 4},
+    11: {5: 3,  6: 3,  7: 2,  8: 4,  10: 4,  12: 3,  14: 3,  16: 3},
+    12: {5: 3,  6: 3,  7: 2,  8: 4,  10: 4,  12: 3,  14: 3,  16: 3},
 }
 
-WFA_2YO = {
-    5:  {5: 24, 6: 26, 7: 28, 8: 30},
-    6:  {5: 20, 6: 22, 7: 24, 8: 26},
-    7:  {5: 15, 6: 17, 7: 19, 8: 21},
-    8:  {5: 12, 6: 13, 7: 15, 8: 17},
-    9:  {5: 9,  6: 10, 7: 12, 8: 14},
-    10: {5: 6,  6: 8,  7: 10, 8: 12},
-    11: {5: 5,  6: 7,  7: 9,  8: 11},
-    12: {5: 5,  6: 7,  7: 9,  8: 11},
+WFA_3YO_AW = {
+    1:  {5: 13, 6: 12, 7: 8,  8: 10, 10: 6,  12: 9},
+    2:  {5: 14, 6: 12, 7: 10, 8: 11, 10: 6,  12: 10},
+    3:  {5: 13, 6: 11, 7: 8,  8: 9,  10: 6,  12: 4},
+    4:  {5: 14, 6: 15, 7: 8,  8: 11, 10: 7,  12: 7},
+    5:  {5: 9,  6: 10, 7: 9,  8: 8,  10: 7,  12: 5},
+    6:  {5: 9,  6: 12, 7: 11, 8: 11, 10: 5,  12: 5},
+    7:  {5: 8,  6: 9,  7: 8,  8: 10, 10: 5,  12: 2,  14: 0},
+    8:  {5: 6,  6: 7,  7: 5,  8: 6,  10: 0,  12: 1,  14: 0,  16: 0},
+    9:  {5: 10, 6: 8,  7: 3,  8: 3,  10: 0,  12: 0,  14: 0,  16: 0},
+    10: {5: 9,  6: 7,  7: 4,  8: 3,  10: 0,  12: 1,  14: 0,  16: 0},
+    11: {5: 8,  6: 6,  7: 3,  8: 4,  10: 0,  12: 1,  14: 0,  16: 0},
+    12: {5: 7,  6: 6,  7: 3,  8: 2,  10: 0,  12: 0,  14: 0,  16: 0},
 }
+
+WFA_2YO_TURF = {
+    3:  {5: 30, 6: 29, 7: 24},
+    4:  {5: 20, 6: 29, 7: 20},
+    5:  {5: 19, 6: 22, 7: 12},
+    6:  {5: 20, 6: 18, 7: 15, 8: 17},
+    7:  {5: 15, 6: 15, 7: 16, 8: 17},
+    8:  {5: 12, 6: 14, 7: 11, 8: 12},
+    9:  {5: 11, 6: 13, 7: 14, 8: 15, 10: 16},
+    10: {5: 10, 6: 11, 7: 13, 8: 15, 10: 14},
+    11: {5: 10, 6: 13, 7: 10, 8: 11, 10: 14},
+    12: {5: 10, 6: 13, 7: 10, 8: 11, 10: 14},
+}
+
+WFA_2YO_AW = {
+    3:  {5: 33, 6: 30, 7: 25},
+    4:  {5: 30, 6: 27, 7: 25},
+    5:  {5: 28, 6: 27, 7: 25},
+    6:  {5: 28, 6: 26, 7: 25},
+    7:  {5: 20, 6: 24, 7: 22, 8: 19},
+    8:  {5: 19, 6: 16, 7: 16, 8: 19},
+    9:  {5: 18, 6: 17, 7: 15, 8: 16, 10: 15},
+    10: {5: 18, 6: 17, 7: 15, 8: 16, 10: 15},
+    11: {5: 16, 6: 16, 7: 13, 8: 13, 10: 14},
+    12: {5: 16, 6: 15, 7: 11, 8: 12, 10: 12},
+}
+
+# ── Older horse decline (empirical, Turf only) ──
+# On Turf, horses aged 7+ show a statistically significant decline in
+# performance relative to the 4-6yo baseline.  On AW the decline is
+# within noise and not modelled.  Values are NEGATIVE (subtracted from
+# figure to reflect reduced ability).
+OLDER_DECLINE_TURF = {7: -1, 8: -2, 9: -3, 10: -4, 11: -6, 12: -6}
+
+# Legacy aliases — kept so callers that import the old names still work.
+WFA_3YO = WFA_3YO_TURF
+WFA_2YO = WFA_2YO_TURF
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -666,23 +715,37 @@ def apply_weight_adjustment(df):
 # STAGE 7 — WEIGHT FOR AGE  (WFA)
 # ═════════════════════════════════════════════════════════════════════
 
-def get_wfa_allowance(age, month, distance):
+def get_wfa_allowance(age, month, distance, surface=None):
     """
-    WFA allowance in lbs for a given age, month, and distance.
+    WFA allowance in lbs for a given age, month, distance, and surface.
     Returns the amount to ADD to the figure.
 
+    Uses surface-specific empirical tables derived from Timeform data.
+    Falls back to Turf tables if surface is not specified.
+    Includes older-horse decline adjustment for ages 7+ on Turf.
     Uses linear interpolation between distance brackets.
     """
     if pd.isna(age) or pd.isna(month) or pd.isna(distance):
         return 0.0
 
     age, month, distance = int(age), int(month), float(distance)
+    is_aw = surface is not None and "Weather" in str(surface)
+
+    # Older horse decline (Turf only, ages 7+)
+    if age >= 7 and not is_aw:
+        return float(OLDER_DECLINE_TURF.get(min(age, 12), -6))
 
     if age >= 4:
         return 0.0
 
-    table = WFA_3YO if age == 3 else (WFA_2YO if age == 2 else None)
-    if table is None or month not in table:
+    if age == 3:
+        table = WFA_3YO_AW if is_aw else WFA_3YO_TURF
+    elif age == 2:
+        table = WFA_2YO_AW if is_aw else WFA_2YO_TURF
+    else:
+        return 0.0
+
+    if month not in table:
         return 0.0
 
     mt = table[month]
@@ -706,12 +769,16 @@ def apply_wfa_adjustment(df):
     """
     Weight-for-age adjustment.
     Younger horses (2yo, 3yo) receive an upward adjustment that
-    compensates for physical immaturity.
+    compensates for physical immaturity.  Older horses (7+) on Turf
+    receive a small downward adjustment for age-related decline.
     """
     print("\n  Applying WFA adjustment...")
 
     df["wfa_adj"] = df.apply(
-        lambda r: get_wfa_allowance(r["horseAge"], r["month"], r["distance"]),
+        lambda r: get_wfa_allowance(
+            r["horseAge"], r["month"], r["distance"],
+            r.get("raceSurfaceName"),
+        ),
         axis=1,
     )
 

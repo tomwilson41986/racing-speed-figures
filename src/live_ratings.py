@@ -1097,7 +1097,8 @@ class LiteRatingEngine:
 
         df["wfa_adj"] = df.apply(
             lambda r: get_wfa_allowance(
-                r.get("horseAge"), r.get("month"), r.get("distance")
+                r.get("horseAge"), r.get("month"), r.get("distance"),
+                r.get("raceSurfaceName"),
             ),
             axis=1,
         )
