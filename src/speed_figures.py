@@ -641,13 +641,19 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict):
 
 def apply_weight_adjustment(df):
     """
-    Adjust for weight carried.
+    Adjust for weight carried (allocated weight).
 
     figure += (weight_carried − base_weight)
 
     A horse carrying more than 9st 0lb gets a positive adjustment
     (it achieved its time despite carrying extra weight, so it is
     credited for the additional burden).
+
+    NOTE: weightCarried should be the ALLOCATED weight (before any
+    jockey claim deduction).  In the live engine (HRB data) this is
+    computed as pounds + jockeys_claim.  In the Timeform pipeline data
+    there is no jockey claim column, so weightCarried is the actual
+    weight carried — a known limitation.
     """
     print("\n  Applying weight-carried adjustment...")
 

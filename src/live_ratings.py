@@ -480,7 +480,7 @@ def _transform_hrb_data(df):
     horse_name          → horseName
     horse_age           → horseAge
     HorseSex            → horseGender
-    pounds              → weightCarried
+    pounds + jockeys_claim → weightCarried (allocated weight before claim)
     comptime_numeric    → finishingTime
     TotalDstBt          → distanceCumulative
     CardNo              → raceNumber
@@ -523,7 +523,12 @@ def _transform_hrb_data(df):
     out["numberOfRunners"] = pd.to_numeric(df["number_of_runners"], errors="coerce")
     out["horseName"] = df["horse_name"]
     out["horseAge"] = pd.to_numeric(df["horse_age"], errors="coerce")
-    out["weightCarried"] = pd.to_numeric(df["pounds"], errors="coerce")
+    # Weight carried = allocated weight (pounds + jockey's claim).
+    # HRB's "pounds" field has the claim already subtracted, so we add it
+    # back to get the true allocated weight for figure computation.
+    pounds = pd.to_numeric(df["pounds"], errors="coerce")
+    jockeys_claim = pd.to_numeric(df.get("jockeys_claim", 0), errors="coerce").fillna(0)
+    out["weightCarried"] = pounds + jockeys_claim
     out["finishingTime"] = pd.to_numeric(df["comptime_numeric"], errors="coerce")
     out["distanceCumulative"] = pd.to_numeric(df["TotalDstBt"], errors="coerce")
 
@@ -1096,12 +1101,13 @@ class LiteRatingEngine:
 
     def _apply_weight_adjustment(self, df):
         """
-        Adjust for weight carried (matching training pipeline Stage 6).
+        Adjust for allocated weight (matching training pipeline Stage 6).
 
         figure += (weightCarried - BASE_WEIGHT_LBS)
 
-        A horse carrying more than 9st 0lb (126 lbs) gets a positive
-        adjustment — it achieved its time despite the extra burden.
+        weightCarried is the ALLOCATED weight (pounds + jockeys_claim),
+        not the actual carried weight after claim deduction.  A horse
+        allocated more than 9st 0lb (126 lbs) gets a positive adjustment.
         """
         log.info("Applying weight adjustment...")
 
