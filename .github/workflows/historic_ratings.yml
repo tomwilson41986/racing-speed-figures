@@ -69,6 +69,15 @@ jobs:
             [ -f "$f" ] && 7z x -y "$f"
           done
 
+      - name: Verify secrets are configured
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+        run: |
+          echo "=== Secret Configuration Check ==="
+          if [ -z "$SMTP_USER" ]; then echo "WARNING: SMTP_USER secret is NOT set"; else echo "OK: SMTP_USER is set"; fi
+          if [ -z "$SMTP_PASS" ]; then echo "WARNING: SMTP_PASS secret is NOT set"; else echo "OK: SMTP_PASS is set"; fi
+
       - name: Run full pipeline (generate standard times)
         run: python src/speed_figures.py
 

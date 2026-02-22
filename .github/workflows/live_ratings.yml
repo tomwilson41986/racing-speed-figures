@@ -13,6 +13,11 @@ on:
         description: 'Target date (YYYY-MM-DD), leave empty for today'
         required: false
         default: ''
+      send_email:
+        description: 'Send email with results?'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   live-ratings:
@@ -28,12 +33,10 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install pandas numpy scikit-learn requests beautifulsoup4
+        run: pip install pandas numpy scikit-learn requests beautifulsoup4
 
       - name: Extract data archives
         run: |
-          # Extract the .7z archives needed for standard times / calibration
           sudo apt-get update && sudo apt-get install -y p7zip-full
           cd data/raw
           for f in *.7z; do
@@ -65,10 +68,51 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
         run: |
           DATE_ARG="${{ github.event.inputs.date }}"
-          if [ -n "$DATE_ARG" ]; then
-            python src/live_ratings.py --date "$DATE_ARG"
+          SEND_EMAIL="${{ github.event.inputs.send_email }}"
+          # Default to sending email for scheduled runs
+          if [ -z "$SEND_EMAIL" ]; then
+            SEND_EMAIL="true"
+          fi
+          if [ "$SEND_EMAIL" = "true" ]; then
+            if [ -n "$DATE_ARG" ]; then
+              python src/live_ratings.py --date "$DATE_ARG"
+            else
+              python src/live_ratings.py
+            fi
           else
-            python src/live_ratings.py
+            if [ -n "$DATE_ARG" ]; then
+              python src/live_ratings.py --date "$DATE_ARG" --no-email
+            else
+              python src/live_ratings.py --no-email
+            fi
+          fi
+
+      - name: Show results summary
+        run: |
+          DATE_ARG="${{ github.event.inputs.date }}"
+          if [ -z "$DATE_ARG" ]; then
+            DATE_ARG=$(date -u +%Y-%m-%d)
+          fi
+          CSV="data/live/ratings_${DATE_ARG}.csv"
+          if [ -f "$CSV" ]; then
+            echo "=== Ratings Summary ==="
+            python3 -c "
+          import pandas as pd
+          df = pd.read_csv('${CSV}')
+          rated = df[df['figure_calibrated'].notna()]
+          print(f'Runners rated: {len(rated)}/{len(df)}')
+          print(f'Races: {df[\"raceNumber\"].nunique()}')
+          print(f'Courses: {\", \".join(df[\"courseName\"].unique())}')
+          print()
+          print('Top 10:')
+          top = rated.nlargest(10, 'figure_calibrated')
+          for _, r in top.iterrows():
+              print(f'  {r[\"horseName\"]:25s}  {r[\"courseName\"]:15s}  R{int(r[\"raceNumber\"])}  '
+                    f'Pos {int(r[\"positionOfficial\"])}  OR {int(r[\"officialRating\"]) if r[\"officialRating\"] > 0 else \"-\":>3}  '
+                    f'Wgt {int(r[\"weightCarried\"])}  Fig {r[\"figure_calibrated\"]:.0f}')
+          "
+          else
+            echo "No ratings CSV generated"
           fi
 
       - name: Upload ratings artifact
@@ -77,4 +121,4 @@ jobs:
         with:
           name: ratings-${{ github.run_id }}
           path: data/live/
-          retention-days: 30
+          retention-days: 90

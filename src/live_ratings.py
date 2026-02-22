@@ -62,7 +62,7 @@ OUTPUT_DIR = ROOT_DIR / "output"
 LIVE_DIR = ROOT_DIR / "data" / "live"
 
 # ─── Configuration (environment variables) ───────────────────────────
-RECIPIENT = os.environ.get("RECIPIENT", "tomwilson41986@gmail.com")
+RECIPIENT = os.environ.get("RECIPIENT", "racingsquared@gmail.com")
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
@@ -1187,7 +1187,7 @@ def format_email_html(df, target_date, run_time):
     """
 
     # ── Top performers ──
-    rated = df.dropna(subset=["figure_calibrated"])
+    rated = df[df["figure_calibrated"].notna() & (df["figure_calibrated"] >= 0)]
     top = rated.nlargest(10, "figure_calibrated")
     if len(top) > 0:
         html += '<div class="box"><h2>Top Performers</h2><table>'
@@ -1304,7 +1304,7 @@ def format_email_html(df, target_date, run_time):
                 else ""
             )
             fig = r.get("figure_calibrated")
-            if pd.notna(fig):
+            if pd.notna(fig) and fig >= 0:
                 fig_str = f"{fig:.0f}"
                 cls = _fig_class(fig)
             else:
