@@ -480,7 +480,7 @@ def _transform_hrb_data(df):
     horse_name          → horseName
     horse_age           → horseAge
     HorseSex            → horseGender
-    pounds              → weightCarried
+    pounds + jockeys_claim → weightCarried (allocated weight before claim)
     comptime_numeric    → finishingTime
     TotalDstBt          → distanceCumulative
     CardNo              → raceNumber
@@ -523,7 +523,12 @@ def _transform_hrb_data(df):
     out["numberOfRunners"] = pd.to_numeric(df["number_of_runners"], errors="coerce")
     out["horseName"] = df["horse_name"]
     out["horseAge"] = pd.to_numeric(df["horse_age"], errors="coerce")
-    out["weightCarried"] = pd.to_numeric(df["pounds"], errors="coerce")
+    # Weight carried = allocated weight (pounds + jockey's claim).
+    # HRB's "pounds" field has the claim already subtracted, so we add it
+    # back to get the true allocated weight for figure computation.
+    pounds = pd.to_numeric(df["pounds"], errors="coerce")
+    jockeys_claim = pd.to_numeric(df.get("jockeys_claim", 0), errors="coerce").fillna(0)
+    out["weightCarried"] = pounds + jockeys_claim
     out["finishingTime"] = pd.to_numeric(df["comptime_numeric"], errors="coerce")
     out["distanceCumulative"] = pd.to_numeric(df["TotalDstBt"], errors="coerce")
 
@@ -719,6 +724,7 @@ class LiteRatingEngine:
         self.std_times = {}
         self.lpl_dict = {}
         self.cal_params = {}
+        self.class_adj = {}
         self._loaded = False
 
     def load_lookup_tables(self):
@@ -770,7 +776,10 @@ class LiteRatingEngine:
 
         log.info("  Fitting calibration from pipeline output...")
         # Only load columns we need to keep memory low
-        cols = ["timefigure", "figure_final", "raceSurfaceName", "source_year"]
+        cols = [
+            "timefigure", "figure_final", "raceSurfaceName",
+            "source_year", "raceClass",
+        ]
         df = pd.read_csv(fig_path, usecols=cols, low_memory=False)
 
         mask = (
@@ -791,6 +800,32 @@ class LiteRatingEngine:
             (a, b), *_ = np.linalg.lstsq(A, y, rcond=None)
             self.cal_params[surface] = (a, b)
             log.info(f"    {surface}: cal = {a:.4f}x + {b:.2f}")
+
+        # Fit post-calibration class adjustments per surface.
+        # Horses in higher classes systematically outperform the linear
+        # calibration because the standard-time computation uses a constant
+        # class baseline.  We correct this by measuring the mean residual
+        # (timefigure − calibrated) per class and applying it post-hoc.
+        log.info("  Fitting class adjustments...")
+        for surface in df["raceSurfaceName"].dropna().unique():
+            if surface not in self.cal_params:
+                continue
+            a, b = self.cal_params[surface]
+            sfit = df[mask & (df["raceSurfaceName"] == surface)].copy()
+            sfit["calibrated"] = a * sfit["figure_final"] + b
+            sfit["residual"] = sfit["timefigure"] - sfit["calibrated"]
+
+            class_adj = {}
+            for cls in sorted(sfit["raceClass"].dropna().unique()):
+                grp = sfit[sfit["raceClass"] == cls]
+                if len(grp) >= 100:
+                    class_adj[int(cls)] = round(grp["residual"].mean(), 1)
+
+            self.class_adj[surface] = class_adj
+            log.info(
+                f"    {surface}: class adj = "
+                + ", ".join(f"C{c}:{v:+.1f}" for c, v in sorted(class_adj.items()))
+            )
 
     def compute_figures(self, df):
         """
@@ -1066,12 +1101,13 @@ class LiteRatingEngine:
 
     def _apply_weight_adjustment(self, df):
         """
-        Adjust for weight carried (matching training pipeline Stage 6).
+        Adjust for allocated weight (matching training pipeline Stage 6).
 
         figure += (weightCarried - BASE_WEIGHT_LBS)
 
-        A horse carrying more than 9st 0lb (126 lbs) gets a positive
-        adjustment — it achieved its time despite the extra burden.
+        weightCarried is the ALLOCATED weight (pounds + jockeys_claim),
+        not the actual carried weight after claim deduction.  A horse
+        allocated more than 9st 0lb (126 lbs) gets a positive adjustment.
         """
         log.info("Applying weight adjustment...")
 
@@ -1128,7 +1164,7 @@ class LiteRatingEngine:
         return df
 
     def _apply_calibration(self, df):
-        """Apply surface-specific linear calibration."""
+        """Apply surface-specific linear calibration + class adjustment."""
         log.info("Applying calibration...")
 
         df["figure_calibrated"] = df["figure_final"]
@@ -1142,7 +1178,41 @@ class LiteRatingEngine:
             if n > 0:
                 log.info(f"  {surface}: {n} runners, cal = {a:.3f}x + {b:.1f}")
 
+        # Post-calibration class adjustment
+        df = self._apply_class_adjustment(df)
+
         df["figure_calibrated"] = df["figure_calibrated"].round(1)
+        return df
+
+    def _apply_class_adjustment(self, df):
+        """
+        Apply post-calibration class adjustment.
+
+        The linear calibration maps figure_final to the Timeform scale but
+        cannot capture the systematic class effect: higher-class races
+        produce figures that Timeform rates higher than a single linear
+        model predicts.  This step corrects for that using empirically
+        derived per-class residuals.
+        """
+        if not self.class_adj:
+            return df
+
+        log.info("Applying class adjustment...")
+        df["class_adj"] = 0.0
+
+        for surface, adj_dict in self.class_adj.items():
+            for cls, bonus in adj_dict.items():
+                mask = (
+                    (df["raceSurfaceName"] == surface)
+                    & (df["raceClass"] == cls)
+                    & df["figure_calibrated"].notna()
+                )
+                df.loc[mask, "class_adj"] = bonus
+                df.loc[mask, "figure_calibrated"] += bonus
+                n = mask.sum()
+                if n > 0:
+                    log.info(f"  {surface} Class {cls}: {n} runners, adj = {bonus:+.1f}")
+
         return df
 
 
