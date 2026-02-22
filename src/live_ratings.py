@@ -1033,9 +1033,9 @@ class LiteRatingEngine:
                 missing, "distance"
             ].apply(generic_lbs_per_length)
 
-        # Beaten lengths (capped at 30)
+        # Beaten lengths (capped at 50)
         is_winner = df_in["positionOfficial"] == 1
-        cum = df_in["distanceCumulative"].fillna(0).clip(lower=0, upper=30)
+        cum = df_in["distanceCumulative"].fillna(0).clip(lower=0, upper=50)
 
         df_in["lbs_behind"] = cum * df_in["lpl"]
         df_in.loc[is_winner, "lbs_behind"] = 0.0

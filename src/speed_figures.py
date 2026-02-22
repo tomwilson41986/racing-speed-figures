@@ -658,7 +658,7 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict):
 
     horse_figure = winner_figure − (cum_beaten_lengths × course_lpl)
 
-    Beaten lengths are capped at 30 (unreliable beyond that).
+    Beaten lengths are capped at 50 to limit noise from extreme values.
     """
     print("\n  Extending figures to all runners...")
 
@@ -674,7 +674,7 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict):
         )
 
     is_winner = out["positionOfficial"] == 1
-    cum = out["distanceCumulative"].fillna(0).clip(lower=0, upper=30)
+    cum = out["distanceCumulative"].fillna(0).clip(lower=0, upper=50)
 
     out["lbs_behind"] = cum * out["lpl"]
     out.loc[is_winner, "lbs_behind"] = 0.0
