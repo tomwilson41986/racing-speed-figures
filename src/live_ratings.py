@@ -719,6 +719,7 @@ class LiteRatingEngine:
         self.std_times = {}
         self.lpl_dict = {}
         self.cal_params = {}
+        self.class_adj = {}
         self._loaded = False
 
     def load_lookup_tables(self):
@@ -770,7 +771,10 @@ class LiteRatingEngine:
 
         log.info("  Fitting calibration from pipeline output...")
         # Only load columns we need to keep memory low
-        cols = ["timefigure", "figure_final", "raceSurfaceName", "source_year"]
+        cols = [
+            "timefigure", "figure_final", "raceSurfaceName",
+            "source_year", "raceClass",
+        ]
         df = pd.read_csv(fig_path, usecols=cols, low_memory=False)
 
         mask = (
@@ -791,6 +795,32 @@ class LiteRatingEngine:
             (a, b), *_ = np.linalg.lstsq(A, y, rcond=None)
             self.cal_params[surface] = (a, b)
             log.info(f"    {surface}: cal = {a:.4f}x + {b:.2f}")
+
+        # Fit post-calibration class adjustments per surface.
+        # Horses in higher classes systematically outperform the linear
+        # calibration because the standard-time computation uses a constant
+        # class baseline.  We correct this by measuring the mean residual
+        # (timefigure − calibrated) per class and applying it post-hoc.
+        log.info("  Fitting class adjustments...")
+        for surface in df["raceSurfaceName"].dropna().unique():
+            if surface not in self.cal_params:
+                continue
+            a, b = self.cal_params[surface]
+            sfit = df[mask & (df["raceSurfaceName"] == surface)].copy()
+            sfit["calibrated"] = a * sfit["figure_final"] + b
+            sfit["residual"] = sfit["timefigure"] - sfit["calibrated"]
+
+            class_adj = {}
+            for cls in sorted(sfit["raceClass"].dropna().unique()):
+                grp = sfit[sfit["raceClass"] == cls]
+                if len(grp) >= 100:
+                    class_adj[int(cls)] = round(grp["residual"].mean(), 1)
+
+            self.class_adj[surface] = class_adj
+            log.info(
+                f"    {surface}: class adj = "
+                + ", ".join(f"C{c}:{v:+.1f}" for c, v in sorted(class_adj.items()))
+            )
 
     def compute_figures(self, df):
         """
@@ -1128,7 +1158,7 @@ class LiteRatingEngine:
         return df
 
     def _apply_calibration(self, df):
-        """Apply surface-specific linear calibration."""
+        """Apply surface-specific linear calibration + class adjustment."""
         log.info("Applying calibration...")
 
         df["figure_calibrated"] = df["figure_final"]
@@ -1142,7 +1172,41 @@ class LiteRatingEngine:
             if n > 0:
                 log.info(f"  {surface}: {n} runners, cal = {a:.3f}x + {b:.1f}")
 
+        # Post-calibration class adjustment
+        df = self._apply_class_adjustment(df)
+
         df["figure_calibrated"] = df["figure_calibrated"].round(1)
+        return df
+
+    def _apply_class_adjustment(self, df):
+        """
+        Apply post-calibration class adjustment.
+
+        The linear calibration maps figure_final to the Timeform scale but
+        cannot capture the systematic class effect: higher-class races
+        produce figures that Timeform rates higher than a single linear
+        model predicts.  This step corrects for that using empirically
+        derived per-class residuals.
+        """
+        if not self.class_adj:
+            return df
+
+        log.info("Applying class adjustment...")
+        df["class_adj"] = 0.0
+
+        for surface, adj_dict in self.class_adj.items():
+            for cls, bonus in adj_dict.items():
+                mask = (
+                    (df["raceSurfaceName"] == surface)
+                    & (df["raceClass"] == cls)
+                    & df["figure_calibrated"].notna()
+                )
+                df.loc[mask, "class_adj"] = bonus
+                df.loc[mask, "figure_calibrated"] += bonus
+                n = mask.sum()
+                if n > 0:
+                    log.info(f"  {surface} Class {cls}: {n} runners, adj = {bonus:+.1f}")
+
         return df
 
 

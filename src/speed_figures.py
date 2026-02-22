@@ -761,6 +761,12 @@ def calibrate_figures(df):
     Turf and AW have substantially different calibration slopes (0.77 vs
     0.89), so fitting them separately reduces error.  Each surface gets
     its own  timefigure ≈ a × figure_final + b  fitted on 2015–2023.
+
+    After linear calibration, a post-hoc class adjustment is applied.
+    Higher-class races systematically outperform the linear calibration
+    because the standard-time computation uses a constant class baseline.
+    The class adjustment corrects for this using the mean residual
+    (timefigure − calibrated) per class per surface.
     """
     print("\n  Calibrating to Timeform scale (surface-specific)...")
 
@@ -797,7 +803,58 @@ def calibrate_figures(df):
         cal_params[surface] = (a, b)
         print(f"    {surface:<15}: timefigure ≈ {a:.4f} × figure + {b:.2f}")
 
+    # Post-calibration class adjustment
+    df, class_adj = apply_class_adjustment(df, mask)
+
     return df, cal_params
+
+
+def apply_class_adjustment(df, mask=None):
+    """
+    Post-calibration class adjustment.
+
+    The linear calibration cannot capture the systematic class effect:
+    higher-class races produce figures that Timeform rates higher than a
+    single linear model predicts.  This corrects for that using the mean
+    residual (timefigure − calibrated) per class per surface.
+    """
+    print("\n  Applying post-calibration class adjustment...")
+
+    if mask is None:
+        mask = (
+            df["timefigure"].notna()
+            & (df["timefigure"] != 0)
+            & df["timefigure"].between(-200, 200)
+            & df["figure_calibrated"].notna()
+        )
+
+    class_adj = {}
+    df["class_adj"] = 0.0
+
+    for surface in df["raceSurfaceName"].unique():
+        surf_mask = df["raceSurfaceName"] == surface
+        fit = df[mask & surf_mask & (df["source_year"] <= 2023)].copy()
+        if len(fit) < 100 or "figure_calibrated" not in fit.columns:
+            continue
+
+        fit["residual"] = fit["timefigure"] - fit["figure_calibrated"]
+        adj_dict = {}
+        for cls in sorted(fit["raceClass"].dropna().unique()):
+            grp = fit[fit["raceClass"] == cls]
+            if len(grp) >= 100:
+                adj_dict[int(cls)] = round(grp["residual"].mean(), 1)
+
+        class_adj[surface] = adj_dict
+
+        for cls, bonus in adj_dict.items():
+            cls_mask = surf_mask & (df["raceClass"] == cls)
+            df.loc[cls_mask, "class_adj"] = bonus
+            df.loc[cls_mask & df["figure_calibrated"].notna(), "figure_calibrated"] += bonus
+
+        adj_str = ", ".join(f"C{c}:{v:+.1f}" for c, v in sorted(adj_dict.items()))
+        print(f"    {surface:<15}: {adj_str}")
+
+    return df, class_adj
 
 
 def validate_figures(df):
@@ -955,7 +1012,7 @@ def run_pipeline():
         "horseAge", "horseGender", "weightCarried",
         "finishingTime", "distanceCumulative",
         "raw_figure", "weight_adj", "wfa_adj", "sex_adj",
-        "figure_final", "figure_calibrated",
+        "figure_final", "figure_calibrated", "class_adj",
         "timefigure", "performanceRating",
         "source_year",
     ]
