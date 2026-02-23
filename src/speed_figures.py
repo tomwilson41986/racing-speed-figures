@@ -109,6 +109,16 @@ SEX_ALLOWANCE_WINTER = 5   # lbs, October–April
 # Female horse-gender codes in the data
 FEMALE_GENDERS = {"f", "m"}  # f = filly, m = mare
 
+# ── Surface-change cutoff dates ──
+# Tracks that changed their artificial surface.  Only data ON or AFTER
+# the cutoff date should be used for standard-time, going-allowance and
+# figure computation — earlier data reflects the old surface and would
+# contaminate the model.
+SURFACE_CHANGE_CUTOFFS = {
+    "SOUTHWELL":       "2022-01-01",
+    "CHELMSFORD CITY": "2022-09-01",
+}
+
 # ── Weight-for-Age tables (empirical, derived from Timeform 2015-2023) ──
 # Separate tables for Turf and All-Weather, as AW WFA is consistently
 # higher (younger horses are at a greater disadvantage on artificial
@@ -279,6 +289,33 @@ def filter_uk_ire_flat(df):
     print(f"    Unique courses: {filtered['courseName'].nunique()}")
     print(f"    Unique races:   {filtered['race_id'].nunique():,}")
     return filtered
+
+
+def apply_surface_change_cutoffs(df):
+    """
+    Remove rows from tracks that changed surface before the cutoff date.
+
+    Data from before a surface change is not comparable to current times
+    and would contaminate standard times, going allowances and figures.
+    """
+    if not SURFACE_CHANGE_CUTOFFS:
+        return df
+
+    date_col = pd.to_datetime(df["meetingDate"], errors="coerce")
+    drop_mask = pd.Series(False, index=df.index)
+
+    for course, cutoff_str in SURFACE_CHANGE_CUTOFFS.items():
+        cutoff = pd.Timestamp(cutoff_str)
+        course_mask = (df["courseName"] == course) & (date_col < cutoff)
+        n_drop = course_mask.sum()
+        if n_drop > 0:
+            print(f"    {course}: dropping {n_drop:,} rows before {cutoff_str}")
+        drop_mask |= course_mask
+
+    out = df[~drop_mask].copy()
+    print(f"  After surface-change cutoffs: {len(out):,} rows "
+          f"(dropped {drop_mask.sum():,})")
+    return out
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -979,6 +1016,7 @@ def run_pipeline():
     print("\nSTAGE 0: Loading data")
     df = load_data()
     df = filter_uk_ire_flat(df)
+    df = apply_surface_change_cutoffs(df)
 
     # 1 — Standard times (per track / distance / surface)
     print("\nSTAGE 1: Standard times (initial — good going only)")
