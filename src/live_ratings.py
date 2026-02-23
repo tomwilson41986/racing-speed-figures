@@ -1041,8 +1041,8 @@ class LiteRatingEngine:
         df_in.loc[is_winner, "lbs_behind"] = 0.0
         df_in["raw_figure"] = df_in["winner_figure"] - df_in["lbs_behind"]
 
-        # Non-finishers (no position) should not receive a figure
-        no_pos = df_in["positionOfficial"].isna()
+        # Non-finishers (no position or position == 0) should not receive a figure
+        no_pos = df_in["positionOfficial"].isna() | (df_in["positionOfficial"] == 0)
         df_in.loc[no_pos, "raw_figure"] = np.nan
 
         # Estimated finish times:
@@ -1150,7 +1150,10 @@ class LiteRatingEngine:
         df["figure_calibrated"] = df["figure_calibrated"].round(1)
 
         # Exclude runners with no finish position (pulled up, fell, etc.)
-        no_position = df["positionOfficial"].isna() & df["figure_calibrated"].notna()
+        no_position = (
+            (df["positionOfficial"].isna() | (df["positionOfficial"] == 0))
+            & df["figure_calibrated"].notna()
+        )
         n_no_pos = no_position.sum()
         if n_no_pos > 0:
             df.loc[no_position, "figure_calibrated"] = np.nan
@@ -1286,7 +1289,8 @@ def format_email_html(df, target_date, run_time):
             pos = (
                 int(r["positionOfficial"])
                 if pd.notna(r.get("positionOfficial"))
-                else "?"
+                and r["positionOfficial"] > 0
+                else "-"
             )
             horse = r.get("horseName", "?")
             age = (
