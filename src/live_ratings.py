@@ -1287,8 +1287,7 @@ def format_email_html(df, target_date, run_time):
         html += (
             "<table><tr><th>Pos</th><th>Horse</th><th>Age</th>"
             "<th>Wgt</th><th>OR</th><th>Beaten</th><th>Time</th>"
-            "<th>Alw</th>"
-            "<th>WFA</th><th>Figure</th></tr>"
+            "<th>Figure</th></tr>"
         )
 
         for _, r in race_df.iterrows():
@@ -1326,17 +1325,6 @@ def format_email_html(df, target_date, run_time):
                 if pd.notna(r.get("est_time"))
                 else "-"
             )
-            alw = (
-                f'{int(r["sex_allowance"])}'
-                if pd.notna(r.get("sex_allowance"))
-                and r.get("sex_allowance", 0) > 0
-                else ""
-            )
-            wfa = (
-                f'+{r["wfa_adj"]:.0f}'
-                if pd.notna(r.get("wfa_adj")) and r["wfa_adj"] > 0
-                else ""
-            )
             fig = r.get("figure_calibrated")
             if pd.notna(fig) and fig >= 0:
                 fig_str = f"{fig:.0f}"
@@ -1350,8 +1338,6 @@ def format_email_html(df, target_date, run_time):
                 f"<td>{age}</td><td>{wgt}</td><td>{or_val}</td>"
                 f"<td>{beaten}</td>"
                 f"<td>{est_time}</td>"
-                f"<td>{alw}</td>"
-                f'<td>{wfa}</td>'
                 f'<td class="{cls}">{fig_str}</td></tr>'
             )
 
