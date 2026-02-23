@@ -682,6 +682,10 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict):
     out.loc[is_winner, "lbs_behind"] = 0.0
     out["raw_figure"] = out["winner_figure"] - out["lbs_behind"]
 
+    # Non-finishers (no position) should not receive a figure
+    no_pos = out["positionOfficial"].isna()
+    out.loc[no_pos, "raw_figure"] = np.nan
+
     print(f"    All-runner figures: {len(out):,}")
     return out
 
@@ -865,6 +869,13 @@ def calibrate_figures(df):
         )
         cal_params[surface] = (a, b)
         print(f"    {surface:<15}: timefigure ≈ {a:.4f} × figure + {b:.2f}")
+
+    # Exclude non-finishers (no official position)
+    no_position = df["positionOfficial"].isna() & df["figure_calibrated"].notna()
+    n_no_pos = no_position.sum()
+    if n_no_pos > 0:
+        df.loc[no_position, "figure_calibrated"] = np.nan
+        print(f"    Excluded {n_no_pos:,} non-finishers (no position)")
 
     # Exclude runners beaten > 20 lengths — figures are unreliable
     # (horses eased down / not running to the line).

@@ -1041,6 +1041,10 @@ class LiteRatingEngine:
         df_in.loc[is_winner, "lbs_behind"] = 0.0
         df_in["raw_figure"] = df_in["winner_figure"] - df_in["lbs_behind"]
 
+        # Non-finishers (no position) should not receive a figure
+        no_pos = df_in["positionOfficial"].isna()
+        df_in.loc[no_pos, "raw_figure"] = np.nan
+
         # Estimated finish times:
         #   Winner = actual comptime (finishingTime)
         #   Others = winner_time + cumulative_beaten_lengths * SECONDS_PER_LENGTH
@@ -1144,6 +1148,13 @@ class LiteRatingEngine:
                 log.info(f"  {surface}: {n} runners, cal = {a:.3f}x + {b:.1f}")
 
         df["figure_calibrated"] = df["figure_calibrated"].round(1)
+
+        # Exclude runners with no finish position (pulled up, fell, etc.)
+        no_position = df["positionOfficial"].isna() & df["figure_calibrated"].notna()
+        n_no_pos = no_position.sum()
+        if n_no_pos > 0:
+            df.loc[no_position, "figure_calibrated"] = np.nan
+            log.info(f"  Excluded {n_no_pos} non-finishers (no position)")
 
         # Exclude runners beaten > 20 lengths — figures are unreliable
         beaten_far = (
