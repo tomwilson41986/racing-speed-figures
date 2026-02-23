@@ -658,7 +658,9 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict):
 
     horse_figure = winner_figure − (cum_beaten_lengths × course_lpl)
 
-    Beaten lengths are capped at 30 (unreliable beyond that).
+    Beaten lengths are capped at 30 to limit noise from extreme values.
+    Runners beaten more than 20 lengths receive no final figure (unreliable
+    due to easing / not running to the line).
     """
     print("\n  Extending figures to all runners...")
 
@@ -863,6 +865,18 @@ def calibrate_figures(df):
         )
         cal_params[surface] = (a, b)
         print(f"    {surface:<15}: timefigure ≈ {a:.4f} × figure + {b:.2f}")
+
+    # Exclude runners beaten > 20 lengths — figures are unreliable
+    # (horses eased down / not running to the line).
+    beaten_far = (
+        df["distanceCumulative"].notna()
+        & (df["distanceCumulative"] > 20)
+        & (df["positionOfficial"] != 1)
+    )
+    n_excluded = beaten_far.sum()
+    if n_excluded > 0:
+        df.loc[beaten_far, "figure_calibrated"] = np.nan
+        print(f"    Excluded {n_excluded:,} runners beaten > 20 lengths")
 
     return df, cal_params
 

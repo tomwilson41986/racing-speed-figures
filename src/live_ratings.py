@@ -1144,6 +1144,18 @@ class LiteRatingEngine:
                 log.info(f"  {surface}: {n} runners, cal = {a:.3f}x + {b:.1f}")
 
         df["figure_calibrated"] = df["figure_calibrated"].round(1)
+
+        # Exclude runners beaten > 20 lengths — figures are unreliable
+        beaten_far = (
+            df["distanceCumulative"].notna()
+            & (df["distanceCumulative"] > 20)
+            & (df["positionOfficial"] != 1)
+        )
+        n_excluded = beaten_far.sum()
+        if n_excluded > 0:
+            df.loc[beaten_far, "figure_calibrated"] = np.nan
+            log.info(f"  Excluded {n_excluded} runners beaten > 20 lengths")
+
         return df
 
 
