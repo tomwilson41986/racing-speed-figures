@@ -1179,7 +1179,13 @@ class LiteRatingEngine:
 
 def format_email_html(df, target_date, run_time):
     """Format the ratings as a styled HTML email."""
-    df = df.sort_values(["courseName", "raceNumber", "positionOfficial"])
+    # Sort with non-finishers (pos 0 or NaN) at the bottom of each race
+    df = df.copy()
+    df["_sort_pos"] = df["positionOfficial"].where(
+        df["positionOfficial"].notna() & (df["positionOfficial"] > 0), other=9999
+    )
+    df = df.sort_values(["courseName", "raceNumber", "_sort_pos"])
+    df = df.drop(columns=["_sort_pos"])
 
     css = """
     <style>
