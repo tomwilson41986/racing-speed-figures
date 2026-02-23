@@ -1033,9 +1033,9 @@ class LiteRatingEngine:
                 missing, "distance"
             ].apply(generic_lbs_per_length)
 
-        # Beaten lengths (capped at 50)
+        # Beaten lengths (capped at 30)
         is_winner = df_in["positionOfficial"] == 1
-        cum = df_in["distanceCumulative"].fillna(0).clip(lower=0, upper=50)
+        cum = df_in["distanceCumulative"].fillna(0).clip(lower=0, upper=30)
 
         df_in["lbs_behind"] = cum * df_in["lpl"]
         df_in.loc[is_winner, "lbs_behind"] = 0.0
@@ -1144,6 +1144,18 @@ class LiteRatingEngine:
                 log.info(f"  {surface}: {n} runners, cal = {a:.3f}x + {b:.1f}")
 
         df["figure_calibrated"] = df["figure_calibrated"].round(1)
+
+        # Exclude runners beaten > 20 lengths — figures are unreliable
+        beaten_far = (
+            df["distanceCumulative"].notna()
+            & (df["distanceCumulative"] > 20)
+            & (df["positionOfficial"] != 1)
+        )
+        n_excluded = beaten_far.sum()
+        if n_excluded > 0:
+            df.loc[beaten_far, "figure_calibrated"] = np.nan
+            log.info(f"  Excluded {n_excluded} runners beaten > 20 lengths")
+
         return df
 
 
