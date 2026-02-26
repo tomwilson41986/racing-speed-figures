@@ -590,14 +590,17 @@ def compute_going_allowances(df, std_times):
         winners["dev_per_furlong"].between(q_lo, q_hi)
     ]
 
-    # Trimmed mean within each meeting
+    # Winsorized mean within each meeting (more robust than trimmed mean:
+    # replaces extremes rather than discarding them, retaining more data).
     def _trimmed_mean(group):
-        vals = group.sort_values().values
+        vals = group.sort_values().values.copy()
         n = len(vals)
         if n <= 2:
             return np.mean(vals)
-        # Drop highest and lowest
-        return np.mean(vals[1:-1])
+        # Winsorize: clamp extremes to adjacent values
+        vals[0] = vals[1]
+        vals[-1] = vals[-2]
+        return np.mean(vals)
 
     ga_series = (
         winners.groupby("meeting_id")["dev_per_furlong"]
@@ -695,9 +698,9 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict):
 
     horse_figure = winner_figure − (cum_beaten_lengths × course_lpl)
 
-    Beaten lengths are capped at 30 to limit noise from extreme values.
-    Runners beaten more than 20 lengths receive no final figure (unreliable
-    due to easing / not running to the line).
+    Beaten lengths use a soft cap: full precision up to 20 lengths,
+    then halved beyond 20 to attenuate noise from eased/tailed-off
+    horses while preserving some signal (better than a hard cap).
     """
     print("\n  Extending figures to all runners...")
 
@@ -713,7 +716,12 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict):
         )
 
     is_winner = out["positionOfficial"] == 1
-    cum = out["distanceCumulative"].fillna(0).clip(lower=0, upper=30)
+    cum_raw = out["distanceCumulative"].fillna(0).clip(lower=0)
+
+    # Soft cap: full precision up to 20 lengths, halved beyond 20.
+    # This attenuates noise from tailed-off horses without the
+    # discontinuity of a hard cap at 30 lengths.
+    cum = np.where(cum_raw <= 20, cum_raw, 20 + 0.5 * (cum_raw - 20))
 
     out["lbs_behind"] = cum * out["lpl"]
     out.loc[is_winner, "lbs_behind"] = 0.0
@@ -866,13 +874,18 @@ def apply_sex_allowance(df):
 
 def calibrate_figures(df):
     """
-    Surface-specific linear calibration to the Timeform timefigure scale.
+    Surface-specific linear calibration to the Timeform timefigure scale,
+    with per-class residual correction.
 
-    Turf and AW have substantially different calibration slopes (0.77 vs
-    0.89), so fitting them separately reduces error.  Each surface gets
-    its own  timefigure ≈ a × figure_final + b  fitted on 2015–2023.
+    Turf and AW have substantially different calibration slopes, so fitting
+    them separately reduces error.  Each surface gets its own
+      timefigure ≈ a × figure_final + b + class_offset[class]
+    fitted on 2015–2023.
+
+    The class offset captures systematic biases that a single linear
+    slope cannot (e.g. Group 1 figures consistently over/under-predicted).
     """
-    print("\n  Calibrating to Timeform scale (surface-specific)...")
+    print("\n  Calibrating to Timeform scale (surface + class)...")
 
     mask = (
         df["timefigure"].notna()
@@ -881,31 +894,175 @@ def calibrate_figures(df):
         & df["figure_final"].notna()
     )
 
+    # Exclude beaten-far runners from calibration FIT — their figures
+    # are noisy and drag the regression slope down.
+    fit_mask = mask & (
+        (df["distanceCumulative"].fillna(0) <= 20)
+        | (df["positionOfficial"] == 1)
+    )
+
     df["figure_calibrated"] = np.nan
     cal_params = {}
 
     for surface in df["raceSurfaceName"].unique():
         surf_mask = df["raceSurfaceName"] == surface
-        fit = df[mask & surf_mask & (df["source_year"] <= 2023)]
+        fit = df[fit_mask & surf_mask & (df["source_year"] <= 2023)]
 
         if len(fit) < 100:
             print(f"    {surface}: insufficient data — using identity")
             df.loc[surf_mask, "figure_calibrated"] = df.loc[
                 surf_mask, "figure_final"
             ]
-            cal_params[surface] = (1.0, 0.0)
+            cal_params[surface] = (1.0, 0.0, 0.0, {})
             continue
 
         x = fit["figure_final"].values
         y = fit["timefigure"].values
-        A = np.vstack([x, np.ones(len(x))]).T
-        (a, b), *_ = np.linalg.lstsq(A, y, rcond=None)
+        x_mean = x.mean()
 
-        df.loc[surf_mask, "figure_calibrated"] = (
-            a * df.loc[surf_mask, "figure_final"] + b
+        # Try quadratic calibration: timefigure = a*x + a2*(x-mean)^2 + b
+        x_c = x - x_mean
+        A_quad = np.vstack([x, x_c ** 2, np.ones(len(x))]).T
+        (a, a2, b), *_ = np.linalg.lstsq(A_quad, y, rcond=None)
+
+        # Check if quadratic actually helps (lower MSE than linear)
+        A_lin = np.vstack([x, np.ones(len(x))]).T
+        (a_lin, b_lin), *_ = np.linalg.lstsq(A_lin, y, rcond=None)
+        mse_lin = np.mean((y - a_lin * x - b_lin) ** 2)
+        mse_quad = np.mean((y - a * x - a2 * x_c ** 2 - b) ** 2)
+
+        if mse_quad < mse_lin * 0.999:
+            # Quadratic is meaningfully better
+            xf = df.loc[surf_mask, "figure_final"].values
+            xf_c = xf - x_mean
+            df.loc[surf_mask, "figure_calibrated"] = (
+                a * xf + a2 * xf_c ** 2 + b
+            )
+            print(
+                f"    {surface:<15}: timefigure ≈ {a:.4f}×fig "
+                f"+ {a2:.6f}×(fig-{x_mean:.0f})² + {b:.2f}  "
+                f"[quad MSE {mse_quad:.2f} vs lin {mse_lin:.2f}]"
+            )
+        else:
+            # Linear is sufficient
+            a, b, a2 = a_lin, b_lin, 0.0
+            df.loc[surf_mask, "figure_calibrated"] = (
+                a * df.loc[surf_mask, "figure_final"] + b
+            )
+            print(
+                f"    {surface:<15}: timefigure ≈ {a:.4f} × figure + {b:.2f}"
+            )
+
+        # Per-class residual correction
+        fit_pred = (
+            a * x + a2 * (x - x_mean) ** 2 + b if a2 != 0
+            else a * x + b
         )
-        cal_params[surface] = (a, b)
-        print(f"    {surface:<15}: timefigure ≈ {a:.4f} × figure + {b:.2f}")
+        residuals = y - fit_pred
+        class_offsets = (
+            pd.Series(residuals, index=fit.index)
+            .groupby(fit["raceClass"])
+            .mean()
+        )
+        class_offset_dict = class_offsets.to_dict()
+
+        surf_class_adj = df.loc[surf_mask, "raceClass"].map(
+            class_offset_dict
+        ).fillna(0)
+        df.loc[surf_mask, "figure_calibrated"] += surf_class_adj.values
+
+        # Recompute residuals after class offset for course/going layers
+        fit_pred_with_class = fit_pred + (
+            fit["raceClass"].map(class_offset_dict).fillna(0).values
+        )
+        residuals2 = y - fit_pred_with_class
+
+        # Per course×distance residual correction (with shrinkage).
+        # Directly corrects standard-time errors per track/distance combo.
+        SHRINKAGE_K = 100  # regularisation strength
+        cd_key = (
+            fit["courseName"] + "_" +
+            fit["distance"].round(0).astype(int).astype(str)
+        )
+        cd_groups = pd.Series(
+            residuals2, index=fit.index
+        ).groupby(cd_key)
+        cd_means = cd_groups.mean()
+        cd_counts = cd_groups.count()
+        cd_shrunk = cd_means * cd_counts / (cd_counts + SHRINKAGE_K)
+        course_dist_offset_dict = cd_shrunk.to_dict()
+
+        all_cd_key = (
+            df.loc[surf_mask, "courseName"] + "_" +
+            df.loc[surf_mask, "distance"].round(0).astype(int).astype(str)
+        )
+        surf_cd_adj = all_cd_key.map(course_dist_offset_dict).fillna(0)
+        df.loc[surf_mask, "figure_calibrated"] += surf_cd_adj.values
+
+        # Per-going-group residual correction (with shrinkage).
+        # Captures residual going biases after GA correction.
+        going_groups = {
+            "Firm": ["Hard", "Firm", "Fast"],
+            "GdFm": ["Gd/Frm", "Good To Firm", "Good to Firm",
+                      "Std/Fast"],
+            "Good": ["Good", "Standard", "Std"],
+            "GdSft": ["Gd/Sft", "Good to Soft", "Good To Yielding",
+                       "Good to Yielding", "Std/Slow", "Standard/Slow",
+                       "Standard To Slow", "Standard to Slow", "Slow"],
+            "Soft": ["Soft", "Yielding", "Yld/Sft", "Sft/Hvy",
+                      "Hvy/Sft"],
+            "Heavy": ["Heavy"],
+        }
+        going_map = {}
+        for grp, goings in going_groups.items():
+            for g in goings:
+                going_map[g] = grp
+
+        fit_going_grp = fit["going"].map(going_map).fillna("Good")
+        fit_cd_key = (
+            fit["courseName"] + "_" +
+            fit["distance"].round(0).astype(int).astype(str)
+        )
+        residuals3 = residuals2 - (
+            fit_cd_key.map(course_dist_offset_dict).fillna(0).values
+        )
+        going_grp_groups = pd.Series(
+            residuals3, index=fit.index
+        ).groupby(fit_going_grp)
+        going_means = going_grp_groups.mean()
+        going_counts = going_grp_groups.count()
+        going_shrunk = going_means * going_counts / (
+            going_counts + SHRINKAGE_K
+        )
+        going_offset_dict = going_shrunk.to_dict()
+
+        df_going_grp = df.loc[surf_mask, "going"].map(going_map).fillna(
+            "Good"
+        )
+        surf_going_adj = df_going_grp.map(going_offset_dict).fillna(0)
+        df.loc[surf_mask, "figure_calibrated"] += surf_going_adj.values
+
+        cal_params[surface] = (
+            a, b, a2, class_offset_dict, course_dist_offset_dict,
+            going_offset_dict,
+        )
+        if class_offset_dict:
+            offsets_str = ", ".join(
+                f"C{k}:{v:+.1f}" for k, v in sorted(
+                    class_offset_dict.items(),
+                    key=lambda x: str(x[0])
+                )
+            )
+            print(f"      class offsets: {offsets_str}")
+        n_cd = sum(1 for v in course_dist_offset_dict.values()
+                   if abs(v) > 0.5)
+        print(f"      course×dist offsets: {n_cd}/{len(course_dist_offset_dict)} combos with |offset|>0.5")
+        going_str = ", ".join(
+            f"{k}:{v:+.1f}" for k, v in sorted(
+                going_offset_dict.items()
+            )
+        )
+        print(f"      going offsets: {going_str}")
 
     # Exclude non-finishers (no official position)
     no_position = (
@@ -1028,7 +1185,7 @@ def run_pipeline():
 
     # Iterative refinement: use going-corrected times to recompute
     # standard times (using ALL goings now), then recompute GA.
-    N_ITER = 2
+    N_ITER = 3
     for iteration in range(N_ITER):
         print(f"\n  ── Iterative refinement {iteration + 1}/{N_ITER} ──")
         std_times, std_df = compute_standard_times_iterative(
