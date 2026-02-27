@@ -612,14 +612,19 @@ def _transform_hrb_data(df):
     # Drop the temporary column
     out = out.drop(columns=["_raceType"])
 
-    # Filter out races that haven't run yet.
-    # At the 6pm run, later races may appear in HRB with no results:
-    # comptime_numeric=0, no placing, no beaten distances.
-    # Detect by checking if the race has a valid winner time.
+    # ── Determine meeting completeness ────────────────────────────────
+    # Going allowance requires all races at a track to be complete, so
+    # we must detect whether every scheduled flat race at each course on
+    # this date has results.  This check happens BEFORE filtering out
+    # unrun races so we can compare total vs completed counts.
     race_key = (
         out["meetingDate"].astype(str) + "_"
         + out["courseName"].astype(str) + "_"
         + out["raceTime"].astype(str)
+    )
+    course_date = (
+        out["meetingDate"].astype(str) + "_"
+        + out["courseName"].astype(str)
     )
     # A race has "run" if at least one runner has finishingTime > 0
     # and a valid positionOfficial
@@ -629,6 +634,37 @@ def _transform_hrb_data(df):
     races_with_results = set(race_key[has_result])
     race_has_run = race_key.isin(races_with_results)
 
+    # Count total scheduled flat races vs completed per course/date
+    race_info = pd.DataFrame({
+        "course_date": course_date,
+        "race_key": race_key,
+        "has_run": race_has_run,
+    }).drop_duplicates(subset="race_key")
+    total_per_cd = race_info.groupby("course_date")["race_key"].count()
+    completed_per_cd = race_info[race_info["has_run"]].groupby(
+        "course_date"
+    )["race_key"].count()
+    completed_per_cd = completed_per_cd.reindex(
+        total_per_cd.index, fill_value=0
+    )
+    complete_meetings = set(
+        total_per_cd[total_per_cd == completed_per_cd].index
+    )
+
+    # Mark each runner with whether their meeting is complete
+    out["meeting_complete"] = course_date.isin(complete_meetings)
+
+    # Log incomplete meetings
+    incomplete_cd = total_per_cd.index.difference(complete_meetings)
+    for cd in incomplete_cd:
+        log.info(
+            f"  Meeting {cd}: {int(completed_per_cd[cd])}/{int(total_per_cd[cd])} "
+            f"races complete — will defer ratings"
+        )
+
+    # ── Filter out unrun races ────────────────────────────────────────
+    # At the 6pm run, later races may appear in HRB with no results:
+    # comptime_numeric=0, no placing, no beaten distances.
     n_unrun = (~race_has_run).sum()
     if n_unrun > 0:
         unrun_races = race_key[~race_has_run].unique()
@@ -1492,6 +1528,23 @@ def run_once(target_date=None, send_email_flag=True):
         f"Results: {len(df)} runners across "
         f"{df['courseName'].nunique()} courses"
     )
+
+    # 1b. Exclude incomplete meetings — going allowance requires all
+    #     races at a track to be finished before we can rate any of them.
+    if "meeting_complete" in df.columns:
+        incomplete = df[~df["meeting_complete"]]
+        if len(incomplete) > 0:
+            incomplete_courses = sorted(incomplete["courseName"].unique())
+            log.info(
+                f"Deferring {len(incomplete)} runners from "
+                f"{len(incomplete_courses)} incomplete meeting(s): "
+                f"{incomplete_courses}"
+            )
+            df = df[df["meeting_complete"]].copy()
+
+        if len(df) == 0:
+            log.info("No complete meetings to rate — all deferred")
+            return None
 
     # 2. Compute figures
     engine = LiteRatingEngine()
