@@ -22,6 +22,7 @@ import pandas as pd
 import numpy as np
 import os
 import warnings
+from sklearn.isotonic import IsotonicRegression
 
 warnings.filterwarnings("ignore", category=pd.errors.DtypeWarning)
 
@@ -723,6 +724,14 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict):
     # discontinuity of a hard cap at 30 lengths.
     cum = np.where(cum_raw <= 20, cum_raw, 20 + 0.5 * (cum_raw - 20))
 
+    # Distance-dependent attenuation: at longer distances, beaten
+    # lengths are less reliable (horses tire non-linearly).  Apply a
+    # mild shrinkage factor that grows with distance beyond 10f.
+    dist_f = out["distance"].values
+    dist_atten = np.where(dist_f > 10, 1.0 - 0.02 * (dist_f - 10), 1.0)
+    dist_atten = np.clip(dist_atten, 0.85, 1.0)
+    cum = cum * dist_atten
+
     out["lbs_behind"] = cum * out["lpl"]
     out.loc[is_winner, "lbs_behind"] = 0.0
     out["raw_figure"] = out["winner_figure"] - out["lbs_behind"]
@@ -1041,6 +1050,84 @@ def calibrate_figures(df):
         )
         surf_going_adj = df_going_grp.map(going_offset_dict).fillna(0)
         df.loc[surf_mask, "figure_calibrated"] += surf_going_adj.values
+
+        # ── Non-linear recalibration via binned isotonic regression ──
+        # After linear + offsets, a systematic non-linear residual remains
+        # (variance compression at extremes). Fit a smooth monotone
+        # correction by binning predictions, computing mean residuals per
+        # bin, then applying isotonic regression over the binned means.
+        # This ensures monotonicity while smoothing noise.
+        train_cal_mask = fit_mask & surf_mask & (df["source_year"] <= 2023)
+        cal_x = df.loc[train_cal_mask, "figure_calibrated"].values
+        cal_y = df.loc[train_cal_mask, "timefigure"].values
+
+        if len(cal_x) > 500:
+            sort_idx = np.argsort(cal_x)
+            xs, ys = cal_x[sort_idx], cal_y[sort_idx]
+
+            # Bin into quantile bins and compute mean prediction/target
+            n_bins = min(100, len(xs) // 100)
+            if n_bins >= 10:
+                bin_edges = np.percentile(xs, np.linspace(0, 100, n_bins + 1))
+                bin_centers = []
+                bin_means_y = []
+                for i in range(n_bins):
+                    if i < n_bins - 1:
+                        bm = (xs >= bin_edges[i]) & (xs < bin_edges[i + 1])
+                    else:
+                        bm = (xs >= bin_edges[i]) & (xs <= bin_edges[i + 1])
+                    if bm.sum() >= 20:
+                        bin_centers.append(xs[bm].mean())
+                        bin_means_y.append(ys[bm].mean())
+
+                if len(bin_centers) >= 10:
+                    bc = np.array(bin_centers)
+                    by = np.array(bin_means_y)
+
+                    # Isotonic regression on binned means → guaranteed monotone
+                    iso = IsotonicRegression(
+                        increasing=True, out_of_bounds="clip"
+                    )
+                    iso.fit(bc, by)
+
+                    # Apply with linear extrapolation outside training range
+                    all_x = df.loc[surf_mask, "figure_calibrated"].values
+                    x_lo, x_hi = bc.min(), bc.max()
+                    valid_x = np.isfinite(all_x)
+                    recal = np.copy(all_x)
+                    recal[valid_x] = iso.predict(
+                        np.clip(all_x[valid_x], x_lo, x_hi)
+                    )
+
+                    # Linear extrapolation outside range using edge slopes
+                    below = valid_x & (all_x < x_lo)
+                    above = valid_x & (all_x > x_hi)
+                    if below.any():
+                        slope_lo = (by[1] - by[0]) / (bc[1] - bc[0]) if len(bc) >= 2 else 1.0
+                        recal[below] = float(iso.predict([x_lo])[0]) + slope_lo * (all_x[below] - x_lo)
+                    if above.any():
+                        slope_hi = (by[-1] - by[-2]) / (bc[-1] - bc[-2]) if len(bc) >= 2 else 1.0
+                        recal[above] = float(iso.predict([x_hi])[0]) + slope_hi * (all_x[above] - x_hi)
+
+                    # Verify improvement on training data
+                    old_pred = df.loc[train_cal_mask, "figure_calibrated"].values
+                    new_pred = iso.predict(np.clip(old_pred, x_lo, x_hi))
+                    old_rmse = np.sqrt(np.mean((old_pred - cal_y) ** 2))
+                    new_rmse = np.sqrt(np.mean((new_pred - cal_y) ** 2))
+                    old_corr = np.corrcoef(old_pred, cal_y)[0, 1]
+                    new_corr = np.corrcoef(new_pred, cal_y)[0, 1]
+
+                    if new_rmse < old_rmse and new_corr >= old_corr - 0.005:
+                        df.loc[surf_mask, "figure_calibrated"] = recal
+                        print(
+                            f"      isotonic recal: RMSE {old_rmse:.2f} → {new_rmse:.2f}, "
+                            f"r {old_corr:.4f} → {new_corr:.4f}"
+                        )
+                    else:
+                        print(
+                            f"      isotonic recal: skipped (RMSE {old_rmse:.2f} → {new_rmse:.2f}, "
+                            f"r {old_corr:.4f} → {new_corr:.4f})"
+                        )
 
         cal_params[surface] = (
             a, b, a2, class_offset_dict, course_dist_offset_dict,

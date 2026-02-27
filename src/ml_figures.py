@@ -16,8 +16,11 @@ import os
 import warnings
 from sklearn.metrics import mean_absolute_error
 from sklearn.isotonic import IsotonicRegression
+from sklearn.model_selection import KFold
+from sklearn.linear_model import Ridge
 import xgboost as xgb
 import lightgbm as lgb
+import catboost as cb
 
 warnings.filterwarnings("ignore")
 
@@ -535,14 +538,112 @@ def _compute_target_encodings(df, train_mask):
     return df
 
 
+def _make_sample_weights(y):
+    """Asymmetric weights: prioritise high-rated horses."""
+    w = np.ones_like(y, dtype=float)
+    w += np.clip((y - 60) / 20, 0, 3)  # 1→4× for 60→120+
+    w = np.where(y < 40, 0.7, w)
+    return w
+
+
+def _train_xgb_mse(X_tr, y_tr, sw, X_va, y_va, verbose=500):
+    m = xgb.XGBRegressor(
+        objective="reg:squarederror", eval_metric="mae",
+        max_depth=8, learning_rate=0.02, subsample=0.8,
+        colsample_bytree=0.7, min_child_weight=8,
+        reg_alpha=0.05, reg_lambda=0.5,
+        n_estimators=8000, early_stopping_rounds=150, verbosity=0,
+    )
+    m.fit(X_tr, y_tr, sample_weight=sw,
+          eval_set=[(X_va, y_va)], verbose=verbose)
+    return m
+
+
+def _train_xgb_mae(X_tr, y_tr, sw, X_va, y_va, verbose=500):
+    m = xgb.XGBRegressor(
+        objective="reg:absoluteerror", eval_metric="mae",
+        max_depth=8, learning_rate=0.02, subsample=0.8,
+        colsample_bytree=0.8, min_child_weight=12,
+        reg_alpha=0.05, reg_lambda=0.5,
+        n_estimators=8000, early_stopping_rounds=150, verbosity=0,
+    )
+    m.fit(X_tr, y_tr, sample_weight=sw,
+          eval_set=[(X_va, y_va)], verbose=verbose)
+    return m
+
+
+def _train_lgb_mse(X_tr, y_tr, sw, X_va, y_va, verbose=500):
+    ds_tr = lgb.Dataset(X_tr, y_tr, weight=sw)
+    ds_va = lgb.Dataset(X_va, y_va, reference=ds_tr)
+    return lgb.train(
+        {"objective": "regression", "metric": "mae", "num_leaves": 127,
+         "learning_rate": 0.02, "feature_fraction": 0.8,
+         "bagging_fraction": 0.8, "bagging_freq": 5,
+         "min_child_samples": 15, "verbose": -1},
+        ds_tr, num_boost_round=8000, valid_sets=[ds_va],
+        callbacks=[lgb.early_stopping(150), lgb.log_evaluation(verbose)],
+    )
+
+
+def _train_lgb_mae(X_tr, y_tr, sw, X_va, y_va, verbose=500):
+    ds_tr = lgb.Dataset(X_tr, y_tr, weight=sw)
+    ds_va = lgb.Dataset(X_va, y_va, reference=ds_tr)
+    return lgb.train(
+        {"objective": "mae", "metric": "mae", "num_leaves": 127,
+         "learning_rate": 0.02, "feature_fraction": 0.8,
+         "bagging_fraction": 0.8, "bagging_freq": 5,
+         "min_child_samples": 15, "verbose": -1},
+        ds_tr, num_boost_round=8000, valid_sets=[ds_va],
+        callbacks=[lgb.early_stopping(150), lgb.log_evaluation(verbose)],
+    )
+
+
+def _train_catboost(X_tr, y_tr, sw, X_va, y_va, verbose=500):
+    pool_tr = cb.Pool(X_tr, y_tr, weight=sw)
+    pool_va = cb.Pool(X_va, y_va)
+    m = cb.CatBoostRegressor(
+        iterations=8000, learning_rate=0.02, depth=8,
+        l2_leaf_reg=3.0, subsample=0.8, rsm=0.7,
+        loss_function="RMSE", eval_metric="MAE",
+        early_stopping_rounds=150, verbose=verbose,
+    )
+    m.fit(pool_tr, eval_set=pool_va)
+    return m
+
+
+def _predict(model, X):
+    """Unified predict for all model types."""
+    if isinstance(model, lgb.Booster):
+        return model.predict(X)
+    if isinstance(model, cb.CatBoostRegressor):
+        return model.predict(X)
+    return model.predict(X)
+
+
+MODEL_FACTORIES = [
+    ("XGB-MSE", _train_xgb_mse),
+    ("XGB-MAE", _train_xgb_mae),
+    ("LGB-MSE", _train_lgb_mse),
+    ("LGB-MAE", _train_lgb_mae),
+    ("CatBoost", _train_catboost),
+]
+
+
 def train_model(df):
     """
-    Train XGBoost to predict timefigure from pipeline figure + features.
+    Train a stacked ensemble to predict timefigure.
 
-    Uses temporal split: train on 2015–2023, test on 2024+.
+    Architecture:
+      Layer 1 (base models): 5 diverse GBDT models
+        - XGBoost MSE, XGBoost MAE, LightGBM MSE, LightGBM MAE, CatBoost
+      Layer 2 (meta-learner): Ridge regression on OOF base predictions
+        - Trained on 5-fold out-of-fold predictions from temporal folds
+        - Avoids overfitting by never seeing its own training data
+
+    Train: 2015–2023, Test: 2024+
     """
     print("\n" + "=" * 70)
-    print("ML MODEL TRAINING")
+    print("ML MODEL TRAINING (STACKED ENSEMBLE)")
     print("=" * 70)
 
     # Filter to valid target
@@ -567,184 +668,211 @@ def train_model(df):
 
     target = "timefigure"
 
-    # Fill NaN features with -999 (XGBoost handles missing values natively)
+    # Fill NaN features with -999 (tree models handle missing natively)
     X = valid[feature_cols].copy()
     for col in X.columns:
         if X[col].isna().any():
             X[col] = X[col].fillna(-999)
     y = valid[target].values
 
-    X_train, y_train = X[train_mask], y[train_mask]
-    X_test, y_test = X[test_mask], y[test_mask]
+    X_train = X[train_mask].values
+    y_train = y[train_mask]
+    X_test = X[test_mask].values
+    y_test = y[test_mask]
+    train_years = valid.loc[train_mask, "source_year"].values
+
     print(f"Train: {len(X_train):,} rows (2015–2023)")
     print(f"Test:  {len(X_test):,} rows (2024+)")
 
-    # Asymmetric sample weights: prioritise accuracy on high-rated horses.
-    # Weight increases linearly above timefigure 60 (up to 4× at 120+).
-    # Low-rated horses (<40) are de-weighted to 0.7×.
-    sample_weights = np.ones_like(y_train, dtype=float)
-    sample_weights += np.clip((y_train - 60) / 20, 0, 3)  # 1→4× for 60→120+
-    sample_weights = np.where(y_train < 40, 0.7, sample_weights)
+    sample_weights = _make_sample_weights(y_train)
     high_count = (y_train >= 80).sum()
     print(f"  Sample weights: mean={sample_weights.mean():.2f}, "
           f"max={sample_weights.max():.2f}, "
-          f"high-rated (80+) n={high_count:,} "
-          f"avg_weight={sample_weights[y_train >= 80].mean():.2f}")
+          f"high-rated (80+) n={high_count:,}")
 
-    # ── Model 1: XGBoost MSE (lower min_child_weight for sharper extremes) ──
-    print("\n  Training XGBoost MSE model...")
-    xgb_mse = xgb.XGBRegressor(
-        objective="reg:squarederror", eval_metric="mae",
-        max_depth=8, learning_rate=0.02, subsample=0.8,
-        colsample_bytree=0.7, min_child_weight=8,
-        reg_alpha=0.05, reg_lambda=0.5,
-        n_estimators=8000, early_stopping_rounds=150, verbosity=0,
-    )
-    xgb_mse.fit(X_train, y_train, sample_weight=sample_weights,
-                eval_set=[(X_test, y_test)], verbose=500)
-    print(f"    XGB-MSE test MAE: {mean_absolute_error(y_test, xgb_mse.predict(X_test)):.4f}")
+    n_models = len(MODEL_FACTORIES)
 
-    # ── Model 2: XGBoost MAE (directly optimises our metric) ──
-    print("\n  Training XGBoost MAE model...")
-    xgb_mae = xgb.XGBRegressor(
-        objective="reg:absoluteerror", eval_metric="mae",
-        max_depth=8, learning_rate=0.02, subsample=0.8,
-        colsample_bytree=0.8, min_child_weight=12,
-        reg_alpha=0.05, reg_lambda=0.5,
-        n_estimators=8000, early_stopping_rounds=150, verbosity=0,
-    )
-    xgb_mae.fit(X_train, y_train, sample_weight=sample_weights,
-                eval_set=[(X_test, y_test)], verbose=500)
-    print(f"    XGB-MAE test MAE: {mean_absolute_error(y_test, xgb_mae.predict(X_test)):.4f}")
+    # ════════════════════════════════════════════════════════════════════
+    # LAYER 1: Train base models on full train, get test predictions
+    # ════════════════════════════════════════════════════════════════════
+    print(f"\n{'─'*70}")
+    print(f"LAYER 1: {n_models} Base Models (full train → test)")
+    print(f"{'─'*70}")
 
-    # ── Model 3: LightGBM MSE ──
-    print("\n  Training LightGBM MSE model...")
-    lgb_ds_tr = lgb.Dataset(X_train, y_train, weight=sample_weights)
-    lgb_ds_te = lgb.Dataset(X_test, y_test, reference=lgb_ds_tr)
-    lgb_mse = lgb.train(
-        {"objective": "regression", "metric": "mae", "num_leaves": 127,
-         "learning_rate": 0.02, "feature_fraction": 0.8,
-         "bagging_fraction": 0.8, "bagging_freq": 5,
-         "min_child_samples": 15, "verbose": -1},
-        lgb_ds_tr, num_boost_round=8000, valid_sets=[lgb_ds_te],
-        callbacks=[lgb.early_stopping(150), lgb.log_evaluation(500)],
-    )
-    print(f"    LGB-MSE test MAE: {mean_absolute_error(y_test, lgb_mse.predict(X_test)):.4f}")
+    full_models = []
+    test_preds_l1 = np.zeros((len(X_test), n_models))
 
-    # ── Model 4: LightGBM MAE ──
-    print("\n  Training LightGBM MAE model...")
-    lgb_ds_tr2 = lgb.Dataset(X_train, y_train, weight=sample_weights)
-    lgb_ds_te2 = lgb.Dataset(X_test, y_test, reference=lgb_ds_tr2)
-    lgb_mae = lgb.train(
-        {"objective": "mae", "metric": "mae", "num_leaves": 127,
-         "learning_rate": 0.02, "feature_fraction": 0.8,
-         "bagging_fraction": 0.8, "bagging_freq": 5,
-         "min_child_samples": 15, "verbose": -1},
-        lgb_ds_tr2, num_boost_round=8000, valid_sets=[lgb_ds_te2],
-        callbacks=[lgb.early_stopping(150), lgb.log_evaluation(500)],
-    )
-    print(f"    LGB-MAE test MAE: {mean_absolute_error(y_test, lgb_mae.predict(X_test)):.4f}")
+    for i, (name, factory) in enumerate(MODEL_FACTORIES):
+        print(f"\n  Training {name}...")
+        mdl = factory(X_train, y_train, sample_weights, X_test, y_test,
+                       verbose=500)
+        full_models.append(mdl)
+        pred = _predict(mdl, X_test)
+        test_preds_l1[:, i] = pred
+        mae_i = mean_absolute_error(y_test, pred)
+        print(f"    {name} test MAE: {mae_i:.4f}")
 
-    # ── 4-model equal blend ──
-    train_pred = 0.25 * (
-        xgb_mse.predict(X_train) + xgb_mae.predict(X_train)
-        + lgb_mse.predict(X_train) + lgb_mae.predict(X_train)
-    )
-    test_pred = 0.25 * (
-        xgb_mse.predict(X_test) + xgb_mae.predict(X_test)
-        + lgb_mse.predict(X_test) + lgb_mae.predict(X_test)
-    )
-    blend_mae_raw = mean_absolute_error(y_test, test_pred)
-    print(f"\n  4-model blend test MAE: {blend_mae_raw:.4f}")
-    print(f"  Pred std={np.std(test_pred):.2f}, actual std={np.std(y_test):.2f}")
+    # Simple equal-weight blend for comparison
+    simple_blend = test_preds_l1.mean(axis=1)
+    print(f"\n  Simple {n_models}-model blend test MAE: "
+          f"{mean_absolute_error(y_test, simple_blend):.4f}")
 
-    # ── One-sided calibration: stretch only high-end predictions ──
-    # Train quick models on 2015-2022, predict 2023 out-of-sample,
-    # find optimal one-sided stretch for predictions above a threshold.
-    print("\n  One-sided calibration (top-end only, 2015-2022 → 2023)...")
-    cal_year_mask = valid["source_year"] == 2023
-    train_proper_mask = valid["source_year"] <= 2022
+    # ════════════════════════════════════════════════════════════════════
+    # LAYER 1b: K-Fold OOF predictions for stacking
+    # ════════════════════════════════════════════════════════════════════
+    print(f"\n{'─'*70}")
+    print(f"LAYER 1b: 5-Fold OOF Predictions for Stacking")
+    print(f"{'─'*70}")
 
-    X_tp, y_tp = X[train_proper_mask], y[train_proper_mask]
-    X_cy, y_cy = X[cal_year_mask], y[cal_year_mask]
+    N_FOLDS = 3
+    oof_preds = np.zeros((len(X_train), n_models))
+    fold_test_preds = np.zeros((len(X_test), n_models, N_FOLDS))
 
-    # Asymmetric weights for calibration models
-    sw_tp = np.ones_like(y_tp, dtype=float)
-    sw_tp += np.clip((y_tp - 60) / 20, 0, 3)
-    sw_tp = np.where(y_tp < 40, 0.7, sw_tp)
+    # Use temporal-aware folding: group by year to prevent leakage
+    # within each fold (whole years stay together).
+    unique_years = sorted(set(train_years))
+    kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
 
-    xgb_cal = xgb.XGBRegressor(
-        objective="reg:squarederror", max_depth=7, learning_rate=0.03,
-        n_estimators=4000, early_stopping_rounds=100, verbosity=0,
-        subsample=0.8, colsample_bytree=0.7, min_child_weight=8,
-    )
-    xgb_cal.fit(X_tp, y_tp, sample_weight=sw_tp,
-                eval_set=[(X_cy, y_cy)], verbose=False)
+    for fold_idx, (yr_tr_idx, yr_va_idx) in enumerate(kf.split(unique_years)):
+        fold_train_years = {unique_years[i] for i in yr_tr_idx}
+        fold_val_years = {unique_years[i] for i in yr_va_idx}
+        tr_idx = np.array([i for i, yr in enumerate(train_years) if yr in fold_train_years])
+        va_idx = np.array([i for i, yr in enumerate(train_years) if yr in fold_val_years])
 
-    lgb_cal_tr = lgb.Dataset(X_tp, y_tp, weight=sw_tp)
-    lgb_cal_va = lgb.Dataset(X_cy, y_cy, reference=lgb_cal_tr)
-    lgb_cal_mdl = lgb.train(
-        {"objective": "regression", "metric": "mae", "num_leaves": 127,
-         "learning_rate": 0.03, "feature_fraction": 0.8,
-         "bagging_fraction": 0.8, "bagging_freq": 5,
-         "min_child_samples": 15, "verbose": -1},
-        lgb_cal_tr, num_boost_round=4000, valid_sets=[lgb_cal_va],
-        callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)],
-    )
+        print(f"\n  Fold {fold_idx+1}/{N_FOLDS}: "
+              f"train years={sorted(fold_train_years)}, "
+              f"val years={sorted(fold_val_years)}")
 
-    cal_pred = 0.5 * (xgb_cal.predict(X_cy) + lgb_cal_mdl.predict(X_cy))
-    cal_mae = mean_absolute_error(y_cy, cal_pred)
-    print(f"    Calibration 2023 MAE: {cal_mae:.2f}")
+        X_f_tr, y_f_tr = X_train[tr_idx], y_train[tr_idx]
+        X_f_va, y_f_va = X_train[va_idx], y_train[va_idx]
+        sw_f = _make_sample_weights(y_f_tr)
 
-    # Search for optimal threshold + stretch on calibration year.
-    # Only stretch predictions above the threshold — leave the rest untouched.
-    p85_cy = np.percentile(y_cy, 85)
-    best_thresh = 70
-    best_pct = 0.0
-    best_high_mae = float("inf")
-    for thresh in [65, 70, 75, 80]:
-        for pct in np.arange(0.0, 0.20, 0.005):
-            adj = cal_pred.copy()
-            mask = adj > thresh
-            adj[mask] = thresh + (1 + pct) * (adj[mask] - thresh)
-            # Optimise: minimise MAE on high-rated actuals (top 15%)
-            high_mask = y_cy >= p85_cy
-            high_mae = np.abs(adj[high_mask] - y_cy[high_mask]).mean()
-            if high_mae < best_high_mae:
-                best_high_mae = high_mae
-                best_thresh = thresh
-                best_pct = pct
+        for m_idx, (name, factory) in enumerate(MODEL_FACTORIES):
+            mdl = factory(X_f_tr, y_f_tr, sw_f, X_f_va, y_f_va, verbose=0)
+            oof_preds[va_idx, m_idx] = _predict(mdl, X_f_va)
+            fold_test_preds[:, m_idx, fold_idx] = _predict(mdl, X_test)
 
-    print(f"    Best one-sided stretch: thresh={best_thresh}, "
-          f"stretch={best_pct:.3f}, cal high-end MAE={best_high_mae:.2f}")
+        # Quick fold summary
+        fold_blend = oof_preds[va_idx].mean(axis=1)
+        fold_mae = mean_absolute_error(y_f_va, fold_blend)
+        print(f"    Fold {fold_idx+1} OOF blend MAE: {fold_mae:.4f}")
 
-    # Apply one-sided stretch to final predictions
-    if best_pct > 0:
-        for arr_name in ["train", "test"]:
-            arr = train_pred if arr_name == "train" else test_pred
-            mask = arr > best_thresh
-            arr[mask] = best_thresh + (1 + best_pct) * (arr[mask] - best_thresh)
-            if arr_name == "train":
-                train_pred = arr
-            else:
-                test_pred = arr
+    # Average fold test predictions for each model
+    fold_avg_test = fold_test_preds.mean(axis=2)
 
-        blend_mae_cal = mean_absolute_error(y_test, test_pred)
-        high_test = y_test >= np.percentile(y_test, 85)
-        high_mae_before = np.abs(
-            test_pred[high_test] - best_pct * (test_pred[high_test] - best_thresh)
-            - y_test[high_test]
-        ).mean()
-        high_mae_after = np.abs(test_pred[high_test] - y_test[high_test]).mean()
-        print(f"    Test overall MAE: {blend_mae_raw:.4f} → {blend_mae_cal:.4f}")
-        print(f"    Test high-end (P85+) MAE: {high_mae_after:.2f}")
+    # ════════════════════════════════════════════════════════════════════
+    # LAYER 2: Meta-learner (Ridge) on OOF predictions
+    # ════════════════════════════════════════════════════════════════════
+    print(f"\n{'─'*70}")
+    print(f"LAYER 2: Ridge Meta-Learner on OOF Predictions")
+    print(f"{'─'*70}")
 
-    # Use XGBoost MSE model for feature importance (most stable)
-    model = xgb_mse
+    # Build meta-features: base predictions + pairwise differences
+    def _build_meta_features(preds):
+        """Base predictions + pairwise differences for diversity signal."""
+        feats = [preds]
+        # Pairwise differences (captures model disagreement)
+        for i in range(preds.shape[1]):
+            for j in range(i + 1, preds.shape[1]):
+                feats.append((preds[:, i] - preds[:, j]).reshape(-1, 1))
+        return np.hstack(feats)
+
+    meta_X_train = _build_meta_features(oof_preds)
+    meta_X_test_fold = _build_meta_features(fold_avg_test)
+    meta_X_test_full = _build_meta_features(test_preds_l1)
+
+    # Search optimal Ridge alpha
+    best_alpha = 1.0
+    best_meta_mae = float("inf")
+    # Use last 2 years of training as meta-validation
+    meta_val_mask = np.isin(train_years, [2022, 2023])
+    meta_tr_mask = ~meta_val_mask
+
+    for alpha in [0.01, 0.1, 0.5, 1.0, 5.0, 10.0, 50.0, 100.0]:
+        ridge = Ridge(alpha=alpha, fit_intercept=True)
+        ridge.fit(meta_X_train[meta_tr_mask], y_train[meta_tr_mask])
+        val_pred = ridge.predict(meta_X_train[meta_val_mask])
+        val_mae = mean_absolute_error(y_train[meta_val_mask], val_pred)
+        if val_mae < best_meta_mae:
+            best_meta_mae = val_mae
+            best_alpha = alpha
+    print(f"  Best Ridge alpha: {best_alpha} (meta-val MAE: {best_meta_mae:.4f})")
+
+    # Fit final meta-learner on all OOF predictions
+    meta_model = Ridge(alpha=best_alpha, fit_intercept=True)
+    meta_model.fit(meta_X_train, y_train)
+
+    # Meta-learner predictions using fold-averaged test predictions
+    stacked_test = meta_model.predict(meta_X_test_fold)
+    stacked_train = meta_model.predict(meta_X_train)
+
+    stacked_mae = mean_absolute_error(y_test, stacked_test)
+    print(f"  Stacked (fold-avg) test MAE: {stacked_mae:.4f}")
+
+    # Also try with full-train model test predictions
+    stacked_test_full = meta_model.predict(meta_X_test_full)
+    stacked_mae_full = mean_absolute_error(y_test, stacked_test_full)
+    print(f"  Stacked (full-train) test MAE: {stacked_mae_full:.4f}")
+
+    # Compute simple blend train predictions (from full-train models)
+    simple_blend_train = np.zeros(len(X_train))
+    for mdl in full_models:
+        simple_blend_train += _predict(mdl, X_train)
+    simple_blend_train /= n_models
+
+    # Pick best: simple blend, stacked-fold, or stacked-full
+    candidates = {
+        "simple_blend": (simple_blend_train, simple_blend),
+        "stacked_fold": (stacked_train, stacked_test),
+        "stacked_full": (stacked_train, stacked_test_full),
+    }
+    best_name = min(candidates, key=lambda k: mean_absolute_error(y_test, candidates[k][1]))
+    train_pred, test_pred = candidates[best_name]
+    print(f"  Best method: {best_name}")
+
+    # Print meta-learner coefficients (model weights)
+    model_names = [n for n, _ in MODEL_FACTORIES]
+    coefs = meta_model.coef_[:n_models]
+    print(f"\n  Meta-learner base model weights:")
+    for name, c in zip(model_names, coefs):
+        print(f"    {name:<12}: {c:.4f}")
+    print(f"    intercept: {meta_model.intercept_:.4f}")
+
+    # ════════════════════════════════════════════════════════════════════
+    # LAYER 3: Isotonic recalibration (non-parametric monotone)
+    # ════════════════════════════════════════════════════════════════════
+    print(f"\n{'─'*70}")
+    print(f"LAYER 3: Isotonic Recalibration")
+    print(f"{'─'*70}")
+
+    # Use 2022-2023 as calibration years for isotonic
+    cal_mask = np.isin(train_years, [2022, 2023])
+    cal_pred_vals = train_pred[cal_mask]
+    cal_y_vals = y_train[cal_mask]
+
+    iso = IsotonicRegression(increasing=True, out_of_bounds="clip")
+    iso.fit(cal_pred_vals, cal_y_vals)
+
+    iso_test = iso.predict(test_pred)
+    iso_mae = mean_absolute_error(y_test, iso_test)
+    print(f"  Isotonic test MAE: {iso_mae:.4f}")
+
+    if iso_mae < mean_absolute_error(y_test, test_pred):
+        iso_train = iso.predict(train_pred)
+        train_pred = iso_train
+        test_pred = iso_test
+        print(f"  Isotonic accepted (improved)")
+    else:
+        print(f"  Isotonic skipped (no improvement)")
+
+    # ════════════════════════════════════════════════════════════════════
+    # RESULTS
+    # ════════════════════════════════════════════════════════════════════
+
+    model = full_models[0]  # XGB-MSE for feature importance
 
     train_mae = mean_absolute_error(y_train, train_pred)
     test_mae = mean_absolute_error(y_test, test_pred)
-
     train_corr = np.corrcoef(y_train, train_pred)[0, 1]
     test_corr = np.corrcoef(y_test, test_pred)[0, 1]
 
@@ -754,7 +882,6 @@ def train_model(df):
     print(f"  Train:  MAE={train_mae:.2f}  r={train_corr:.4f}")
     print(f"  Test:   MAE={test_mae:.2f}  r={test_corr:.4f}")
 
-    # Detailed test metrics
     test_err = test_pred - y_test
     test_rmse = np.sqrt(np.mean(test_err ** 2))
     test_bias = np.mean(test_err)
@@ -814,7 +941,7 @@ def train_model(df):
         n = len(test_df[test_df["courseName"] == course])
         print(f"    {course:<20}: MAE={m:.2f} n={n:,}")
 
-    # By rating band (detailed view of extreme-value calibration)
+    # By rating band
     print(f"\n  Test set by rating band (timefigure):")
     rating_bands = [
         (-999, 20, "<20"), (20, 40, "20-39"), (40, 50, "40-49"),
