@@ -44,6 +44,7 @@ from speed_figures import (
     SECONDS_PER_LENGTH,
     LBS_PER_SECOND_5F,
     BENCHMARK_FURLONGS,
+    LPL_SURFACE_MULTIPLIER,
     SEX_ALLOWANCE_SUMMER,
     SEX_ALLOWANCE_WINTER,
     FEMALE_GENDERS,
@@ -790,7 +791,10 @@ class LiteRatingEngine:
         std_df["mean_spf"] = std_df["dist_band"].map(mean_spf)
         std_df["correction"] = std_df["mean_spf"] / std_df["spf"]
         std_df["generic_lpl"] = std_df["distance"].apply(generic_lbs_per_length)
-        std_df["course_lpl"] = std_df["generic_lpl"] * std_df["correction"]
+        std_df["surf_mult"] = std_df["surface"].map(LPL_SURFACE_MULTIPLIER).fillna(1.0)
+        std_df["course_lpl"] = (
+            std_df["generic_lpl"] * std_df["correction"] * std_df["surf_mult"]
+        )
         self.lpl_dict = dict(zip(std_df["std_key"], std_df["course_lpl"]))
 
     def _fit_calibration(self):

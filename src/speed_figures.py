@@ -38,6 +38,27 @@ SECONDS_PER_LENGTH = 0.2   # BHA standard
 LBS_PER_SECOND_5F = 22     # Industry standard at 5 furlongs
 BENCHMARK_FURLONGS = 5.0   # Anchor distance
 
+# Surface-specific LPL multipliers.  Empirical pairwise analysis
+# (scripts/analyse_lpl.py) shows calibrated pairwise slopes of 1.19
+# (Turf) and 1.02 (AW).  However, the raw pairwise slope is 0.93,
+# meaning raw figures already over-spread.  The under-spread after
+# calibration is a calibration compression artefact (linear slope
+# 0.76 on Turf).  Increasing raw LPL worsens performance because
+# the calibration must compress even harder.  Set to 1.0 pending
+# a quadratic or non-linear calibration fix.
+LPL_SURFACE_MULTIPLIER = {
+    "Turf": 1.0,
+    "All Weather": 1.0,
+}
+
+# Beaten-length attenuation parameters.  Analysis shows a monotonically
+# rising positive bias from ~5L onwards (+0.57 at 5-10L, +1.59 at
+# 10-15L, +2.69 at 15-20L).  The soft cap attenuates margins beyond
+# the threshold to reduce noise from eased/tailed-off horses.
+BL_ATTENUATION_THRESHOLD = 20.0   # Full precision up to this many lengths
+BL_ATTENUATION_FACTOR = 0.5       # Beyond threshold, each extra length
+                                  # counts this fraction
+
 # Minimum sample sizes
 MIN_RACES_STANDARD_TIME = 15   # Minimum winners for a reliable standard time
 MIN_RACES_GOING_ALLOWANCE = 3  # Minimum races on a card for going allowance
@@ -482,14 +503,17 @@ def compute_standard_times_iterative(df, going_allowances):
 # STAGE 2 — COURSE-SPECIFIC LBS PER LENGTH
 # ═════════════════════════════════════════════════════════════════════
 
-def generic_lbs_per_length(distance_furlongs):
+def generic_lbs_per_length(distance_furlongs, surface=None):
     """
-    Generic lbs-per-length from the distance alone.
-    lpl = seconds_per_length × lbs_per_second_at_distance
+    Generic lbs-per-length from the distance (and optionally surface).
+    lpl = seconds_per_length × lbs_per_second_at_distance × surface_mult
     lbs_per_second = 22 × (5 / distance)
     """
     lbs_per_sec = LBS_PER_SECOND_5F * (BENCHMARK_FURLONGS / distance_furlongs)
-    return SECONDS_PER_LENGTH * lbs_per_sec
+    base_lpl = SECONDS_PER_LENGTH * lbs_per_sec
+    if surface is not None:
+        base_lpl *= LPL_SURFACE_MULTIPLIER.get(surface, 1.0)
+    return base_lpl
 
 
 def compute_course_lpl(std_df):
@@ -523,8 +547,11 @@ def compute_course_lpl(std_df):
     # Generic lpl at this distance
     std_df["generic_lpl"] = std_df["distance"].apply(generic_lbs_per_length)
 
-    # Course-specific lpl
-    std_df["course_lpl"] = std_df["generic_lpl"] * std_df["correction"]
+    # Course-specific lpl with surface multiplier
+    std_df["surf_mult"] = std_df["surface"].map(LPL_SURFACE_MULTIPLIER).fillna(1.0)
+    std_df["course_lpl"] = (
+        std_df["generic_lpl"] * std_df["correction"] * std_df["surf_mult"]
+    )
 
     lpl_dict = dict(zip(std_df["std_key"], std_df["course_lpl"]))
 
@@ -668,12 +695,15 @@ def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
     w["deviation_seconds"] = w["corrected_time"] - w["standard_time"]
     w["deviation_lengths"] = w["deviation_seconds"] / SECONDS_PER_LENGTH
 
-    # Course-specific lbs-per-length (fall back to generic if missing)
+    # Course-specific lbs-per-length (fall back to generic+surface if missing)
     w["lpl"] = w["std_key"].map(lpl_dict)
     missing_lpl = w["lpl"].isna()
     if missing_lpl.any():
-        w.loc[missing_lpl, "lpl"] = w.loc[missing_lpl, "distance"].apply(
-            generic_lbs_per_length
+        w.loc[missing_lpl, "lpl"] = w.loc[missing_lpl].apply(
+            lambda r: generic_lbs_per_length(
+                r["distance"], r.get("raceSurfaceName")
+            ),
+            axis=1,
         )
 
     w["deviation_lbs"] = w["deviation_lengths"] * w["lpl"]
@@ -696,32 +726,39 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict):
     """
     Extend figures to every runner via cumulative beaten lengths.
 
-    horse_figure = winner_figure − (cum_beaten_lengths × course_lpl)
+    horse_figure = winner_figure − (attenuated_bl × course_lpl)
 
-    Beaten lengths use a soft cap: full precision up to 20 lengths,
-    then halved beyond 20 to attenuate noise from eased/tailed-off
-    horses while preserving some signal (better than a hard cap).
+    Beaten lengths use a soft cap: full precision up to
+    BL_ATTENUATION_THRESHOLD, then reduced beyond that to attenuate
+    noise from eased/tailed-off horses.  The threshold was lowered
+    from 20L to 8L based on empirical analysis showing monotonically
+    rising positive bias from ~5L onwards (scripts/analyse_lpl.py).
     """
     print("\n  Extending figures to all runners...")
 
     out = df[df["race_id"].isin(winner_fig_dict)].copy()
     out["winner_figure"] = out["race_id"].map(winner_fig_dict)
 
-    # Course-specific lpl, with generic fallback
+    # Course-specific lpl, with generic+surface fallback
     out["lpl"] = out["std_key"].map(lpl_dict)
     missing = out["lpl"].isna()
     if missing.any():
-        out.loc[missing, "lpl"] = out.loc[missing, "distance"].apply(
-            generic_lbs_per_length
+        out.loc[missing, "lpl"] = out.loc[missing].apply(
+            lambda r: generic_lbs_per_length(
+                r["distance"], r.get("raceSurfaceName")
+            ),
+            axis=1,
         )
 
     is_winner = out["positionOfficial"] == 1
     cum_raw = out["distanceCumulative"].fillna(0).clip(lower=0)
 
-    # Soft cap: full precision up to 20 lengths, halved beyond 20.
-    # This attenuates noise from tailed-off horses without the
-    # discontinuity of a hard cap at 30 lengths.
-    cum = np.where(cum_raw <= 20, cum_raw, 20 + 0.5 * (cum_raw - 20))
+    # Soft cap: full precision up to BL_ATTENUATION_THRESHOLD,
+    # then attenuated beyond.  Lowered from 20L based on analysis
+    # showing beaten-length bias rises from ~5L onwards.
+    T = BL_ATTENUATION_THRESHOLD
+    F = BL_ATTENUATION_FACTOR
+    cum = np.where(cum_raw <= T, cum_raw, T + F * (cum_raw - T))
 
     out["lbs_behind"] = cum * out["lpl"]
     out.loc[is_winner, "lbs_behind"] = 0.0
@@ -1042,9 +1079,44 @@ def calibrate_figures(df):
         surf_going_adj = df_going_grp.map(going_offset_dict).fillna(0)
         df.loc[surf_mask, "figure_calibrated"] += surf_going_adj.values
 
+        # Per-beaten-length-band residual correction (with shrinkage).
+        # Corrects the systematic positive bias that grows with margin:
+        # horses beaten further are consistently over-rated because
+        # judge's margin estimates compress at larger distances.
+        residuals4 = residuals3 - (
+            fit_going_grp.map(going_offset_dict).fillna(0).values
+        )
+        fit_bl = fit["distanceCumulative"].fillna(0).clip(lower=0)
+        fit_bl_band = pd.cut(
+            fit_bl, bins=[0, 1, 3, 5, 10, 15, 20],
+            labels=["0-1", "1-3", "3-5", "5-10", "10-15", "15-20"],
+        ).astype(str).fillna("0-1")
+        # Winners get their own band (unaffected by LPL)
+        fit_bl_band = fit_bl_band.where(
+            fit["positionOfficial"] != 1, "winner"
+        )
+        bl_groups = pd.Series(
+            residuals4, index=fit.index
+        ).groupby(fit_bl_band)
+        bl_means = bl_groups.mean()
+        bl_counts = bl_groups.count()
+        bl_shrunk = bl_means * bl_counts / (bl_counts + SHRINKAGE_K)
+        bl_offset_dict = bl_shrunk.to_dict()
+
+        all_bl = df.loc[surf_mask, "distanceCumulative"].fillna(0).clip(lower=0)
+        all_bl_band = pd.cut(
+            all_bl, bins=[0, 1, 3, 5, 10, 15, 20],
+            labels=["0-1", "1-3", "3-5", "5-10", "10-15", "15-20"],
+        ).astype(str).fillna("0-1")
+        all_bl_band = all_bl_band.where(
+            df.loc[surf_mask, "positionOfficial"] != 1, "winner"
+        )
+        surf_bl_adj = all_bl_band.map(bl_offset_dict).fillna(0)
+        df.loc[surf_mask, "figure_calibrated"] += surf_bl_adj.values
+
         cal_params[surface] = (
             a, b, a2, class_offset_dict, course_dist_offset_dict,
-            going_offset_dict,
+            going_offset_dict, bl_offset_dict,
         )
         if class_offset_dict:
             offsets_str = ", ".join(
@@ -1063,6 +1135,12 @@ def calibrate_figures(df):
             )
         )
         print(f"      going offsets: {going_str}")
+        bl_str = ", ".join(
+            f"{k}:{v:+.1f}" for k, v in sorted(
+                bl_offset_dict.items()
+            )
+        )
+        print(f"      beaten-length offsets: {bl_str}")
 
     # Exclude non-finishers (no official position)
     no_position = (

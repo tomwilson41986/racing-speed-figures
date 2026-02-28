@@ -240,9 +240,136 @@ representative distances:
 
 ---
 
+## Lbs-Per-Length (LPL) Analysis
+
+### Current Implementation
+
+LPL is computed **per course × distance × surface** (413 combos). The method:
+
+1. Generic LPL from distance: `lpl = 0.2 × 22 × (5 / distance_furlongs)`
+2. Course correction: `mean_spf / this_course_spf` (faster courses → higher lpl)
+3. Beaten lengths converted via: `lbs_behind = cumulative_bl × course_lpl`
+
+### LPL Distribution
+
+| Distance | Generic | Mean (course-adjusted) | Min | Max | N Courses |
+|----------|---------|------------------------|-----|-----|-----------|
+| 5f | 4.40 | 4.37 | 4.09 | 4.70 (Epsom) | 47 |
+| 8f | 2.75 | 2.74 | 2.53 | 3.03 | 54 |
+| 12f | 1.83 | 1.83 | 1.61 | 1.93 | 48 |
+| 16f | 1.38 | 1.37 | 1.29 | 1.43 | 27 |
+
+Course-specific corrections are small (±7% at most), dominated by Epsom (+6.9%,
+downhill → horses spread more) and tight tracks like Chester (-3%).
+
+### Industry Comparison
+
+| Source | 5f lpl | 8f lpl | Notes |
+|--------|--------|--------|-------|
+| **Our pipeline** | 4.40 | 2.75 | 22 lbs/sec at 5f |
+| **BHA handicapper** | ~3.00 | ~1.88 | 15 ÷ distance formula |
+| **Timeform (Rowlands)** | ~4.0+ | ~2.5+ | "25-30% higher than BHA" |
+| **Raceform** | ~3.20 | ~2.00 | 16 ÷ distance formula |
+| **Beyer (US)** | ~3 pts/L | ~2 pts/L | Different scale |
+
+Our 22 lbs/sec sits between BHA (low) and Timeform (high), which is appropriate since
+we calibrate against Timeform's timefigure as target.
+
+### Pairwise Spread Analysis
+
+Tested whether our figure differences between horses in the same race match Timeform's
+differences (507K winner-vs-beaten pairs):
+
+| Level | Slope (tf_diff = β × our_diff) | Interpretation |
+|-------|-------------------------------|----------------|
+| **Calibrated** | 1.07 | 7% under-spread (after BL correction) |
+| **Raw (pre-cal)** | 0.93 | 7% over-spread |
+
+The raw figures over-spread by 7%, then calibration (linear slope 0.76 Turf) compresses
+by ~24%, resulting in net 7% under-spread.  This is a calibration artefact, not an LPL
+error — increasing raw LPL was tested (Turf ×1.15) and **degraded** MAE from 7.99 to
+8.50 because it forced even more calibration compression.
+
+By surface: Turf slope = 1.19 (significant under-spread), AW slope = 1.02 (correct).
+The Turf calibration slope (0.76) is the bottleneck.
+
+### Beaten-Length Bias (Before/After Correction)
+
+Analysis revealed systematic position-dependent bias: horses beaten further were
+consistently over-rated (positive residual), while winners were under-rated.
+
+**Before correction (bias by beaten lengths):**
+
+| BL Range | Bias | MAE |
+|----------|------|-----|
+| 0-1L | -0.11 | 8.03 |
+| 3-5L | +0.00 | 7.95 |
+| 5-10L | +0.57 | 7.86 |
+| 10-15L | +1.59 | 8.03 |
+| 15-20L | +2.69 | 8.36 |
+
+**After correction (per-BL-band residual offsets in calibration):**
+
+| BL Range | Bias | MAE |
+|----------|------|-----|
+| 0-1L | +0.76 | 7.98 |
+| 3-5L | +0.39 | 7.93 |
+| 5-10L | +0.45 | 7.85 |
+| 10-15L | +0.46 | 7.92 |
+| 15-20L | +0.42 | 7.99 |
+
+The correction flattened the bias from a -0.11 to +2.69 range → uniformly ~+0.4.
+
+**Calibration BL offsets (Turf):** winner +2.2, 0-1L +1.2, 1-3L +1.0, 3-5L +0.5,
+5-10L -0.3, 10-15L -1.8, 15-20L -3.4
+
+**AW BL offsets:** near zero across all bands (AW LPL already well-calibrated).
+
+### Impact on Overall Metrics
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| **Correlation** | 0.8836 | **0.8862** | +0.0026 |
+| **MAE** | 7.99 | **7.93** | -0.06 |
+| **RMSE** | 10.57 | **10.50** | -0.07 |
+| **Turf MAE** | 8.81 | **8.71** | -0.10 |
+| **AW MAE** | 6.67 | **6.66** | -0.01 |
+| **Std Dev** | 20.8 | **21.3** | +0.5 (closer to TFig 26.0) |
+
+### Root Cause of the Turf BL Bias
+
+The Turf beaten-length bias likely comes from two sources:
+
+1. **Judge's margin compression** — Official margins are conversions of time lapses
+   (since 1997), but the judge's estimation of physical margins at the finish compresses
+   at larger distances.  A "20 lengths" call may actually represent 22-24 lengths of
+   time lapse.  Rowlands has noted this discrepancy.
+
+2. **Eased horses** — Horses beaten 10+ lengths are often eased by their jockeys in the
+   final furlong.  The official margin understates what the true ability gap was.
+
+On AW, the effect is minimal because AW fields are more compressed (tighter ability
+range, more consistent surfaces).
+
+### Remaining Improvement Opportunities
+
+1. **Non-linear calibration for Turf** — The quadratic term was not selected for Turf
+   (linear MSE was not sufficiently worse).  A higher-order calibration or separate
+   slopes for the upper/lower halves of the figure range could reduce the pairwise
+   under-spread without inflating raw LPL.
+
+2. **Going-dependent LPL** — The pairwise slope varies by going (Soft: 1.19, GdSft:
+   1.07, Good: 1.10).  Soft-going margins may need a different conversion, but the
+   sample is smaller and the effect is partially captured by the going offset layer.
+
+3. **Fortnightly LPL smoothing** — Standard times have seasonal variation (summer track
+   is faster than winter).  Seasonal LPL adjustment could capture this.
+
+---
+
 ## Key Observations & Improvement Opportunities
 
-1. **Compressed scale (Std 20.8 vs 26.0):** The pipeline under-spreads figures at the tails. A stretch/compression recalibration for extreme ratings could close this gap.
+1. **Compressed scale (Std 21.3 vs 26.0):** The pipeline under-spreads figures at the tails. The beaten-length correction improved this from 20.8 to 21.3 but the gap to Timeform's 26.0 remains. A non-linear calibration could help.
 
 2. **Large class offsets (C1: +19.9 on Turf):** The class adjustment in Stage 1 isn't fully capturing class-level pace differences — the calibration layer is doing heavy lifting. Refining the `CLASS_ADJUSTMENT_PER_MILE` constants could reduce reliance on post-hoc correction.
 
@@ -250,6 +377,6 @@ representative distances:
 
 4. **Southwell 2025 drift (Bias -3.08):** Southwell shows a growing negative bias in recent years, suggesting the standard times or surface characteristics may be drifting and need recalibration with a shorter lookback window.
 
-5. **MAE of ~8 lbs overall is above the stated goal of MAE < 3.** The ML enhancement layer (`ml_figures.py`) is designed to close this gap using the pipeline figure as its backbone feature.
+5. **MAE of ~7.93 lbs overall is above the stated goal of MAE < 3.** The ML enhancement layer (`ml_figures.py`) is designed to close this gap using the pipeline figure as its backbone feature.
 
 6. **Out-of-sample stability is good:** 2024–2026 show no significant degradation vs in-sample years, confirming the calibration generalises well.
