@@ -60,7 +60,8 @@ BL_ATTENUATION_FACTOR = 0.5       # Beyond threshold, each extra length
                                   # counts this fraction
 
 # Minimum sample sizes
-MIN_RACES_STANDARD_TIME = 15   # Minimum winners for a reliable standard time
+MIN_RACES_STANDARD_TIME = 20   # Minimum winners for a reliable standard time
+                                # (empirical: 15-20 bracket has MAE 12.2 vs 8.8 for 100+)
 MIN_RACES_GOING_ALLOWANCE = 3  # Minimum races on a card for going allowance
 
 # Class adjustments in seconds per mile (8 furlongs).
@@ -362,12 +363,53 @@ def compute_class_adjustment(race_class, distance_furlongs):
     return (adj_per_mile * distance_furlongs) / 8.0
 
 
+def _filter_std_time_winners(winners):
+    """
+    Filter winners for standard-time compilation.
+
+    Excludes:
+      - Maiden races: maiden winners are typically less competitive and
+        run ~0.11s slower, biasing standard times upward.
+      - 2yo-only races: 2yo winners run ~0.14s slower than open-age
+        races at the same distance, distorting the standard.
+
+    The forum consensus (Rowlands, Prufrock, Mordin) is that handicaps
+    confined to older horses give the most reliable times, but excluding
+    maidens/2yo while keeping all other types is a practical compromise
+    that preserves sample size.
+    """
+    mask = pd.Series(True, index=winners.index)
+
+    # Exclude maidens (raceCode P* or S*)
+    if "raceCode" in winners.columns:
+        is_maiden = (
+            winners["raceCode"].str.startswith("P", na=False) |
+            winners["raceCode"].str.startswith("S", na=False)
+        )
+        mask &= ~is_maiden
+
+    # Exclude 2yo-only races
+    if "eligibilityagemin" in winners.columns:
+        is_2yo_only = (
+            (winners["eligibilityagemin"] == 2) &
+            (winners["eligibilityagemax"].astype(str).isin(["2", "2.0"]))
+        )
+        mask &= ~is_2yo_only
+
+    n_excluded = (~mask).sum()
+    if n_excluded > 0:
+        print(f"    Excluded {n_excluded:,} maiden/2yo-only winners "
+              f"from standard-time compilation")
+
+    return winners[mask].copy()
+
+
 def compute_standard_times(df):
     """
     Standard times per track / distance / surface.
 
     For every unique (course, rounded distance, surface) combination:
-      1. Collect all winning times
+      1. Collect all winning times (excluding maidens and 2yo-only)
       2. Prefer races on good/standard going; fall back to all goings
          for combos with sparse good-going data
       3. Apply class adjustment to normalise times
@@ -376,6 +418,7 @@ def compute_standard_times(df):
     print("\n  Computing standard times (per track / distance / surface)...")
 
     winners = df[df["positionOfficial"] == 1].copy()
+    winners = _filter_std_time_winners(winners)
     winners_good = winners[winners["going"].isin(GOOD_GOING)].copy()
 
     print(f"    Winners total: {len(winners):,}")
@@ -457,10 +500,13 @@ def compute_standard_times_iterative(df, going_allowances):
     correct every winner's time for the going effect, then use ALL goings
     (not just good going) to compute more robust standard times.  This
     removes going bias from the standard times and uses much more data.
+
+    Maiden and 2yo-only races are excluded (same filter as initial).
     """
     print("\n    Recomputing standard times (going-corrected, all goings)...")
 
     winners = df[df["positionOfficial"] == 1].copy()
+    winners = _filter_std_time_winners(winners)
 
     # Apply going correction to all winners
     winners["ga"] = winners["meeting_id"].map(going_allowances).fillna(0)

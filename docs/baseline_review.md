@@ -8,26 +8,26 @@
 
 ---
 
-## Overall Metrics (687,956 rows with valid timefigure)
+## Overall Metrics (684,322 rows with valid timefigure)
 
 | Metric | Value |
 |---|---|
-| **Correlation** | 0.8836 |
-| **MAE** | 7.99 lbs |
-| **RMSE** | 10.57 lbs |
-| **Bias** | +0.48 lbs |
+| **Correlation** | 0.8866 |
+| **MAE** | 7.92 lbs |
+| **RMSE** | 10.47 lbs |
+| **Bias** | +0.49 lbs |
 
 ### Error Distribution
 
 | Tolerance | % Within |
 |---|---|
-| ±1 lb | 8.0% |
-| ±2 lbs | 16.0% |
-| ±3 lbs | 23.7% |
-| ±5 lbs | 38.1% |
-| ±10 lbs | 65.5% |
-| ±15 lbs | 80.6% |
-| ±20 lbs | 87.7% |
+| ±1 lb | 8.2% |
+| ±2 lbs | 16.2% |
+| ±3 lbs | 24.0% |
+| ±5 lbs | 38.5% |
+| ±10 lbs | 65.9% |
+| ±15 lbs | 80.8% |
+| ±20 lbs | 87.8% |
 
 ---
 
@@ -35,8 +35,8 @@
 
 | Surface | Correlation | MAE | N |
 |---|---|---|---|
-| **Turf** | 0.8659 | 8.81 | 429,491 |
-| **All Weather** | 0.9084 | 6.67 | 258,465 |
+| **Turf** | 0.8710 | 8.71 | 425,857 |
+| **All Weather** | 0.9085 | 6.66 | 258,465 |
 
 All Weather outperforms Turf by ~2 lbs MAE, likely because AW surfaces are more consistent (no going variation).
 
@@ -46,11 +46,11 @@ All Weather outperforms Turf by ~2 lbs MAE, likely because AW surfaces are more 
 
 | Position | Correlation | MAE | N |
 |---|---|---|---|
-| 1st (winners) | 0.8382 | 8.20 | 73,312 |
-| 2nd | 0.8379 | 8.13 | 73,153 |
-| 3rd | 0.8429 | 8.09 | 73,085 |
-| 4th | 0.8502 | 8.03 | 72,406 |
-| 5th | 0.8569 | 7.98 | 70,164 |
+| 1st (winners) | 0.8410 | 8.07 | 72,921 |
+| 2nd | 0.8395 | 8.07 | 72,762 |
+| 3rd | 0.8440 | 8.06 | 72,700 |
+| 4th | 0.8515 | 8.02 | 72,016 |
+| 5th | 0.8585 | 7.96 | 69,794 |
 
 Notably flat across positions — no significant degradation for beaten horses. Mid-field runners actually have marginally *better* MAE, possibly because extreme winners/losers have more variance.
 
@@ -240,11 +240,136 @@ representative distances:
 
 ---
 
+## Standard Times Analysis
+
+### Current Implementation
+
+Standard times are the bedrock of the pipeline — every figure is a deviation from
+the standard time at that course × distance × surface. The current method:
+
+1. **Winners only** — all winners from 2015-2026 (excluding maiden and 2yo-only races)
+2. **Good going preferred** — initial computation uses only good/standard going winners;
+   iterative refinement then uses going-corrected times from ALL goings
+3. **Class adjustment** — constant Class 4 baseline applied (empirically, varying class
+   adjustments hurt accuracy: CV 0.0216 vs 0.0142 for constant)
+4. **Median** for central tendency (robust to outliers)
+5. **Minimum 20 races** per combo (raised from 15 based on analysis)
+6. **3 iterations** of standard time ↔ going allowance refinement
+
+### What Races Are Used?
+
+**Current filtering (after improvements):**
+- All winners EXCEPT maiden races (raceCode `P*`, `S*`) and 2yo-only races
+- Maidens run ~0.11s slower than non-maiden winners at the same course/distance
+- 2yo-only races run ~0.14s slower than open-age races
+
+**Winner breakdown by race type:**
+
+| Race Type | Count | % of Winners |
+|-----------|-------|--------------|
+| Handicap (I*) | 51,276 | 65.6% |
+| Group/Listed (G*, L*) | 14,716 | 18.8% |
+| Maiden (P*, S*) — excluded | 10,707 | 13.7% |
+| Claimer (E*) | 749 | 1.0% |
+| Other | 724 | 0.9% |
+
+**Industry best practice** (Rowlands, Mordin, Racing Forum consensus) recommends
+handicaps confined to older horses as the most reliable source.  Our approach of
+excluding maidens and 2yo-only races while keeping all other types is a practical
+compromise that preserves sample size while removing the two noisiest categories.
+
+### Standard Time Comparison Under Different Race Selections
+
+Tested six race selections on good-going winners. Deviation from the all-winners
+baseline (before the maiden exclusion was implemented):
+
+| Selection | Combos | Mean Δ (seconds) | MAD | Max |Δ| |
+|-----------|--------|-------------------|-----|---------|
+| All winners (baseline) | 324 | — | — | — |
+| Handicap only | 263 | -0.110 | 0.215 | 1.43 |
+| No maidens | 303 | -0.112 | 0.145 | 1.38 |
+| Hcp + Group only | 300 | -0.123 | 0.163 | 1.47 |
+| No 2yo | 306 | -0.138 | 0.140 | 1.29 |
+| 3yo+ handicap only | 257 | -0.146 | 0.243 | 1.43 |
+
+All filtered selections produce **faster** standard times (negative Δ), confirming
+that maidens and 2yo races slow the standards.  "No maidens" gives the best trade-off:
+low MAD (0.145) with high coverage (303 combos).
+
+### Sample Size Impact
+
+MAE degrades sharply for combos with few races in the standard:
+
+| N Races | MAE | RMSE | Runners |
+|---------|-----|------|---------|
+| 15-20 | 12.21 | 23.58 | 1,535 |
+| 20-30 | 11.18 | 14.59 | 3,463 |
+| 30-50 | 10.93 | 15.99 | 6,108 |
+| 50-100 | 9.60 | 12.70 | 35,486 |
+| 100-200 | 8.81 | 11.49 | 104,401 |
+| 200-500 | 8.06 | 10.58 | 260,846 |
+| 500+ | 6.66 | 8.61 | 165,177 |
+
+Raising MIN_RACES from 15 to 20 drops only 19 unreliable combos (mostly small Irish
+tracks like Bellewstown, Clonmel, Sligo) with marginal MAE improvement.
+
+### Standard Time Drift Over Time
+
+87 of 231 analysed combos show annual drift > 0.1 s/yr; 55 have R² > 0.3.
+
+Notable drifting tracks:
+- **Wolverhampton** — getting 0.06-0.11 s/yr faster (R² 0.36-0.59), likely surface wear
+- **Lingfield Park** — 5f getting 0.05 s/yr faster (R² 0.44)
+- **Kempton Park 8f** — 0.09 s/yr slower (R² 0.14), possibly new rail positions
+
+Recency-weighted standard times (exponential half-life) were tested but showed only
+marginal benefit (MAD ~0.4s from unweighted), suggesting the current approach of
+using all years pooled is adequate.  A future improvement could be a rolling 5-year
+window for tracks with significant drift.
+
+### Class Adjustment Validation
+
+Three approaches tested on 25,232 GB winners with raceClass:
+
+| Method | Median CV | Notes |
+|--------|-----------|-------|
+| No adjustment | 0.0152 | Worse than constant |
+| **Constant C4 (current)** | **0.0142** | Best — lowest CV |
+| Varying by class | 0.0216 | Significantly worse |
+
+The varying class adjustment introduces MORE noise because the raw class labels don't
+perfectly capture ability differences.  The constant approach is correct — winners across
+classes, after going correction, naturally cluster around the same median.
+
+### Outlier Analysis
+
+| Central Tendency | MAD vs Median | Max |Δ| |
+|-----------------|---------------|---------|
+| Mean | 0.215 | 2.28 |
+| Trimmed mean 10% | 0.159 | 1.20 |
+| Winsorized mean 10% | 0.187 | 1.29 |
+| **Median (current)** | **0.000** | **0.000** |
+
+The median remains the best choice. Mean is sensitive to outliers (Musselburgh 16f
+shows a 2.28s gap between mean and median). Trimmed/winsorized means offer no advantage
+over the simpler median.
+
+### Impact of Standard Time Improvements
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| **Correlation** | 0.8862 | **0.8866** | +0.0004 |
+| **MAE** | 7.93 | **7.92** | -0.01 |
+| **RMSE** | 10.50 | **10.47** | -0.03 |
+| **Std combos** | 413 | 381 | -32 |
+
+---
+
 ## Lbs-Per-Length (LPL) Analysis
 
 ### Current Implementation
 
-LPL is computed **per course × distance × surface** (413 combos). The method:
+LPL is computed **per course × distance × surface** (381 combos). The method:
 
 1. Generic LPL from distance: `lpl = 0.2 × 22 × (5 / distance_furlongs)`
 2. Course correction: `mean_spf / this_course_spf` (faster courses → higher lpl)
@@ -369,14 +494,14 @@ range, more consistent surfaces).
 
 ## Key Observations & Improvement Opportunities
 
-1. **Compressed scale (Std 21.3 vs 26.0):** The pipeline under-spreads figures at the tails. The beaten-length correction improved this from 20.8 to 21.3 but the gap to Timeform's 26.0 remains. A non-linear calibration could help.
+1. **Compressed scale (Std 21.2 vs 26.0):** The pipeline under-spreads figures at the tails. A non-linear calibration could help close the gap to Timeform's 26.0 std dev.
 
-2. **Large class offsets (C1: +19.9 on Turf):** The class adjustment in Stage 1 isn't fully capturing class-level pace differences — the calibration layer is doing heavy lifting. Refining the `CLASS_ADJUSTMENT_PER_MILE` constants could reduce reliance on post-hoc correction.
+2. **Large class offsets (C1: +19.9 on Turf):** The class adjustment in Stage 1 isn't fully capturing class-level pace differences — the calibration layer is doing heavy lifting. However, varying class adjustments empirically HURT accuracy (CV 0.0216 vs 0.0142), so this is best addressed by other means.
 
-3. **Going offsets (Heavy: +3.0 on Turf):** Residual going bias after the going allowance stage suggests the GA computation underestimates the impact of extreme ground. The Heavy going penalty of +3.0 lbs is significant.
+3. **Going offsets (Heavy: +3.0 on Turf):** Residual going bias after the going allowance stage suggests the GA computation underestimates the impact of extreme ground.
 
-4. **Southwell 2025 drift (Bias -3.08):** Southwell shows a growing negative bias in recent years, suggesting the standard times or surface characteristics may be drifting and need recalibration with a shorter lookback window.
+4. **Standard time drift:** 87 of 231 combos show drift > 0.1 s/yr, with Wolverhampton and Lingfield getting measurably faster. A rolling 5-year window could improve these.
 
-5. **MAE of ~7.93 lbs overall is above the stated goal of MAE < 3.** The ML enhancement layer (`ml_figures.py`) is designed to close this gap using the pipeline figure as its backbone feature.
+5. **MAE of ~7.92 lbs overall is above the stated goal of MAE < 3.** The ML enhancement layer (`ml_figures.py`) is designed to close this gap using the pipeline figure as its backbone feature.
 
 6. **Out-of-sample stability is good:** 2024–2026 show no significant degradation vs in-sample years, confirming the calibration generalises well.
