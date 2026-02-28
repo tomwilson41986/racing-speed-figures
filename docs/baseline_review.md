@@ -137,6 +137,109 @@ Our distribution is slightly compressed compared to Timeform (lower std: 20.8 vs
 
 ---
 
+## Weight-for-Age (WFA) Analysis
+
+### Current Implementation
+
+The pipeline uses **empirical WFA tables** derived from Timeform 2015–2023 data, separate
+for Turf and All Weather (Stage 7 in `speed_figures.py`). The methodology:
+
+- Baseline: 4–6 year-olds (zero allowance)
+- Calibrated the mean residual (pipeline figure vs Timeform timefigure) for 2yo/3yo at
+  each (month, distance) cell
+- Smoothed with a 3-month weighted average, rounded to integers
+- Negative residuals capped at 0
+- Older-horse decline (7+) modelled on Turf only
+
+### Empirical Tables vs BHA Official Scale
+
+The BHA 2025 unified European scale (reviewed by Dominic Gardiner-Hill, approved by the
+European Pattern Committee in August 2024) sets the following 3yo allowances for
+representative distances:
+
+| Month | BHA 5f | Ours (Turf) | BHA 8f | Ours (Turf) | BHA 12f | Ours (Turf) |
+|-------|--------|-------------|--------|-------------|---------|-------------|
+| Jan   | ~15    | 10          | ~14    | 9           | ~11     | 5           |
+| Mar   | ~12    | 10          | ~12    | 9           | ~10     | 4           |
+| May   | ~9     | 7           | ~10    | 10          | ~7      | 3           |
+| Jul   | ~5     | 7           | ~7     | 3           | ~5      | 4           |
+| Sep   | ~1     | 5           | ~3     | 5           | ~3      | 2           |
+| Nov   | 0      | 3           | ~1     | 4           | ~2      | 3           |
+
+**Key differences:**
+
+1. **Our scale is flatter** — lower allowances in winter (Jan–Mar) and higher in autumn
+   (Sep–Nov) compared to the BHA scale. This is expected: we are fitting against
+   Timeform's timefigure, which already incorporates Timeform's own WFA adjustments,
+   so our empirical table captures the *residual* WFA not already reflected in the target.
+
+2. **Non-monotonic patterns** — Several cells show unexpected reversals (e.g., 3yo Turf
+   at 8f: month 5 = 10 lbs but month 6 = 7 lbs, then month 7 = 3 lbs). These likely
+   reflect sample-size noise in specific (month, distance) cells rather than genuine
+   maturation patterns.
+
+3. **AW allowances are higher** — Our AW 3yo allowances are 2–5 lbs greater than Turf
+   (e.g., Jan 5f: 13 vs 10), consistent with industry understanding that younger horses
+   are at a greater disadvantage on artificial surfaces.
+
+### Comparison with Industry Approaches
+
+| Approach | Description | Our Position |
+|----------|-------------|--------------|
+| **BHA Official** | Unified European scale, fortnightly intervals, ~15 lbs at 5f in Jan for 3yo | Not used directly — our empirical table replaces it |
+| **Timeform (Rowlands)** | Proprietary WFA scale used internally; Timeform states "a 120-rated 3yo is equivalent to a 120-rated 4yo" after their WFA | Our target (timefigure) already incorporates Timeform's WFA, so our adjustment captures the residual |
+| **Racing Post (Edwards)** | Less generous to 2yo early season; RP WFA not publicly available | Aligns with our finding of lower 2yo allowances vs BHA |
+| **Raceform** | Simple monthly scale in lengths (e.g., 2yo May/Jun: -10 lengths) | Less granular than our distance-specific approach |
+| **Empirical (best practice)** | Derive from own data by comparing same-horse performances across ages | Partially what we do, though via residual fitting rather than paired comparisons |
+
+### Identified WFA Issues
+
+1. **2yo early-season inflation** — The BHA scale allows up to 41 lbs for 2yo in March;
+   Racing Post and industry commentators (Dave Edwards, Timeform) consider this too
+   generous. Our 2yo Turf table shows 30 lbs in March at 5f — more conservative than
+   BHA but still potentially inflated. Very few 2yo races exist before May, so
+   early-season cells have minimal data and should be treated with caution.
+
+2. **Smoothing artefacts** — The 3-month weighted average smoothing produces non-monotonic
+   values at distance boundaries (e.g., 3yo Turf 7f drops to 0 in July while 5f remains
+   at 7 and 8f is at 3). A monotonic constraint on the distance axis would produce more
+   physically plausible tables.
+
+3. **No fortnightly resolution** — The BHA scale uses fortnightly intervals; ours uses
+   monthly. For 3yo in April–June when maturation is fastest, this means up to 2 lbs
+   of within-month variation is averaged out.
+
+4. **Older horse decline only on Turf** — The AW dataset may be too noisy to detect the
+   signal, but it could also represent a genuine surface interaction. Worth revisiting
+   with the larger 2024–2026 dataset.
+
+5. **3yo at 14f+ under-corrected** — The 2025 BHA review found persistent 3yo
+   overperformance at 14f+ and reduced allowances by ~1 lb. Our empirical table has
+   limited data at these distances (few cells exist beyond 12f for 3yo Turf). This
+   edge case should be audited.
+
+### Recommendations
+
+1. **Add monotonic distance constraint** — Enforce that WFA allowances are
+   non-decreasing with distance (at fixed age/month) when deriving empirical tables.
+   This prevents implausible reversals.
+
+2. **Use paired-horse methodology** — Supplement the residual-fitting approach with
+   direct paired comparisons of horses that raced as both 2yo/3yo and 4yo+ (per the
+   framework recommendation in §6.5). This is more robust to target-scale artefacts.
+
+3. **Validate against Timeform's `tfwfa` field** — The ML pipeline already parses the
+   `tfwfa` column from Timeform data. Compare our empirical WFA allowances against
+   Timeform's published per-race WFA weights to quantify divergence.
+
+4. **Consider fortnightly intervals** for April–July when maturation is fastest, falling
+   back to monthly for the rest of the year.
+
+5. **Audit 2yo tables before May** — Flag or suppress cells with < 100 runners, as
+   early-season 2yo data is too sparse for reliable empirical derivation.
+
+---
+
 ## Key Observations & Improvement Opportunities
 
 1. **Compressed scale (Std 20.8 vs 26.0):** The pipeline under-spreads figures at the tails. A stretch/compression recalibration for extreme ratings could close this gap.
