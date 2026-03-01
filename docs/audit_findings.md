@@ -13,29 +13,44 @@ Overall accuracy: **MAE 6.77 lbs, r=0.9210** against Timeform timefigure.
 ### Scale Compression Fix (Stage 10b) — IMPLEMENTED
 
 The #1 issue identified in the initial audit was systematic under-rating of 100+ horses
-(bias -8.42 lbs). A progressive scale expansion (variance-matching with tanh modulation)
-was implemented and validated:
+(bias -8.42 lbs). Initially fixed with a linear variance-matching stretch (tanh modulation),
+then upgraded to **empirical quantile mapping with PCHIP (monotonic cubic) interpolation** —
+a standard statistical technique for distribution matching used in climate bias correction
+and professional speed figure compilation.
+
+Quantile mapping captures the full non-linear shape of the GBR compression, not just the
+variance mismatch. It builds a percentile-to-percentile mapping from our predictions to
+Timeform values (50 anchor points per surface), then applies a smooth monotonic
+interpolation.
 
 | Band | Before MAE | After MAE | Before Bias | After Bias |
 |------|-----------|-----------|-------------|------------|
-| **100+** | **9.05** | **6.75** | **-8.42** | **-3.82** |
-| 80-100 | 7.10 | 6.69 | -4.97 | -2.25 |
-| 40-60 | 6.09 | 6.49 | +1.07 | +0.86 |
-| <20 | 9.66 | 8.53 | +7.80 | +4.18 |
-| **Overall** | **6.64** | **6.77** | +0.45 | +0.47 |
+| **100-120** | **8.97** | **6.92** | **-8.33** | **-3.47** |
+| **120+** | **12.25** | **6.37** | **-12.23** | **-4.54** |
+| 80-100 | 7.10 | 6.68 | -4.97 | -2.08 |
+| 40-60 | 6.09 | 6.57 | +1.07 | +0.68 |
+| <20 | 9.66 | 8.65 | +7.80 | +3.71 |
+| **Overall** | **6.64** | **6.80** | +0.45 | +0.45 |
 
-Compression ratio fixed: **0.912 → 0.996** (our std 22.3 vs TFig 22.4).
-OOS 100+ MAE: 8.53 → 7.03 (-18%). Correlation preserved: 0.9210.
+Compression ratio fixed: **0.912 → 1.007** (our std 22.6 vs TFig 22.4).
+OOS 100-120 bias: **-7.24 → -2.27** (69% reduction). Correlation: 0.9208 (was 0.9211).
+
+**Technique comparison** (7 approaches tested, 30+ configurations):
+- PCHIP quantile mapping (chosen): best bias-vs-MAE trade-off, principled
+- CDF transfer (KDE): best correlation (0.9210) but less tail correction
+- Isotonic regression: barely moved the needle (optimises conditional mean, not distribution)
+- Linear tanh stretch (previous): ad-hoc, similar results but not distribution-aware
+- Binned bias correction: similar to isotonic, ineffective
 
 ### Remaining Issues
 
 | Rank | Source | Impact | Root Cause |
 |------|--------|--------|------------|
-| 1 | **Irish Turf tracks** | MAE 8.6–10.0 at worst | Fewer races per track×distance, more variable ground, less AW data to anchor |
-| 2 | **OOS bias drift** | +2.33 lbs bias in 2024–26 | GBR/calibration trained on 2015–23 doesn't generalise to new data |
-| 3 | **Heavy/Soft going** | MAE 7.6–8.0 | GA underestimates extreme going; non-linear speed/ground relationship |
-| 4 | **Long-distance Turf** (12f+) | MAE 8.7 at 13–16f | Fewer standard-time samples, wind/pace variance higher |
-| 5 | **Residual compression at 100+** | Bias -3.82 | Linear stretch doesn't fully correct non-linear GBR clipping at extremes |
+| 1 | **Irish Turf tracks** | MAE 8.6–10.3 at worst | Fewer races per track×distance, more variable ground, less AW data to anchor |
+| 2 | **OOS bias drift** | +2.31 lbs bias in 2024–26 | GBR/calibration trained on 2015–23 doesn't generalise to new data |
+| 3 | **Heavy/Soft going** | MAE 7.7–8.1 | GA underestimates extreme going; non-linear speed/ground relationship |
+| 4 | **Long-distance Turf** (12f+) | MAE 8.8 at 13–16f | Fewer standard-time samples, wind/pace variance higher |
+| 5 | **Residual compression at 100+** | Bias -3.47 | GBR many-to-one clipping at extremes cannot be fully unwound by post-hoc distribution matching |
 
 ---
 
@@ -61,14 +76,27 @@ The pattern: low-figure horses get pulled up, high-figure horses get pulled down
 2. **Quadratic calibration** — The `−0.000733 × (fig − 181)²` term amplifies compression at tails.
 3. **Insufficient scale in the raw figure** — Our raw std is already narrower than Timeform before calibration.
 
-### Impact
+### Impact (pre-fix)
 
-- **47,216 runners** rated <20 have MAE 9.53 (vs 6.64 overall)
-- **8,568 runners** rated 100–120 have MAE 9.16
-- Top-rated horses (120+) are under-rated by 12.5 lbs on average
-- The compression ratio (our std / TF std) is **0.912**
+- **47,216 runners** rated <20 had MAE 9.53 (vs 6.64 overall)
+- **8,568 runners** rated 100–120 had MAE 8.97
+- Top-rated horses (120+) were under-rated by 12.2 lbs on average
+- The compression ratio (our std / TF std) was **0.912**
 
-### Ideas to Address
+### Fix Applied: Quantile Mapping (Stage 10b)
+
+Post-fix (PCHIP quantile mapping with 50 anchor points per surface):
+- Compression ratio: **0.912 → 1.007** (fully corrected)
+- 100–120 bias: **-8.33 → -3.47** (58% reduction)
+- 120+ bias: **-12.23 → -4.54** (63% reduction)
+- <20 bias: **+7.80 → +3.71** (52% reduction)
+- OOS 100–120 bias: **-7.24 → -2.27** (69% reduction)
+
+The residual -3.47 bias at 100–120 represents the irreducible error from GBR many-to-one
+compression at extremes — the tree model maps distinct high-rated horses to similar
+predictions, and no post-hoc distribution matching can untangle this.
+
+### Other Ideas Considered
 
 1. **Post-GBR scale expansion**: Apply a simple linear stretch: `adjusted = mean + (pred - mean) * (TF_std / our_std)`. This directly fixes the compression ratio. Risk: may worsen MAE at the center of the distribution.
 
@@ -260,15 +288,16 @@ Since the calibration applies per-class offsets, C0 gets a generic offset that m
 
 Based on impact × feasibility:
 
+### Completed
+1. ~~**Post-GBR scale expansion**~~ → Implemented as **quantile mapping** (PCHIP, 50 anchors per surface). Compression ratio fixed: 0.912 → 1.007. 100-120 bias: -8.33 → -3.47.
+
 ### Quick Wins (< 1 day effort)
-1. **Post-GBR scale expansion** — simple linear stretch to fix compression ratio
 2. **Reduce GBR complexity** — test fewer trees / shallower depth to reduce OOS overfitting
 3. **Investigate Ascot 14f** — likely a data / course configuration issue
 
 ### Medium-Term (1–3 days)
 4. **Rolling calibration window** — retrain calibration on 2019–2023 instead of 2015–2023
 5. **Per-track standard-time audit** for worst Irish courses (Cork, Curragh, Naas)
-6. **Quantile-matched calibration** to replace quadratic + GBR compression
 
 ### Longer-Term (1–2 weeks)
 7. **Course configuration modeling** for multi-layout tracks

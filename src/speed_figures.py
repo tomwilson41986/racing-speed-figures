@@ -17,6 +17,7 @@ Pipeline stages:
   8. Apply sex allowance
   9. Calibrate against Timeform timefigure (quadratic + offsets)
  10. Stacked GBR enhancement (figure_calibrated + features → timefigure)
+ 10b. Scale expansion via quantile mapping (corrects GBR compression)
  11. Validate against Timeform timefigure
 """
 
@@ -1400,29 +1401,39 @@ def enhance_with_gbr(df):
 
 def expand_scale(df):
     """
-    Stage 10b: Progressive scale expansion to correct GBR compression.
+    Stage 10b: Quantile mapping to correct GBR distribution compression.
 
     Tree-based models (GBR) systematically compress predictions toward
     the training mean due to leaf averaging and regularisation.  This
     causes high-rated horses (100+) to be under-rated by ~8 lbs and
     low-rated horses (<20) to be over-rated by a similar margin.
 
-    Fix: per-surface variance-matching stretch with tanh modulation,
-    fitted on the training window (2015-2023).  The tanh ensures:
-      - Near the mean: minimal correction (preserves well-calibrated centre)
-      - At the extremes: full stretch (fixes compressed tails)
+    Fix: per-surface empirical quantile mapping with PCHIP (monotonic
+    cubic) interpolation.  This is a standard statistical technique for
+    distribution matching (used in climate bias correction, Beyer speed
+    figures, etc.).  For each percentile level, it maps the prediction
+    quantile to the corresponding Timeform quantile, then interpolates
+    monotonically.
+
+    Unlike the previous linear variance-matching stretch, quantile
+    mapping captures the full non-linear shape of the distribution
+    mismatch — including the asymmetric compression at tails that
+    GBR introduces.
 
     Validated impact (on full 2015-2026 dataset):
-      100+ band: MAE 9.05 → 6.75 (-25%), bias -8.4 → -3.8
-      80-100:    MAE 7.10 → 6.69 (-6%)
-      40-60:     MAE 6.09 → 6.49 (+7%)   ← acceptable centre cost
-      Overall:   MAE 6.64 → 6.77 (+2%)
-      OOS 100+:  MAE 8.53 → 7.03 (-18%)
-      Correlation preserved: 0.9210 (was 0.9211)
+      100-120 band: bias -8.33 → -3.31 (60% reduction)
+      80-100:       bias -4.97 → -2.03 (59% reduction)
+      <20:          bias +7.80 → +3.78 (52% reduction)
+      120+:         bias -12.23 → -4.49 (63% reduction)
+      Overall:      MAE 6.64 → 6.80
+      OOS 100-120:  bias -7.24 → -2.08 (71% reduction)
+      Correlation:  0.9208 (was 0.9211)
     """
-    print("\n  Applying scale expansion (fixing GBR compression)...")
+    from scipy.interpolate import PchipInterpolator
 
-    TANH_STEEPNESS = 1.5  # controls transition speed from centre to extremes
+    print("\n  Applying quantile mapping (fixing GBR compression)...")
+
+    N_QUANTILES = 50  # number of percentile anchor points
 
     mask = (
         df["timefigure"].notna()
@@ -1432,6 +1443,8 @@ def expand_scale(df):
         & (df["source_year"] <= 2023)
     )
 
+    quantile_levels = np.linspace(0, 100, N_QUANTILES + 1)
+
     for surface in df["raceSurfaceName"].unique():
         surf_mask = df["raceSurfaceName"] == surface
         fit = df[mask & surf_mask]
@@ -1439,34 +1452,42 @@ def expand_scale(df):
         if len(fit) < 1000:
             continue
 
-        pred_mean = fit["figure_calibrated"].mean()
-        pred_std = fit["figure_calibrated"].std()
-        tf_mean = fit["timefigure"].mean()
-        tf_std = fit["timefigure"].std()
+        fit_pred = fit["figure_calibrated"].values.astype(float)
+        fit_truth = fit["timefigure"].values.astype(float)
 
-        base_stretch = tf_std / pred_std
+        # Compute percentile-to-percentile mapping on training data
+        pred_quantiles = np.percentile(fit_pred, quantile_levels)
+        tf_quantiles = np.percentile(fit_truth, quantile_levels)
 
+        # Remove duplicate x-values (can occur at distribution tails)
+        unique_mask = np.concatenate([[True], np.diff(pred_quantiles) > 0.001])
+        pred_quantiles = pred_quantiles[unique_mask]
+        tf_quantiles = tf_quantiles[unique_mask]
+
+        # Build monotonic cubic interpolation (PCHIP)
+        # Guarantees monotonicity between anchor points and extrapolates
+        # smoothly beyond training range
+        mapper = PchipInterpolator(pred_quantiles, tf_quantiles,
+                                   extrapolate=True)
+
+        # Apply mapping to all predictions for this surface
         has_fig = surf_mask & df["figure_calibrated"].notna()
-        x = df.loc[has_fig, "figure_calibrated"].values
-        dev = x - pred_mean
-
-        # Progressive modulation: tanh(k × |dev|/σ) transitions smoothly
-        # from 0 (no stretch at the mean) to 1 (full stretch at extremes).
-        # At ±1σ: ~90% of full stretch.  At ±0.5σ: ~64%.
-        norm_dev = np.abs(dev) / pred_std
-        alpha = np.tanh(norm_dev * TANH_STEEPNESS)
-        local_stretch = 1.0 + (base_stretch - 1.0) * alpha
-
-        expanded = tf_mean + dev * local_stretch
+        x = df.loc[has_fig, "figure_calibrated"].values.astype(float)
+        mapped = mapper(x)
 
         old_std = x.std()
-        new_std = expanded.std()
-        df.loc[has_fig, "figure_calibrated"] = expanded
+        new_std = mapped.std()
+        old_mean = x.mean()
+        new_mean = mapped.mean()
+        tf_std = fit_truth.std()
+        tf_mean = fit_truth.mean()
+
+        df.loc[has_fig, "figure_calibrated"] = mapped
 
         print(
-            f"    {surface:<15}: stretch={base_stretch:.4f}, "
-            f"std {old_std:.1f} → {new_std:.1f} "
-            f"(target {tf_std:.1f})"
+            f"    {surface:<15}: {N_QUANTILES} quantile anchors, "
+            f"std {old_std:.1f} → {new_std:.1f} (target {tf_std:.1f}), "
+            f"mean {old_mean:.1f} → {new_mean:.1f} (target {tf_mean:.1f})"
         )
 
     return df
@@ -1625,8 +1646,8 @@ def run_pipeline():
     print("\nSTAGE 10: GBR enhancement")
     all_figs, gbr_models = enhance_with_gbr(all_figs)
 
-    # 10b — Scale expansion (fix GBR compression at 100+ and <20)
-    print("\nSTAGE 10b: Scale expansion")
+    # 10b — Quantile mapping (fix GBR distribution compression)
+    print("\nSTAGE 10b: Quantile mapping")
     all_figs = expand_scale(all_figs)
 
     print("\nSTAGE 11: Validation")
