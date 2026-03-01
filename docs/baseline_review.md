@@ -12,9 +12,9 @@
 
 | Metric | Value |
 |---|---|
-| **Correlation** | 0.8871 |
-| **MAE** | 7.90 lbs |
-| **RMSE** | 10.44 lbs |
+| **Correlation** | 0.8876 |
+| **MAE** | 7.88 lbs |
+| **RMSE** | 10.42 lbs |
 | **Bias** | +0.49 lbs |
 
 ### Error Distribution
@@ -35,7 +35,7 @@
 
 | Surface | Correlation | MAE | N |
 |---|---|---|---|
-| **Turf** | 0.8715 | 8.68 | 425,857 |
+| **Turf** | 0.8722 | 8.65 | 425,857 |
 | **All Weather** | 0.9088 | 6.65 | 258,465 |
 
 All Weather outperforms Turf by ~2 lbs MAE, likely because AW surfaces are more consistent (no going variation).
@@ -432,52 +432,76 @@ over the simpler median.
 
 LPL is computed **per course × distance × surface** (381 combos). The method:
 
-1. Generic LPL from distance: `lpl = 0.2 × 22 × (5 / distance_furlongs)`
-2. Course correction: `mean_spf / this_course_spf` (faster courses → higher lpl)
-3. Beaten lengths converted via: `lbs_behind = cumulative_bl × course_lpl`
+1. Generic LPL from distance: `lpl = 0.2 × 20 × (5 / distance_furlongs)` (reduced
+   from 22 to 20 lbs/sec based on empirical analysis)
+2. Surface multiplier: Turf ×1.0, AW ×1.10 (AW has shallower distance decline)
+3. Course correction: `mean_spf / this_course_spf` (faster courses → higher lpl)
+4. Beaten lengths converted via: `lbs_behind = cumulative_bl × course_lpl`
 
 ### LPL Distribution
 
-| Distance | Generic | Mean (course-adjusted) | Min | Max | N Courses |
-|----------|---------|------------------------|-----|-----|-----------|
-| 5f | 4.40 | 4.37 | 4.09 | 4.70 (Epsom) | 47 |
-| 8f | 2.75 | 2.74 | 2.53 | 3.03 | 54 |
-| 12f | 1.83 | 1.83 | 1.61 | 1.93 | 48 |
-| 16f | 1.38 | 1.37 | 1.29 | 1.43 | 27 |
+| Distance | Generic (Turf) | Generic (AW) | Empirical (TF pairwise) |
+|----------|----------------|--------------|------------------------|
+| 5f | 4.00 | 4.40 | 4.00 |
+| 8f | 2.50 | 2.75 | 2.50 |
+| 12f | 1.67 | 1.83 | 1.72 |
+| 16f | 1.25 | 1.38 | 1.41 |
 
-Course-specific corrections are small (±7% at most), dominated by Epsom (+6.9%,
-downhill → horses spread more) and tight tracks like Chester (-3%).
+### International Comparison
 
-### Industry Comparison
+| Source | 5f lpl | 8f lpl | Formula | Notes |
+|--------|--------|--------|---------|-------|
+| **Our pipeline** | 4.00 | 2.50 | 20/distance | Empirical fit to Timeform |
+| **BHA handicapper** | ~3.00 | ~1.88 | 15/distance | Official, conservative |
+| **Timeform (Rowlands)** | ~4.17 | ~2.60 | 1500/(time×LPS) | 25 lbs/sec at 60s |
+| **UK forum (200/time)** | ~3.37 | ~2.00 | 200/std_time | Course-specific |
+| **Beyer (US)** | ~3 pts/L | ~2 pts/L | LPSF from time | Sprint/route split |
+| **Ragozin (US)** | ~2.5 | ~1.5 | Proprietary | Different scale |
+| **HKJC** | 3.0 | 2.0 | Step table | HK rating scale (0-130) |
 
-| Source | 5f lpl | 8f lpl | Notes |
-|--------|--------|--------|-------|
-| **Our pipeline** | 4.40 | 2.75 | 22 lbs/sec at 5f |
-| **BHA handicapper** | ~3.00 | ~1.88 | 15 ÷ distance formula |
-| **Timeform (Rowlands)** | ~4.0+ | ~2.5+ | "25-30% higher than BHA" |
-| **Raceform** | ~3.20 | ~2.00 | 16 ÷ distance formula |
-| **Beyer (US)** | ~3 pts/L | ~2 pts/L | Different scale |
+**BHA LPS (Lengths Per Second) Scale — going-dependent:**
 
-Our 22 lbs/sec sits between BHA (low) and Timeform (high), which is appropriate since
-we calibrate against Timeform's timefigure as target.
+| Going (Flat Turf) | LPS | Sec/Length |
+|---|---|---|
+| Firm / Good to Firm | 6 | 0.167 |
+| Good to Soft | 5.5 | 0.182 |
+| Soft / Heavy | 5 | 0.200 |
+| AW Polytrack | 6 | 0.167 |
+| AW Fibresand | 5 | 0.200 |
+
+Note: official beaten lengths are ALREADY converted using going-dependent LPS before
+we receive them, so our LPL does not need going adjustment.
+
+### Empirical LPL Derivation
+
+Computed optimal LPL from 505K winner-vs-beaten pairs as median(tf_diff / bl):
+
+| Distance | Empirical | Old (22/d) | Old Error | New (20/d Turf) | New Error |
+|----------|-----------|------------|-----------|-----------------|-----------|
+| 5f | 4.00 | 4.40 | +10.0% | 4.00 | 0.0% |
+| 6f | 3.33 | 3.67 | +10.0% | 3.33 | 0.0% |
+| 8f | 2.50 | 2.75 | +10.0% | 2.50 | 0.0% |
+| 10f | 2.00 | 2.20 | +10.0% | 2.00 | 0.0% |
+| 12f | 1.72 | 1.83 | +6.4% | 1.67 | -3.3% |
+| 14f | 1.50 | 1.57 | +4.7% | 1.43 | -4.7% |
+
+Power law fit: Turf `lpl = 17.84 / distance^0.941` (R²=0.986), AW `lpl = 14.97 /
+distance^0.849` (R²=0.983). The AW exponent (0.849) is lower, meaning AW LPL declines
+less steeply with distance — hence the AW ×1.10 multiplier.
 
 ### Pairwise Spread Analysis
 
-Tested whether our figure differences between horses in the same race match Timeform's
-differences (507K winner-vs-beaten pairs):
+| Level | Old Slope | New Slope | Interpretation |
+|-------|-----------|-----------|----------------|
+| **Raw Turf** | 0.93 | **1.02** | Was 7% over-spread → now ~correct |
+| **Raw AW** | 0.93 | **0.94** | Preserved (AW ×1.10 restores old effective LPL) |
+| **Calibrated overall** | 1.077 | **1.071** | Closer to 1.0 |
+| **Calibrated Turf** | 1.104 | **1.093** | Closer to 1.0 |
 
-| Level | Slope (tf_diff = β × our_diff) | Interpretation |
-|-------|-------------------------------|----------------|
-| **Calibrated** | 1.07 | 7% under-spread (after BL correction) |
-| **Raw (pre-cal)** | 0.93 | 7% over-spread |
-
-The raw figures over-spread by 7%, then calibration (linear slope 0.76 Turf) compresses
-by ~24%, resulting in net 7% under-spread.  This is a calibration artefact, not an LPL
-error — increasing raw LPL was tested (Turf ×1.15) and **degraded** MAE from 7.99 to
-8.50 because it forced even more calibration compression.
-
-By surface: Turf slope = 1.19 (significant under-spread), AW slope = 1.02 (correct).
-The Turf calibration slope (0.76) is the bottleneck.
+Going-dependent LPL was tested empirically: raw pairwise slopes are identical across
+all going conditions (0.92-0.94), confirming that going-dependent LPL is NOT needed.
+This is because official beaten lengths already embed the BHA's going-dependent LPS
+conversion (6 LPS on firm, 5 on soft).
 
 ### Beaten-Length Bias (Before/After Correction)
 
@@ -537,19 +561,30 @@ The Turf beaten-length bias likely comes from two sources:
 On AW, the effect is minimal because AW fields are more compressed (tighter ability
 range, more consistent surfaces).
 
+### LPL Improvement Impact
+
+| Metric | Before LPL | After LPL | Change |
+|--------|-----------|-----------|--------|
+| **Correlation** | 0.8871 | **0.8876** | +0.0005 |
+| **MAE** | 7.90 | **7.88** | -0.02 |
+| **RMSE** | 10.44 | **10.42** | -0.02 |
+| **Turf MAE** | 8.68 | **8.65** | -0.03 |
+| **AW MAE** | 6.65 | **6.65** | 0.00 |
+
 ### Remaining Improvement Opportunities
 
 1. **Non-linear calibration for Turf** — The quadratic term was not selected for Turf
-   (linear MSE was not sufficiently worse).  A higher-order calibration or separate
-   slopes for the upper/lower halves of the figure range could reduce the pairwise
-   under-spread without inflating raw LPL.
+   (linear MSE was not sufficiently worse).  The remaining 9% pairwise under-spread
+   after calibration is driven by the linear slope (0.76) compressing the distribution.
 
-2. **Going-dependent LPL** — The pairwise slope varies by going (Soft: 1.19, GdSft:
-   1.07, Good: 1.10).  Soft-going margins may need a different conversion, but the
-   sample is smaller and the effect is partially captured by the going offset layer.
+2. **Distance exponent refinement** — The empirical power law exponent is 0.941 (Turf)
+   and 0.849 (AW) vs the current 1.0.  At 14f+ the `20/distance` formula under-
+   estimates by 5-10%.  A future improvement could use the power law directly.
 
-3. **Fortnightly LPL smoothing** — Standard times have seasonal variation (summer track
-   is faster than winter).  Seasonal LPL adjustment could capture this.
+3. **Velocity-based LPL** — Computing `lpl = K / standard_time` per course×distance
+   automatically adjusts for course speed but K is not constant (increases from
+   258 at 5f to 296 at 12f).  The course correction factor already captures most
+   of this effect.
 
 ---
 
@@ -563,6 +598,6 @@ range, more consistent surfaces).
 
 4. **Standard time drift:** 87 of 231 combos show drift > 0.1 s/yr, with Wolverhampton and Lingfield getting measurably faster. A rolling 5-year window could improve these.
 
-5. **MAE of ~7.90 lbs overall is above the stated goal of MAE < 3.** The ML enhancement layer (`ml_figures.py`) is designed to close this gap using the pipeline figure as its backbone feature.
+5. **MAE of ~7.88 lbs overall is above the stated goal of MAE < 3.** The ML enhancement layer (`ml_figures.py`) is designed to close this gap using the pipeline figure as its backbone feature.
 
 6. **Out-of-sample stability is good:** 2024–2026 show no significant degradation vs in-sample years, confirming the calibration generalises well.
