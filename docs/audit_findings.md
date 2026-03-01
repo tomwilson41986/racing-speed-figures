@@ -1,22 +1,41 @@
 # Model Accuracy Audit — Findings & Recommendations
 
 **Date:** 2026-03-01
-**Pipeline version:** Post GBR enhancement (Stage 10)
+**Pipeline version:** Post GBR + Scale Expansion (Stage 10b)
 **Data:** 638,110 runners with valid timefigure (2015–2026)
 
 ---
 
 ## Executive Summary
 
-Overall accuracy: **MAE 6.64 lbs, r=0.9211** against Timeform timefigure. This is strong, but the audit reveals three structural weaknesses that together account for the majority of excess error:
+Overall accuracy: **MAE 6.77 lbs, r=0.9210** against Timeform timefigure.
+
+### Scale Compression Fix (Stage 10b) — IMPLEMENTED
+
+The #1 issue identified in the initial audit was systematic under-rating of 100+ horses
+(bias -8.42 lbs). A progressive scale expansion (variance-matching with tanh modulation)
+was implemented and validated:
+
+| Band | Before MAE | After MAE | Before Bias | After Bias |
+|------|-----------|-----------|-------------|------------|
+| **100+** | **9.05** | **6.75** | **-8.42** | **-3.82** |
+| 80-100 | 7.10 | 6.69 | -4.97 | -2.25 |
+| 40-60 | 6.09 | 6.49 | +1.07 | +0.86 |
+| <20 | 9.66 | 8.53 | +7.80 | +4.18 |
+| **Overall** | **6.64** | **6.77** | +0.45 | +0.47 |
+
+Compression ratio fixed: **0.912 → 0.996** (our std 22.3 vs TFig 22.4).
+OOS 100+ MAE: 8.53 → 7.03 (-18%). Correlation preserved: 0.9210.
+
+### Remaining Issues
 
 | Rank | Source | Impact | Root Cause |
 |------|--------|--------|------------|
-| 1 | **Scale compression** (ratings spread) | MAE 9–12+ at extremes | Our std=20.4 vs Timeform std=22.4; systematic under-rating of 100+ and over-rating of <20 |
-| 2 | **Irish Turf tracks** | MAE 8.6–10.0 at worst | Fewer races per track×distance, more variable ground, less AW data to anchor |
-| 3 | **OOS bias drift** | +2.18 lbs bias in 2024–26 | GBR/calibration trained on 2015–23 doesn't generalise to new data |
-| 4 | **Heavy/Soft going** | MAE 7.6–8.0 | GA underestimates extreme going; non-linear speed/ground relationship |
-| 5 | **Long-distance Turf** (12f+) | MAE 8.7 at 13–16f | Fewer standard-time samples, wind/pace variance higher |
+| 1 | **Irish Turf tracks** | MAE 8.6–10.0 at worst | Fewer races per track×distance, more variable ground, less AW data to anchor |
+| 2 | **OOS bias drift** | +2.33 lbs bias in 2024–26 | GBR/calibration trained on 2015–23 doesn't generalise to new data |
+| 3 | **Heavy/Soft going** | MAE 7.6–8.0 | GA underestimates extreme going; non-linear speed/ground relationship |
+| 4 | **Long-distance Turf** (12f+) | MAE 8.7 at 13–16f | Fewer standard-time samples, wind/pace variance higher |
+| 5 | **Residual compression at 100+** | Bias -3.82 | Linear stretch doesn't fully correct non-linear GBR clipping at extremes |
 
 ---
 
