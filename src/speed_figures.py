@@ -35,20 +35,20 @@ OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
 BASE_RATING = 100          # A 100-rated horse matches standard time on good going
 BASE_WEIGHT_LBS = 126      # 9st 0lb — flat racing base weight
 SECONDS_PER_LENGTH = 0.2   # BHA standard
-LBS_PER_SECOND_5F = 22     # Industry standard at 5 furlongs
+LBS_PER_SECOND_5F = 20     # Empirical: pairwise analysis against Timeform shows
+                           # 22 over-spreads by ~10%.  20 matches empirical
+                           # median(tf_diff / beaten_lengths) at 5-10f.
+                           # Cf. BHA ~15, Timeform ~25 (at 60s), our empirical 20.
 BENCHMARK_FURLONGS = 5.0   # Anchor distance
 
 # Surface-specific LPL multipliers.  Empirical pairwise analysis
-# (scripts/analyse_lpl.py) shows calibrated pairwise slopes of 1.19
-# (Turf) and 1.02 (AW).  However, the raw pairwise slope is 0.93,
-# meaning raw figures already over-spread.  The under-spread after
-# calibration is a calibration compression artefact (linear slope
-# 0.76 on Turf).  Increasing raw LPL worsens performance because
-# the calibration must compress even harder.  Set to 1.0 pending
-# a quadratic or non-linear calibration fix.
+# against Timeform shows the optimal LPL exponent differs by surface:
+# Turf lpl ∝ 1/d^0.94, AW lpl ∝ 1/d^0.85.  With base constant 20,
+# Turf is well matched (slope~1.0 at 5-10f) but AW at middle/long
+# distances needs a ~10% boost because the AW exponent is shallower.
 LPL_SURFACE_MULTIPLIER = {
     "Turf": 1.0,
-    "All Weather": 1.0,
+    "All Weather": 1.10,
 }
 
 # Beaten-length attenuation parameters.  Analysis shows a monotonically
