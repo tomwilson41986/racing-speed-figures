@@ -12,22 +12,22 @@
 
 | Metric | Value |
 |---|---|
-| **Correlation** | 0.8876 |
-| **MAE** | 7.88 lbs |
-| **RMSE** | 10.42 lbs |
-| **Bias** | +0.49 lbs |
+| **Correlation** | 0.8896 |
+| **MAE** | 7.79 lbs |
+| **RMSE** | 10.33 lbs |
+| **Bias** | +0.48 lbs |
 
 ### Error Distribution
 
 | Tolerance | % Within |
 |---|---|
-| ±1 lb | 8.2% |
-| ±2 lbs | 16.2% |
-| ±3 lbs | 24.0% |
-| ±5 lbs | 38.5% |
-| ±10 lbs | 65.9% |
-| ±15 lbs | 80.8% |
-| ±20 lbs | 87.8% |
+| ±1 lb | 8.4% |
+| ±2 lbs | 16.6% |
+| ±3 lbs | 24.5% |
+| ±5 lbs | 39.2% |
+| ±10 lbs | 66.7% |
+| ±15 lbs | 81.3% |
+| ±20 lbs | 88.0% |
 
 ---
 
@@ -35,8 +35,8 @@
 
 | Surface | Correlation | MAE | N |
 |---|---|---|---|
-| **Turf** | 0.8722 | 8.65 | 425,857 |
-| **All Weather** | 0.9088 | 6.65 | 258,465 |
+| **Turf** | 0.8727 | 8.62 | 425,857 |
+| **All Weather** | 0.9142 | 6.45 | 258,465 |
 
 All Weather outperforms Turf by ~2 lbs MAE, likely because AW surfaces are more consistent (no going variation).
 
@@ -46,11 +46,11 @@ All Weather outperforms Turf by ~2 lbs MAE, likely because AW surfaces are more 
 
 | Position | Correlation | MAE | N |
 |---|---|---|---|
-| 1st (winners) | 0.8417 | 8.05 | 72,921 |
-| 2nd | 0.8402 | 8.05 | 72,762 |
-| 3rd | 0.8447 | 8.04 | 72,700 |
-| 4th | 0.8521 | 8.00 | 72,016 |
-| 5th | 0.8590 | 7.94 | 69,794 |
+| 1st (winners) | 0.8453 | 7.91 | 72,921 |
+| 2nd | 0.8439 | 7.92 | 72,762 |
+| 3rd | 0.8484 | 7.92 | 72,700 |
+| 4th | 0.8553 | 7.88 | 72,016 |
+| 5th | 0.8621 | 7.84 | 69,794 |
 
 Notably flat across positions — no significant degradation for beaten horses. Mid-field runners actually have marginally *better* MAE, possibly because extreme winners/losers have more variance.
 
@@ -60,18 +60,18 @@ Notably flat across positions — no significant degradation for beaten horses. 
 
 | Year | Correlation | MAE | N |
 |---|---|---|---|
-| 2015 | 0.8777 | 8.47 | 55,785 |
-| 2016 | 0.8790 | 8.20 | 57,410 |
-| 2017 | 0.8902 | 8.05 | 60,489 |
-| 2018 | 0.8994 | 7.69 | 60,766 |
-| 2019 | 0.8982 | 7.65 | 60,548 |
-| 2020 | 0.8957 | 7.44 | 52,796 |
-| 2021 | 0.8931 | 7.68 | 64,309 |
-| 2022 | 0.8951 | 7.79 | 65,475 |
-| 2023 | 0.8849 | 8.08 | 67,632 |
-| **2024** | **0.8896** | **7.81** | **69,255** |
-| **2025** | **0.8842** | **8.11** | **64,692** |
-| **2026** | **0.8911** | **7.23** | **5,165** |
+| 2015 | 0.8804 | 8.37 | 55,785 |
+| 2016 | 0.8815 | 8.07 | 57,410 |
+| 2017 | 0.8917 | 7.96 | 60,489 |
+| 2018 | 0.9018 | 7.58 | 60,766 |
+| 2019 | 0.9009 | 7.52 | 60,548 |
+| 2020 | 0.8975 | 7.32 | 52,796 |
+| 2021 | 0.8950 | 7.60 | 64,309 |
+| 2022 | 0.8969 | 7.70 | 65,475 |
+| 2023 | 0.8867 | 8.01 | 67,632 |
+| **2024** | **0.8929** | **7.67** | **69,255** |
+| **2025** | **0.8881** | **7.95** | **64,692** |
+| **2026** | **0.8993** | **6.74** | **5,165** |
 
 2024–2026 are **out-of-sample** (calibration fitted on ≤2023). Performance is stable — no significant degradation on unseen data.
 
@@ -82,10 +82,12 @@ Notably flat across positions — no significant degradation for beaten horses. 
 | Statistic | Our Figures | Timeform |
 |---|---|---|
 | Mean | 53.9 | 50.1 |
-| Median | 54.1 | 52.0 |
-| Std Dev | 20.8 | 26.0 |
+| Median | 54.4 | 52.0 |
+| Std Dev | 21.3 | 26.0 |
 
-Our distribution is slightly compressed compared to Timeform (lower std: 20.8 vs 26.0), meaning we under-spread the tails. High-rated horses may be under-rated and low-rated horses over-rated relative to Timeform's scale.
+Our distribution is compressed compared to Timeform (lower std: 21.3 vs 26.0, ratio 0.948), meaning
+we under-spread the tails. High-rated horses are under-rated and low-rated horses over-rated
+relative to Timeform's scale. See the Compression Analysis section for detailed findings.
 
 ---
 
@@ -124,19 +126,23 @@ Our distribution is slightly compressed compared to Timeform (lower std: 20.8 vs
 ## Calibration Details
 
 ### Turf
-- `timefigure ≈ 0.7616 × figure_final - 87.43`
-- Class offsets: C1 +19.9, C2 +15.1, C3 +5.7, C4 -0.1, C5 -5.1, C6 -11.9, C7 -20.3
-- Going offsets: Firm -2.8, GdFm -0.8, Good -0.2, GdSft +0.5, Soft +0.5, Heavy +3.0
-- Age offsets: age2 -0.1, age3 +0.9, age4 -0.8, age5 -0.9, age6 -0.7, age7 -0.1,
-  age8 +0.5, age9 +0.8, age10 +1.1, age11 +1.2, age12 +1.0
-- 279/312 course×distance combos with |offset| > 0.5 lbs
+- `timefigure ≈ 0.8230×fig + -0.000733×(fig-181)² + -92.51` (quadratic)
+- Class offsets: C1 +20.1, C2 +15.4, C3 +5.9, C4 -0.2, C5 -5.2, C6 -11.8, C7 -19.7
+- Going offsets: Firm -2.7, GdFm -0.8, Good -0.2, GdSft +0.5, Soft +0.5, Heavy +3.1
+- Continuous GA coefficient: -2.33 lbs per s/f
+- BL offsets: winner +2.8, 0-1L +1.7, 1-3L +1.3, 3-5L +0.8, 5-10L -0.2, 10-15L -1.5, 15-20L -2.9
+- Age offsets: age2 -0.6, age3 +0.9, age4 -0.6, age5 -0.8, age6 -0.6, age7 +0.2,
+  age8 +0.7, age9 +1.1, age10 +1.4, age11 +1.6, age12 +1.5
+- 268/297 course×distance combos with |offset| > 0.5 lbs
 
 ### All Weather
-- `timefigure ≈ 0.8753 × figure_final + -0.000450×(fig-192)² - 119.09` (quadratic)
+- `timefigure ≈ 0.8753×fig + -0.000450×(fig-192)² + -119.09` (quadratic)
 - Class offsets: C1 +14.2, C2 +10.5, C3 +5.7, C4 +3.0, C5 +0.4, C6 -3.1, C7 -3.8
 - Going offsets: Firm +1.1, GdFm +0.3, Good +0.2, GdSft -0.5
-- Age offsets: age2 -0.7, age3 +0.1, age4 +0.6, age5 -0.2, age6 -0.1, age7 -0.1,
-  age8 -0.2, age9 -0.1, age10 -0.2, age11 -0.5, age12 -0.6
+- Continuous GA coefficient: -10.88 lbs per s/f
+- BL offsets: winner +1.1, 0-1L +0.5, 1-3L +0.6, 3-5L +0.7, 5-10L +0.9, 10-15L +0.9, 15-20L +1.3
+- Age offsets: age2 -0.8, age3 +0.1, age4 +0.6, age5 -0.2, age6 -0.1, age7 -0.1,
+  age8 -0.1, age9 -0.0, age10 -0.2, age11 -0.5, age12 -0.6
 - 50/53 course×distance combos with |offset| > 0.5 lbs
 
 ---
@@ -588,16 +594,283 @@ range, more consistent surfaces).
 
 ---
 
+## Going Allowance Analysis
+
+### Current Implementation
+
+Going allowances (GA) are computed per meeting (track × date × surface) as the winsorized
+mean of per-furlong deviations from standard time across winners on the card. Convention:
+positive GA = ground slower than standard (soft), negative = faster (firm).
+
+### GA Distribution by Official Going
+
+| Going | Mean GA (s/f) | Std | N |
+|-------|---------------|-----|---|
+| Firm | -0.147 | 0.133 | 20,731 |
+| Good to Firm | -0.093 | 0.124 | 129,701 |
+| Good | +0.049 | 0.123 | 223,798 |
+| Good to Soft | +0.176 | 0.157 | 195,947 |
+| Soft | +0.514 | 0.195 | 43,856 |
+| Heavy | +0.818 | 0.202 | 24,077 |
+
+The GA values align well with official going descriptions, showing a clear monotonic
+progression from firm (-0.15 s/f) to heavy (+0.82 s/f).
+
+### Per-Race vs Per-Meeting GA
+
+| Metric | Value |
+|--------|-------|
+| Between-meeting variance | 0.0714 |
+| Mean within-meeting variance | 0.0274 |
+| Ratio (between/within) | 2.60 |
+
+Meeting-level GA captures the majority of going variance. Simulating per-race GA
+(using individual race deviations instead of meeting average) **worsened** figures by
++0.55 MAE. Per-meeting is the correct granularity — per-race corrections collapse
+into "form ratings" by adjusting each race individually.
+
+### Distance-Dependent Going
+
+No significant distance-dependent going effect detected. Sprint vs long race GA
+difference: mean -0.002 s/f (N=8,222 meetings). The convention of expressing GA
+in seconds-per-furlong already scales correctly with distance.
+
+### Card Size Reliability
+
+| Card Size | Bias | MAE | N |
+|-----------|------|-----|---|
+| 1-3 races | -2.85 | 9.46 | 2,753 |
+| 4 races | -0.12 | 8.52 | 5,020 |
+| 5 races | -0.19 | 8.87 | 10,488 |
+| 6 races | +1.03 | 8.46 | 77,599 |
+| 7 races | +0.53 | 8.20 | 263,145 |
+| 8+ races | +0.35 | 7.14 | 279,105 |
+
+Cards with 1-3 races show significant negative bias (-2.85 lbs) and higher MAE, but
+represent only 0.4% of runners. The current MIN_RACES=3 threshold is adequate.
+
+### Time-Based vs Official Going
+
+| Metric | Official Going Groups | Time-Based Groups |
+|--------|----------------------|-------------------|
+| Residual MAE | 8.425 | 7.870 |
+| Exact agreement | — | 30.4% |
+
+Time-based going classifications (from GA values) are significantly more accurate than
+official going descriptions. Only 30.4% of runners have identical official and time-based
+going classifications. The pipeline already uses time-derived GA, not official descriptions.
+
+### Continuous GA Calibration Correction
+
+**Key improvement implemented:** Added a continuous linear correction based on the actual
+GA value in the calibration layer, supplementing the categorical going group offsets.
+
+**Before:** Residual bias by GA quartile ranged from -1.30 (fast ground, Q1) to +1.82
+(slow ground, Q4) — a spread of 3.12 lbs.
+
+**After:** Bias range reduced to -0.35 (Q1) to +1.01 (Q3) — spread of 1.36 lbs (56%
+reduction).
+
+| GA Quartile | Mean GA | Bias (before) | Bias (after) |
+|-------------|---------|---------------|--------------|
+| Q1 (fast) | -0.146 | -1.30 | -0.35 |
+| Q2 | +0.013 | +0.17 | +0.68 |
+| Q3 | +0.132 | +1.31 | +1.01 |
+| Q4 (slow) | +0.456 | +1.82 | +0.58 |
+
+Coefficients: Turf -2.33 lbs per s/f, AW -10.88 lbs per s/f. The larger AW coefficient
+reflects the fact that AW going variation (Standard to Slow) has a larger residual effect
+that the 4-category going offset (Firm, GdFm, Good, GdSft) doesn't capture.
+
+### Going Allowance Improvement Impact
+
+| Metric | Before GA | After GA | Change |
+|--------|-----------|----------|--------|
+| **Correlation** | 0.8876 | **0.8896** | +0.0020 |
+| **MAE** | 7.88 | **7.79** | -0.09 |
+| **RMSE** | 10.42 | **10.33** | -0.09 |
+| **Turf MAE** | 8.65 | **8.62** | -0.03 |
+| **AW MAE** | 6.65 | **6.45** | -0.20 |
+
+### What Was Tested But Didn't Help
+
+1. **Excluding maiden/2yo races from GA** — Reduced GA meetings from 10,625 to 10,463,
+   losing coverage. MAE worsened by +0.03.
+
+2. **Per-race GA** — Simulated per-race corrections worsened MAE by +0.55. Meeting-level
+   GA is optimal.
+
+3. **GA shrinkage for small cards** — Adding Bayesian shrinkage toward zero for meetings
+   with few races worsened overall MAE despite reducing small-card bias.
+
+### Research Context (International Best Practices)
+
+Based on research into Timeform (UK), Beyer (US), and HKJC approaches:
+
+- **Timeform** derives GA mathematically from race times vs expected ratings (not official
+  descriptions). Uses 6-7 races with 4+ from established horses. Applies wind vector
+  analysis and rail movement corrections. Abandons figures when conditions are too extreme.
+
+- **Beyer** computes a "track variant" per surface per day. Uses projected figures (horse
+  histories) rather than class pars. Separate dirt and turf variants always. Human judgment
+  plays a significant role.
+
+- **HKJC** uses a fixed going scale with step tables. Less sophisticated than UK/US.
+
+- **Consensus:** Per-meeting is the correct granularity. Time-based going is universally
+  preferred over official descriptions. Wind and rail corrections are the next frontier
+  for accuracy but require course-specific data we don't currently have.
+
+---
+
+## Compression Analysis
+
+### Overview
+
+Our figures have std 21.3 vs Timeform's 22.4 (compression ratio 0.948). This means
+high-rated horses are systematically under-rated and low-rated horses over-rated.
+
+### Compression by Timeform Rating Level
+
+| TF Band | Our Mean | TF Mean | Diff | Bias | N |
+|---------|----------|---------|------|------|---|
+| <0 | 0.5 | -12.0 | +12.5 | +12.51 | 8,365 |
+| 0-20 | 19.7 | 12.9 | +6.8 | +6.82 | 38,821 |
+| 20-40 | 35.7 | 32.0 | +3.6 | +3.63 | 124,571 |
+| 40-60 | 51.6 | 50.9 | +0.8 | +0.76 | 220,473 |
+| 60-80 | 67.5 | 69.4 | -1.9 | -1.89 | 177,906 |
+| 80-100 | 83.5 | 88.0 | -4.5 | -4.48 | 59,205 |
+| 100-120 | 97.2 | 106.5 | -9.3 | -9.29 | 8,568 |
+| 120+ | 109.5 | 123.6 | -14.1 | -14.06 | 171 |
+
+The compression is nearly perfectly symmetric around TF 40-60 (the centre of the distribution).
+At the top (TF 120+), we under-rate by 14.1 lbs. At the bottom (TF <0), we over-rate by 12.5 lbs.
+
+### Local Calibration Slopes
+
+The regression slope between our figures and Timeform decreases at higher figure levels,
+confirming the compression is worse at the tails:
+
+**Turf:** 0-40: 0.93, 40-60: 0.96, 60-80: 0.90, 80-100: 0.81, 100-120: 0.61
+**AW:** 0-40: 1.00, 40-60: 0.99, 60-80: 0.95, 80-100: 0.87, 100-120: 0.86
+
+AW slopes are consistently closer to 1.0 than Turf, reflecting AW's inherently lower noise.
+The continuous GA correction particularly improved AW 80-100 (0.816→0.872) and AW 100-120
+(0.726→0.859).
+
+### Compression by Race Class
+
+| Class | Our Std | TF Std | Ratio | N |
+|-------|---------|--------|-------|---|
+| 1 | 16.0 | 18.6 | 0.863 | 22,901 |
+| 2 | 17.6 | 20.1 | 0.878 | 41,556 |
+| 3 | 17.3 | 19.8 | 0.876 | 38,310 |
+| 4 | 17.8 | 19.9 | 0.898 | 102,218 |
+| 5 | 18.2 | 20.0 | 0.910 | 171,201 |
+| 6 | 17.0 | 17.9 | 0.949 | 147,544 |
+| 7 | 14.1 | 14.5 | 0.974 | 1,504 |
+
+Class 1 is the most compressed (ratio 0.863), Class 7 the least (0.974). Higher-class
+races — with smaller, more competitive fields and less beaten-length spread — are
+inherently harder to differentiate.
+
+### Pre- vs Post-Calibration Spread
+
+| Stage | Std | Slope vs TF |
+|-------|-----|-------------|
+| Pre-calibration (figure_final) | 21.2 | 0.752 |
+| Post-calibration (figure_calibrated) | 21.3 | 0.938 |
+| Timeform | 22.4 | 1.000 |
+
+Calibration dramatically improves the slope (0.75→0.94) but barely changes the standard
+deviation. The compression exists at the raw figure level, before calibration is applied.
+
+### Root Cause
+
+The compression is a fundamental property of our raw figure computation:
+
+1. **Measurement noise → attenuation bias:** The calibration regression slope is < 1 because
+   our raw figures contain noise (from lack of wind corrections, rail movement corrections,
+   and limitations of the going allowance). This is standard regression-to-the-mean: a noisy
+   x-variable produces a slope that attenuates the predicted y.
+
+2. **Information asymmetry:** Timeform uses wind vector analysis, rail movement corrections,
+   and expert human judgment to refine their figures. These reduce noise and allow higher
+   effective spread. Without these additional data sources, our figures have a lower signal-
+   to-noise ratio at the extremes.
+
+3. **Small-field effect at high classes:** Class 1-2 races have fewer runners, tighter
+   finishing margins, and less beaten-length spread — all of which reduce figure precision.
+
+### What Was Tested But Didn't Help
+
+All post-hoc compression corrections **worsened** overall MAE:
+
+| Approach | MAE Change | Notes |
+|----------|------------|-------|
+| Per-figure-band offsets (K=100) | +0.23 | Tail correction helps extremes but adds noise to middle |
+| Simple stretch factor (1.03-1.08) | +0.07 to +0.26 | Uniform stretch hurts well-calibrated centre |
+| Tail-only offsets (<30, >80) | +0.19 | Still degrades middle |
+| Graduated stretch (alpha=0.001-0.005) | +0.10 to +0.85 | All worsen |
+| Quadratic calibration | +0.02 (marginal) | Already implemented; helps at tails by ~2 lbs at fig=120 |
+
+**Why post-hoc fixes fail:** The calibration is already optimal (least squares) given the
+data. Any post-hoc adjustment moves figures away from the regression optimum, adding variance
+to the well-calibrated majority in exchange for marginal tail improvements.
+
+### What Would Help (Future)
+
+1. **Wind corrections** — Would reduce raw figure noise, naturally increasing the calibration
+   slope. Requires weather data and course-specific wind models (as used by Timeform and Ragozin).
+
+2. **Rail movement corrections** — Published on the BHA website; could be incorporated to
+   adjust advertised distances.
+
+3. **Projected-figure-based going allowances** — Using horse histories (like Beyer and
+   Timeform) instead of class-adjusted times would improve GA accuracy and reduce noise.
+
+4. **Split-card going detection** — Detecting within-meeting going changes (rain, watering)
+   and applying segment-specific GA would reduce noise for affected meetings.
+
+---
+
 ## Key Observations & Improvement Opportunities
 
-1. **Compressed scale (Std 21.2 vs 26.0):** The pipeline under-spreads figures at the tails. A non-linear calibration could help close the gap to Timeform's 26.0 std dev.
+1. **Compressed scale (Std 21.3 vs 26.0):** The pipeline under-spreads figures at the
+   tails (ratio 0.948). Root cause is raw figure noise from lack of wind/rail corrections.
+   Post-hoc fixes worsen MAE. The path forward is reducing upstream noise (wind data,
+   projected-figure GA, split-card detection).
 
-2. **Large class offsets (C1: +19.9 on Turf):** The class adjustment in Stage 1 isn't fully capturing class-level pace differences — the calibration layer is doing heavy lifting. However, varying class adjustments empirically HURT accuracy (CV 0.0216 vs 0.0142), so this is best addressed by other means.
+2. **Large class offsets (C1: +20.1 on Turf):** The class adjustment in Stage 1 isn't
+   fully capturing class-level pace differences — the calibration layer is doing heavy
+   lifting. However, varying class adjustments empirically HURT accuracy (CV 0.0216 vs
+   0.0142), so this is best addressed by other means.
 
-3. **Going offsets (Heavy: +3.0 on Turf):** Residual going bias after the going allowance stage suggests the GA computation underestimates the impact of extreme ground.
+3. **Going allowance works well:** The continuous GA calibration correction significantly
+   reduced going-dependent bias (Q1-Q4 spread: 3.12 → 1.36 lbs). Per-meeting GA is the
+   correct granularity. No distance-dependent going effect detected.
 
-4. **Standard time drift:** 87 of 231 combos show drift > 0.1 s/yr, with Wolverhampton and Lingfield getting measurably faster. A rolling 5-year window could improve these.
+4. **Standard time drift:** 87 of 231 combos show drift > 0.1 s/yr, with Wolverhampton
+   and Lingfield getting measurably faster. A rolling 5-year window could improve these.
 
-5. **MAE of ~7.88 lbs overall is above the stated goal of MAE < 3.** The ML enhancement layer (`ml_figures.py`) is designed to close this gap using the pipeline figure as its backbone feature.
+5. **MAE of ~7.79 lbs overall is above the stated goal of MAE < 3.** The ML enhancement
+   layer (`ml_figures.py`) is designed to close this gap using the pipeline figure as its
+   backbone feature.
 
-6. **Out-of-sample stability is good:** 2024–2026 show no significant degradation vs in-sample years, confirming the calibration generalises well.
+6. **Out-of-sample stability is good:** 2024–2026 show no significant degradation vs
+   in-sample years, confirming the calibration generalises well.
+
+---
+
+## Cumulative Improvement Tracker
+
+| Stage | Corr | MAE | RMSE | Turf MAE | AW MAE |
+|-------|------|-----|------|----------|--------|
+| **Original baseline** | 0.8836 | 7.99 | 10.57 | 8.81 | 6.67 |
+| + Std times (exclude maiden/2yo, min 20) | 0.8862 | 7.93 | 10.50 | — | — |
+| + BL bias correction, LPL analysis | 0.8866 | 7.92 | 10.47 | 8.68 | 6.65 |
+| + WFA: reduce decline, per-age offset | 0.8871 | 7.90 | 10.44 | — | — |
+| + LPL: base 22→20, AW ×1.10 | 0.8876 | 7.88 | 10.42 | 8.65 | 6.65 |
+| + Continuous GA calibration correction | **0.8896** | **7.79** | **10.33** | **8.62** | **6.45** |
+
+Total improvement: corr +0.0060, MAE -0.20, RMSE -0.24, Turf -0.19, AW -0.22.

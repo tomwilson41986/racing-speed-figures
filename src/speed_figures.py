@@ -1125,13 +1125,37 @@ def calibrate_figures(df):
         surf_going_adj = df_going_grp.map(going_offset_dict).fillna(0)
         df.loc[surf_mask, "figure_calibrated"] += surf_going_adj.values
 
+        # Continuous GA correction: linear function of the actual
+        # going allowance value to capture finer-grained effects
+        # beyond what 6 categorical groups can resolve.  Time-based
+        # going (GA) is more accurate than official descriptions
+        # (analysis: MAE 7.97 vs 8.49).
+        residuals3a = residuals3 - (
+            fit_going_grp.map(going_offset_dict).fillna(0).values
+        )
+        fit_ga = fit["ga_value"].values if "ga_value" in fit.columns else (
+            np.zeros(len(fit))
+        )
+        ga_has_value = fit_ga != 0
+        ga_coeff = 0.0
+        if ga_has_value.sum() > 200:
+            ga_coeff = (
+                np.sum(fit_ga[ga_has_value] * residuals3a[ga_has_value])
+                / (np.sum(fit_ga[ga_has_value] ** 2) + 1e-6)
+            )
+
+        all_ga = (
+            df.loc[surf_mask, "ga_value"].values
+            if "ga_value" in df.columns else np.zeros(surf_mask.sum())
+        )
+        surf_ga_cont_adj = ga_coeff * all_ga
+        df.loc[surf_mask, "figure_calibrated"] += surf_ga_cont_adj
+
         # Per-beaten-length-band residual correction (with shrinkage).
         # Corrects the systematic positive bias that grows with margin:
         # horses beaten further are consistently over-rated because
         # judge's margin estimates compress at larger distances.
-        residuals4 = residuals3 - (
-            fit_going_grp.map(going_offset_dict).fillna(0).values
-        )
+        residuals4 = residuals3a - (ga_coeff * fit_ga)
         fit_bl = fit["distanceCumulative"].fillna(0).clip(lower=0)
         fit_bl_band = pd.cut(
             fit_bl, bins=[0, 1, 3, 5, 10, 15, 20],
@@ -1184,7 +1208,7 @@ def calibrate_figures(df):
 
         cal_params[surface] = (
             a, b, a2, class_offset_dict, course_dist_offset_dict,
-            going_offset_dict, bl_offset_dict, age_offset_dict,
+            going_offset_dict, ga_coeff, bl_offset_dict, age_offset_dict,
         )
         if class_offset_dict:
             offsets_str = ", ".join(
@@ -1203,6 +1227,7 @@ def calibrate_figures(df):
             )
         )
         print(f"      going offsets: {going_str}")
+        print(f"      continuous GA coeff: {ga_coeff:+.2f} lbs per s/f")
         bl_str = ", ".join(
             f"{k}:{v:+.1f}" for k, v in sorted(
                 bl_offset_dict.items()
@@ -1370,6 +1395,11 @@ def run_pipeline():
     # 8 — Sex allowance
     print("\nSTAGE 8: Sex allowance")
     all_figs = apply_sex_allowance(all_figs)
+
+    # Attach GA value for continuous going correction in calibration
+    all_figs["ga_value"] = all_figs["meeting_id"].map(
+        going_allowances
+    ).fillna(0)
 
     # 9 — Calibration & validation
     print("\nSTAGE 9: Calibration")
