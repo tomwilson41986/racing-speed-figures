@@ -213,7 +213,7 @@ WFA_2YO_AW = {
 # performance relative to the 4-6yo baseline.  On AW the decline is
 # within noise and not modelled.  Values are NEGATIVE (subtracted from
 # figure to reflect reduced ability).
-OLDER_DECLINE_TURF = {7: -1, 8: -2, 9: -3, 10: -4, 11: -6, 12: -6}
+OLDER_DECLINE_TURF = {7: -1, 8: -1.5, 9: -2, 10: -2.5, 11: -3, 12: -3}
 
 # Legacy aliases — kept so callers that import the old names still work.
 WFA_3YO = WFA_3YO_TURF
@@ -1160,9 +1160,31 @@ def calibrate_figures(df):
         surf_bl_adj = all_bl_band.map(bl_offset_dict).fillna(0)
         df.loc[surf_mask, "figure_calibrated"] += surf_bl_adj.values
 
+        # Per-age-group residual correction (with shrinkage).
+        # WFA tables leave persistent per-age biases that a single
+        # calibration slope cannot capture (e.g. 2yo +1.0 lb, 4-6yo +0.8).
+        residuals5 = residuals4 - (
+            fit_bl_band.map(bl_offset_dict).fillna(0).values
+        )
+        fit_age = fit["horseAge"].clip(upper=12).astype(int).astype(str)
+        age_groups = pd.Series(
+            residuals5, index=fit.index
+        ).groupby(fit_age)
+        age_means = age_groups.mean()
+        age_counts = age_groups.count()
+        age_shrunk = age_means * age_counts / (age_counts + SHRINKAGE_K)
+        age_offset_dict = age_shrunk.to_dict()
+
+        all_age = (
+            df.loc[surf_mask, "horseAge"].clip(upper=12)
+            .astype(int).astype(str)
+        )
+        surf_age_adj = all_age.map(age_offset_dict).fillna(0)
+        df.loc[surf_mask, "figure_calibrated"] += surf_age_adj.values
+
         cal_params[surface] = (
             a, b, a2, class_offset_dict, course_dist_offset_dict,
-            going_offset_dict, bl_offset_dict,
+            going_offset_dict, bl_offset_dict, age_offset_dict,
         )
         if class_offset_dict:
             offsets_str = ", ".join(
@@ -1187,6 +1209,12 @@ def calibrate_figures(df):
             )
         )
         print(f"      beaten-length offsets: {bl_str}")
+        age_str = ", ".join(
+            f"age{k}:{v:+.1f}" for k, v in sorted(
+                age_offset_dict.items()
+            )
+        )
+        print(f"      age offsets: {age_str}")
 
     # Exclude non-finishers (no official position)
     no_position = (

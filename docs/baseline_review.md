@@ -12,9 +12,9 @@
 
 | Metric | Value |
 |---|---|
-| **Correlation** | 0.8866 |
-| **MAE** | 7.92 lbs |
-| **RMSE** | 10.47 lbs |
+| **Correlation** | 0.8871 |
+| **MAE** | 7.90 lbs |
+| **RMSE** | 10.44 lbs |
 | **Bias** | +0.49 lbs |
 
 ### Error Distribution
@@ -35,8 +35,8 @@
 
 | Surface | Correlation | MAE | N |
 |---|---|---|---|
-| **Turf** | 0.8710 | 8.71 | 425,857 |
-| **All Weather** | 0.9085 | 6.66 | 258,465 |
+| **Turf** | 0.8715 | 8.68 | 425,857 |
+| **All Weather** | 0.9088 | 6.65 | 258,465 |
 
 All Weather outperforms Turf by ~2 lbs MAE, likely because AW surfaces are more consistent (no going variation).
 
@@ -46,11 +46,11 @@ All Weather outperforms Turf by ~2 lbs MAE, likely because AW surfaces are more 
 
 | Position | Correlation | MAE | N |
 |---|---|---|---|
-| 1st (winners) | 0.8410 | 8.07 | 72,921 |
-| 2nd | 0.8395 | 8.07 | 72,762 |
-| 3rd | 0.8440 | 8.06 | 72,700 |
-| 4th | 0.8515 | 8.02 | 72,016 |
-| 5th | 0.8585 | 7.96 | 69,794 |
+| 1st (winners) | 0.8417 | 8.05 | 72,921 |
+| 2nd | 0.8402 | 8.05 | 72,762 |
+| 3rd | 0.8447 | 8.04 | 72,700 |
+| 4th | 0.8521 | 8.00 | 72,016 |
+| 5th | 0.8590 | 7.94 | 69,794 |
 
 Notably flat across positions — no significant degradation for beaten horses. Mid-field runners actually have marginally *better* MAE, possibly because extreme winners/losers have more variance.
 
@@ -60,18 +60,18 @@ Notably flat across positions — no significant degradation for beaten horses. 
 
 | Year | Correlation | MAE | N |
 |---|---|---|---|
-| 2015 | 0.8706 | 8.57 | 57,052 |
-| 2016 | 0.8735 | 8.31 | 57,632 |
-| 2017 | 0.8882 | 8.12 | 60,583 |
-| 2018 | 0.8975 | 7.75 | 61,025 |
-| 2019 | 0.8960 | 7.71 | 60,752 |
-| 2020 | 0.8922 | 7.55 | 52,947 |
-| 2021 | 0.8910 | 7.76 | 64,494 |
-| 2022 | 0.8932 | 7.85 | 65,619 |
-| 2023 | 0.8784 | 8.23 | 68,235 |
-| **2024** | **0.8871** | **7.87** | **69,513** |
-| **2025** | **0.8803** | **8.20** | **64,939** |
-| **2026** | **0.8910** | **7.23** | **5,165** |
+| 2015 | 0.8777 | 8.47 | 55,785 |
+| 2016 | 0.8790 | 8.20 | 57,410 |
+| 2017 | 0.8902 | 8.05 | 60,489 |
+| 2018 | 0.8994 | 7.69 | 60,766 |
+| 2019 | 0.8982 | 7.65 | 60,548 |
+| 2020 | 0.8957 | 7.44 | 52,796 |
+| 2021 | 0.8931 | 7.68 | 64,309 |
+| 2022 | 0.8951 | 7.79 | 65,475 |
+| 2023 | 0.8849 | 8.08 | 67,632 |
+| **2024** | **0.8896** | **7.81** | **69,255** |
+| **2025** | **0.8842** | **8.11** | **64,692** |
+| **2026** | **0.8911** | **7.23** | **5,165** |
 
 2024–2026 are **out-of-sample** (calibration fitted on ≤2023). Performance is stable — no significant degradation on unseen data.
 
@@ -126,13 +126,17 @@ Our distribution is slightly compressed compared to Timeform (lower std: 20.8 vs
 ### Turf
 - `timefigure ≈ 0.7616 × figure_final - 87.43`
 - Class offsets: C1 +19.9, C2 +15.1, C3 +5.7, C4 -0.1, C5 -5.1, C6 -11.9, C7 -20.3
-- Going offsets: Firm -3.1, GdFm -0.8, Good -0.2, GdSft +0.6, Soft +0.5, Heavy +3.0
+- Going offsets: Firm -2.8, GdFm -0.8, Good -0.2, GdSft +0.5, Soft +0.5, Heavy +3.0
+- Age offsets: age2 -0.1, age3 +0.9, age4 -0.8, age5 -0.9, age6 -0.7, age7 -0.1,
+  age8 +0.5, age9 +0.8, age10 +1.1, age11 +1.2, age12 +1.0
 - 279/312 course×distance combos with |offset| > 0.5 lbs
 
 ### All Weather
-- `timefigure ≈ 0.8835 × figure_final - 120.98`
-- Class offsets: C1 +14.0, C2 +10.3, C3 +5.5, C4 +2.9, C5 +0.3, C6 -3.1, C7 -3.9
-- Going offsets: Firm +1.2, GdFm +0.3, Good +0.3, GdSft -0.5
+- `timefigure ≈ 0.8753 × figure_final + -0.000450×(fig-192)² - 119.09` (quadratic)
+- Class offsets: C1 +14.2, C2 +10.5, C3 +5.7, C4 +3.0, C5 +0.4, C6 -3.1, C7 -3.8
+- Going offsets: Firm +1.1, GdFm +0.3, Good +0.2, GdSft -0.5
+- Age offsets: age2 -0.7, age3 +0.1, age4 +0.6, age5 -0.2, age6 -0.1, age7 -0.1,
+  age8 -0.2, age9 -0.1, age10 -0.2, age11 -0.5, age12 -0.6
 - 50/53 course×distance combos with |offset| > 0.5 lbs
 
 ---
@@ -192,48 +196,105 @@ representative distances:
 | **Raceform** | Simple monthly scale in lengths (e.g., 2yo May/Jun: -10 lengths) | Less granular than our distance-specific approach |
 | **Empirical (best practice)** | Derive from own data by comparing same-horse performances across ages | Partially what we do, though via residual fitting rather than paired comparisons |
 
-### Identified WFA Issues
+### Empirical WFA Residual Analysis
 
-1. **2yo early-season inflation** — The BHA scale allows up to 41 lbs for 2yo in March;
-   Racing Post and industry commentators (Dave Edwards, Timeform) consider this too
-   generous. Our 2yo Turf table shows 30 lbs in March at 5f — more conservative than
-   BHA but still potentially inflated. Very few 2yo races exist before May, so
-   early-season cells have minimal data and should be treated with caution.
+Comprehensive analysis of residuals by age group, month, distance, and surface
+(`scripts/analyse_wfa.py` on 638,110 valid runners):
 
-2. **Smoothing artefacts** — The 3-month weighted average smoothing produces non-monotonic
-   values at distance boundaries (e.g., 3yo Turf 7f drops to 0 in July while 5f remains
-   at 7 and 8f is at 3). A monotonic constraint on the distance axis would produce more
-   physically plausible tables.
+**Residuals by age group (after WFA):**
 
-3. **No fortnightly resolution** — The BHA scale uses fortnightly intervals; ours uses
-   monthly. For 3yo in April–June when maturation is fastest, this means up to 2 lbs
-   of within-month variation is averaged out.
+| Age | Bias | MAE | N |
+|-----|------|-----|---|
+| 2 | +1.03 | 7.74 | 117,009 |
+| 3 | -0.12 | 7.96 | 200,120 |
+| 4 | +0.61 | 7.97 | 122,422 |
+| 5 | +1.05 | 7.98 | 75,896 |
+| 6 | +0.98 | 7.97 | 49,409 |
+| 7 | +0.58 | 7.90 | 33,021 |
+| 8 | +0.12 | 7.98 | 20,360 |
+| 9 | -0.25 | 7.82 | 11,443 |
+| 10 | -0.53 | 7.76 | 5,412 |
+| 11 | -1.31 | 8.10 | 2,128 |
+| 12 | -1.11 | 7.88 | 701 |
 
-4. **Older horse decline only on Turf** — The AW dataset may be too noisy to detect the
-   signal, but it could also represent a genuine surface interaction. Worth revisiting
-   with the larger 2024–2026 dataset.
+**3yo month × distance patterns:**
+- Turf sprints (5-6f): positive bias +1 to +6 lbs (WFA too generous)
+- Turf stayers (12f+): negative bias -2 to -10 lbs (WFA too low)
+- AW sprints (5-6f): consistent +3 to +5 bias across all months
+- AW stayers (10-12f): consistent -2 to -6 bias across all months
+- This distance gradient reflects the "stamina assumption" flaw noted by drawbias.com
+
+**2yo patterns:**
+- Turf: overall +1.0 bias, strongest at sprints
+- AW: consistent +1 to +4 bias, especially at 5-6f
+
+**Non-monotonic WFA table entries:** 107 pairs across all 4 tables where shorter
+distances have higher WFA than longer distances. This is physically implausible
+(younger horses are MORE disadvantaged at longer distances).
+
+**Year-over-year drift:**
+- 3yo bias drifted from -2.15 (2015) to +2.35 (2023), then +1.82 (2024)
+- 2yo bias drifted from -4.76 (2015) to +4.80 (2023), then +4.01 (2024)
+- This suggests 2yo/3yo horses have been getting relatively stronger over time,
+  or that Timeform's own WFA adjustments have drifted
+
+**Fortnightly resolution test:** Within-month 1st-half vs 2nd-half bias differences
+are moderate (typically 0.5-2.0 lbs), with the largest at 3yo February (-3.3 lbs)
+and 2yo July (+1.5 lbs). Monthly resolution is adequate for most cells.
+
+### WFA Improvements Implemented
+
+1. **Reduced older horse Turf decline** — The original decline
+   `{7: -1, 8: -2, 9: -3, 10: -4, 11: -6, 12: -6}` was too aggressive at ages
+   9-12, producing strongly negative residuals (-1.0 to -3.5 lbs). Updated to
+   `{7: -1, 8: -1.5, 9: -2, 10: -2.5, 11: -3, 12: -3}`. The optimal values
+   (computed as current_decline − residual_bias) are: 7→-1.6, 8→-1.7, 9→-2.0,
+   10→-2.3, 11→-2.8, 12→-2.5.
+
+2. **Per-age calibration offset** — Added a per-age-group shrinkage-regularised
+   residual correction in the calibration layer (after the beaten-length offset).
+   This captures age-specific biases that the WFA tables don't fully correct:
+   - Turf: ages 4-6 get -0.7 to -0.9 (figures were too high), ages 9-12 get
+     +0.8 to +1.2 (figures were too low even after decline fix)
+   - AW: 2yo gets -0.7 (WFA was too generous), ages 11-12 get -0.5 to -0.6
+     (mild AW decline captured implicitly)
+
+### Identified WFA Issues (Remaining)
+
+1. **3yo distance gradient** — The month×distance bias pattern (sprint over-
+   compensation, stayer under-compensation) is an age×distance interaction that
+   cannot be captured by a per-age offset alone. Fixing the WFA tables directly
+   would require re-derivation with monotonic distance constraints.
+
+2. **2yo early-season inflation** — The BHA scale allows up to 41 lbs for 2yo in
+   March; our 2yo Turf table shows 30 lbs at 5f. Very few 2yo races exist before
+   May, so early-season cells have minimal data and should be treated with caution.
+
+3. **Non-monotonic WFA tables** — 107 non-monotonic pairs across all 4 tables.
+   A monotonic distance constraint would produce more physically plausible values.
+
+4. **Year-over-year drift** — The 2yo bias has drifted by ~9 lbs from 2015 to 2023.
+   A temporal decay or recency weighting when deriving WFA tables could help.
 
 5. **3yo at 14f+ under-corrected** — The 2025 BHA review found persistent 3yo
-   overperformance at 14f+ and reduced allowances by ~1 lb. Our empirical table has
-   limited data at these distances (few cells exist beyond 12f for 3yo Turf). This
-   edge case should be audited.
+   overperformance at 14f+ and reduced allowances by ~1 lb. Our empirical table
+   shows biases of -4 to -12 lbs at 14-16f on Turf, confirming under-correction.
 
 ### Recommendations
 
-1. **Add monotonic distance constraint** — Enforce that WFA allowances are
-   non-decreasing with distance (at fixed age/month) when deriving empirical tables.
-   This prevents implausible reversals.
+1. **Re-derive WFA tables with monotonic distance constraint** — Enforce that WFA
+   allowances are non-decreasing with distance (at fixed age/month). Use isotonic
+   regression on the optimal values from the residual analysis.
 
 2. **Use paired-horse methodology** — Supplement the residual-fitting approach with
-   direct paired comparisons of horses that raced as both 2yo/3yo and 4yo+ (per the
-   framework recommendation in §6.5). This is more robust to target-scale artefacts.
+   direct paired comparisons of horses that raced as both 2yo/3yo and 4yo+. This
+   is more robust to target-scale artefacts.
 
-3. **Validate against Timeform's `tfwfa` field** — The ML pipeline already parses the
-   `tfwfa` column from Timeform data. Compare our empirical WFA allowances against
-   Timeform's published per-race WFA weights to quantify divergence.
+3. **Validate against Timeform's `tfwfa` field** — Compare our empirical WFA
+   allowances against Timeform's published per-race WFA weights.
 
-4. **Consider fortnightly intervals** for April–July when maturation is fastest, falling
-   back to monthly for the rest of the year.
+4. **Consider recency-weighted WFA derivation** — Weight recent years more heavily
+   when computing WFA tables, to account for the significant year-over-year drift.
 
 5. **Audit 2yo tables before May** — Flag or suppress cells with < 100 runners, as
    early-season 2yo data is too sparse for reliable empirical derivation.
@@ -356,8 +417,8 @@ over the simpler median.
 
 ### Impact of Standard Time Improvements
 
-| Metric | Before | After | Change |
-|--------|--------|-------|--------|
+| Metric | Before Std Times | After Std Times | Change |
+|--------|------------------|-----------------|--------|
 | **Correlation** | 0.8862 | **0.8866** | +0.0004 |
 | **MAE** | 7.93 | **7.92** | -0.01 |
 | **RMSE** | 10.50 | **10.47** | -0.03 |
@@ -502,6 +563,6 @@ range, more consistent surfaces).
 
 4. **Standard time drift:** 87 of 231 combos show drift > 0.1 s/yr, with Wolverhampton and Lingfield getting measurably faster. A rolling 5-year window could improve these.
 
-5. **MAE of ~7.92 lbs overall is above the stated goal of MAE < 3.** The ML enhancement layer (`ml_figures.py`) is designed to close this gap using the pipeline figure as its backbone feature.
+5. **MAE of ~7.90 lbs overall is above the stated goal of MAE < 3.** The ML enhancement layer (`ml_figures.py`) is designed to close this gap using the pipeline figure as its backbone feature.
 
 6. **Out-of-sample stability is good:** 2024–2026 show no significant degradation vs in-sample years, confirming the calibration generalises well.
