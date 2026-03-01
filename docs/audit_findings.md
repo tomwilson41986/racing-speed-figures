@@ -10,47 +10,43 @@
 
 Overall accuracy: **MAE 6.77 lbs, r=0.9210** against Timeform timefigure.
 
-### Scale Compression Fix (Stage 10b) — IMPLEMENTED
+### Scale Compression Fix (Stages 10 + 10b) — IMPLEMENTED
 
 The #1 issue identified in the initial audit was systematic under-rating of 100+ horses
-(bias -8.42 lbs). Initially fixed with a linear variance-matching stretch (tanh modulation),
-then upgraded to **empirical quantile mapping with PCHIP (monotonic cubic) interpolation** —
-a standard statistical technique for distribution matching used in climate bias correction
-and professional speed figure compilation.
+(bias -8.33 lbs). Fixed via a two-pronged approach:
 
-Quantile mapping captures the full non-linear shape of the GBR compression, not just the
-variance mismatch. It builds a percentile-to-percentile mapping from our predictions to
-Timeform values (50 anchor points per surface), then applies a smooth monotonic
-interpolation.
+1. **GBR depth increase** (Stage 10): `max_depth` 5 → 6 gives the GBR more capacity to
+   partition extreme-rated horses into more specific leaves, reducing compression at source.
+   12 GBR configurations tested (varying depth, min_samples_leaf, learning_rate, loss function).
+
+2. **PCHIP quantile mapping** (Stage 10b): Empirical quantile mapping with 20 anchor points
+   per surface using monotonic cubic (PCHIP) interpolation — a standard statistical technique
+   for distribution matching. Fewer quantile bins (20 vs 50) provide more aggressive tail
+   correction. 7 distribution-mapping approaches tested across 30+ configurations.
 
 | Band | Before MAE | After MAE | Before Bias | After Bias |
 |------|-----------|-----------|-------------|------------|
-| **100-120** | **8.97** | **6.92** | **-8.33** | **-3.47** |
-| **120+** | **12.25** | **6.37** | **-12.23** | **-4.54** |
-| 80-100 | 7.10 | 6.68 | -4.97 | -2.08 |
-| 40-60 | 6.09 | 6.57 | +1.07 | +0.68 |
-| <20 | 9.66 | 8.65 | +7.80 | +3.71 |
-| **Overall** | **6.64** | **6.80** | +0.45 | +0.45 |
+| **100-120** | **8.97** | **6.43** | **-8.33** | **-2.43** |
+| **120+** | **12.25** | **5.44** | **-12.23** | **-3.22** |
+| 80-100 | 7.10 | 6.49 | -4.97 | -1.76 |
+| 40-60 | 6.09 | 6.33 | +1.07 | +0.69 |
+| <20 | 9.66 | 8.65 | +7.80 | +2.42 |
+| **Overall** | **6.64** | **6.59** | +0.45 | +0.38 |
 
-Compression ratio fixed: **0.912 → 1.007** (our std 22.6 vs TFig 22.4).
-OOS 100-120 bias: **-7.24 → -2.27** (69% reduction). Correlation: 0.9208 (was 0.9211).
-
-**Technique comparison** (7 approaches tested, 30+ configurations):
-- PCHIP quantile mapping (chosen): best bias-vs-MAE trade-off, principled
-- CDF transfer (KDE): best correlation (0.9210) but less tail correction
-- Isotonic regression: barely moved the needle (optimises conditional mean, not distribution)
-- Linear tanh stretch (previous): ad-hoc, similar results but not distribution-aware
-- Binned bias correction: similar to isotonic, ineffective
+Compression ratio fixed: **0.912 → 1.019** (our std 22.8 vs TFig 22.4).
+OOS 100-120 bias: **-7.24 → -1.73** (76% reduction).
+Correlation improved: **0.9211 → 0.9265**.
+Overall MAE improved: **6.64 → 6.59** (better than baseline despite distribution expansion).
 
 ### Remaining Issues
 
 | Rank | Source | Impact | Root Cause |
 |------|--------|--------|------------|
-| 1 | **Irish Turf tracks** | MAE 8.6–10.3 at worst | Fewer races per track×distance, more variable ground, less AW data to anchor |
-| 2 | **OOS bias drift** | +2.31 lbs bias in 2024–26 | GBR/calibration trained on 2015–23 doesn't generalise to new data |
-| 3 | **Heavy/Soft going** | MAE 7.7–8.1 | GA underestimates extreme going; non-linear speed/ground relationship |
-| 4 | **Long-distance Turf** (12f+) | MAE 8.8 at 13–16f | Fewer standard-time samples, wind/pace variance higher |
-| 5 | **Residual compression at 100+** | Bias -3.47 | GBR many-to-one clipping at extremes cannot be fully unwound by post-hoc distribution matching |
+| 1 | **Irish Turf tracks** | MAE 8.7–9.8 at worst | Fewer races per track×distance, more variable ground, less AW data to anchor |
+| 2 | **OOS bias drift** | +2.21 lbs bias in 2024–26 | GBR/calibration trained on 2015–23 doesn't generalise to new data |
+| 3 | **Heavy/Soft going** | MAE 7.6–8.1 | GA underestimates extreme going; non-linear speed/ground relationship |
+| 4 | **Long-distance Turf** (12f+) | MAE 8.5 at 13–16f | Fewer standard-time samples, wind/pace variance higher |
+| 5 | **Residual compression at 100+** | Bias -2.43 | GBR many-to-one clipping at extremes; irreducible with post-hoc distribution matching |
 
 ---
 

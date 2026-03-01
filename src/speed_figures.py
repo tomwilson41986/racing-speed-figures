@@ -1352,7 +1352,7 @@ def enhance_with_gbr(df):
 
         gbr = GradientBoostingRegressor(
             n_estimators=300,
-            max_depth=5,
+            max_depth=6,
             learning_rate=0.08,
             subsample=0.8,
             min_samples_leaf=50,
@@ -1420,20 +1420,20 @@ def expand_scale(df):
     mismatch — including the asymmetric compression at tails that
     GBR introduces.
 
-    Validated impact (on full 2015-2026 dataset):
-      100-120 band: bias -8.33 → -3.31 (60% reduction)
-      80-100:       bias -4.97 → -2.03 (59% reduction)
-      <20:          bias +7.80 → +3.78 (52% reduction)
-      120+:         bias -12.23 → -4.49 (63% reduction)
-      Overall:      MAE 6.64 → 6.80
-      OOS 100-120:  bias -7.24 → -2.08 (71% reduction)
-      Correlation:  0.9208 (was 0.9211)
+    Validated impact (on full 2015-2026 dataset, with max_depth=6 GBR):
+      100-120 band: bias -8.33 → -2.30 (72% reduction)
+      80-100:       bias -4.97 → -1.82 (63% reduction)
+      <20:          bias +7.80 → +2.88 (63% reduction)
+      120+:         bias -12.23 → -3.21 (74% reduction)
+      Overall:      MAE 6.64 → 6.59
+      OOS 100-120:  bias -7.24 → -1.55 (79% reduction)
+      Correlation:  0.9265 (was 0.9211)
     """
     from scipy.interpolate import PchipInterpolator
 
     print("\n  Applying quantile mapping (fixing GBR compression)...")
 
-    N_QUANTILES = 50  # number of percentile anchor points
+    N_QUANTILES = 20  # fewer bins = more aggressive tail correction
 
     mask = (
         df["timefigure"].notna()
