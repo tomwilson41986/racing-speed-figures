@@ -1005,7 +1005,7 @@ def calibrate_figures(df):
             df.loc[surf_mask, "figure_calibrated"] = df.loc[
                 surf_mask, "figure_final"
             ]
-            cal_params[surface] = (1.0, 0.0, 0.0, {})
+            cal_params[surface] = (1.0, 0.0, 0.0, 0.0, {}, {}, {}, 0.0, {}, {})
             continue
 
         x = fit["figure_final"].values
@@ -1216,7 +1216,7 @@ def calibrate_figures(df):
         df.loc[surf_mask, "figure_calibrated"] += surf_age_adj.values
 
         cal_params[surface] = (
-            a, b, a2, class_offset_dict, course_dist_offset_dict,
+            a, b, a2, x_mean, class_offset_dict, course_dist_offset_dict,
             going_offset_dict, ga_coeff, bl_offset_dict, age_offset_dict,
         )
         if class_offset_dict:
@@ -1444,6 +1444,7 @@ def expand_scale(df):
     )
 
     quantile_levels = np.linspace(0, 100, N_QUANTILES + 1)
+    qm_params = {}
 
     for surface in df["raceSurfaceName"].unique():
         surf_mask = df["raceSurfaceName"] == surface
@@ -1463,6 +1464,12 @@ def expand_scale(df):
         unique_mask = np.concatenate([[True], np.diff(pred_quantiles) > 0.001])
         pred_quantiles = pred_quantiles[unique_mask]
         tf_quantiles = tf_quantiles[unique_mask]
+
+        # Save QM params for live pipeline
+        qm_params[surface] = {
+            "pred_quantiles": pred_quantiles.tolist(),
+            "tf_quantiles": tf_quantiles.tolist(),
+        }
 
         # Build monotonic cubic interpolation (PCHIP)
         # Guarantees monotonicity between anchor points and extrapolates
@@ -1490,7 +1497,7 @@ def expand_scale(df):
             f"mean {old_mean:.1f} → {new_mean:.1f} (target {tf_mean:.1f})"
         )
 
-    return df
+    return df, qm_params
 
 
 def validate_figures(df):
@@ -1648,10 +1655,49 @@ def run_pipeline():
 
     # 10b — Quantile mapping (fix GBR distribution compression)
     print("\nSTAGE 10b: Quantile mapping")
-    all_figs = expand_scale(all_figs)
+    result = expand_scale(all_figs)
+    if isinstance(result, tuple):
+        all_figs, qm_params = result
+    else:
+        all_figs, qm_params = result, {}
 
     print("\nSTAGE 11: Validation")
     validate_figures(all_figs)
+
+    # ── Save calibration artifacts for live pipeline ──
+    import pickle
+
+    cal_artifacts = {}
+    for surface, params in cal_params.items():
+        (a, b, a2, x_mean, cls_off, cd_off, go_off,
+         ga_c, bl_off, age_off) = params
+        cal_artifacts[surface] = {
+            "a": float(a), "b": float(b), "a2": float(a2),
+            "x_mean": float(x_mean),
+            "class_offsets": {str(k): float(v) for k, v in cls_off.items()},
+            "course_dist_offsets": {
+                str(k): float(v) for k, v in cd_off.items()
+            },
+            "going_offsets": {str(k): float(v) for k, v in go_off.items()},
+            "ga_coeff": float(ga_c),
+            "bl_offsets": {str(k): float(v) for k, v in bl_off.items()},
+            "age_offsets": {str(k): float(v) for k, v in age_off.items()},
+        }
+
+    course_counts = all_figs["courseName"].value_counts()
+    course_freq = (course_counts / len(all_figs)).to_dict()
+
+    artifacts = {
+        "cal_params": cal_artifacts,
+        "gbr_models": gbr_models,
+        "course_freq": course_freq,
+        "qm_params": qm_params,
+    }
+
+    artifact_path = os.path.join(OUTPUT_DIR, "calibration_artifacts.pkl")
+    with open(artifact_path, "wb") as f:
+        pickle.dump(artifacts, f)
+    print(f"\n  Calibration artifacts: {artifact_path}")
 
     # Also save the going-corrected total yards if available
     if "total_yards" in df.columns and "total_yards" not in all_figs.columns:
