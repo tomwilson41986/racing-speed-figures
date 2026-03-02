@@ -105,6 +105,36 @@ GOING_GA_ESTIMATES = {
     "Fast": -0.08,
 }
 
+# ─── Going group mapping (for calibration offsets) ────────────────
+GOING_GROUPS = {
+    "Firm": ["Hard", "Firm", "Fast"],
+    "GdFm": ["Gd/Frm", "Good To Firm", "Good to Firm", "Std/Fast"],
+    "Good": ["Good", "Standard", "Std"],
+    "GdSft": [
+        "Gd/Sft", "Good to Soft", "Good To Yielding",
+        "Good to Yielding", "Std/Slow", "Standard/Slow",
+        "Standard To Slow", "Standard to Slow", "Slow",
+    ],
+    "Soft": ["Soft", "Yielding", "Yld/Sft", "Sft/Hvy", "Hvy/Sft"],
+    "Heavy": ["Heavy"],
+}
+GOING_MAP = {}
+for _grp, _goings in GOING_GROUPS.items():
+    for _g in _goings:
+        GOING_MAP[_g] = _grp
+
+# ─── Going ordinal encoding (for GBR features) ────────────────────
+GOING_ORDINAL = {
+    "Hard": 1, "Firm": 1, "Fast": 1,
+    "Gd/Frm": 2, "Good To Firm": 2, "Good to Firm": 2, "Std/Fast": 2,
+    "Good": 3, "Standard": 3, "Std": 3,
+    "Gd/Sft": 4, "Good to Soft": 4, "Good To Yielding": 4,
+    "Good to Yielding": 4, "Std/Slow": 4, "Standard/Slow": 4,
+    "Standard To Slow": 4, "Standard to Slow": 4, "Slow": 4,
+    "Soft": 5, "Yielding": 5, "Yld/Sft": 5, "Sft/Hvy": 5, "Hvy/Sft": 5,
+    "Heavy": 6,
+}
+
 # ─── Beaten-distance text codes (lengths) ─────────────────────────
 BEATEN_DIST_CODES = {
     "NK": 0.15, "nk": 0.15,     # Neck
@@ -756,6 +786,7 @@ class LiteRatingEngine:
         self.std_times = {}
         self.lpl_dict = {}
         self.cal_params = {}
+        self._artifacts = None
         self._loaded = False
 
     def load_lookup_tables(self):
@@ -798,7 +829,30 @@ class LiteRatingEngine:
         self.lpl_dict = dict(zip(std_df["std_key"], std_df["course_lpl"]))
 
     def _fit_calibration(self):
-        """Fit calibration parameters from the full pipeline output."""
+        """Load calibration from batch pipeline artifacts, or fit simple linear."""
+        # Try loading full calibration artifacts first
+        artifact_path = OUTPUT_DIR / "calibration_artifacts.pkl"
+        if artifact_path.exists():
+            import pickle
+            log.info(f"  Loading calibration artifacts from {artifact_path}")
+            with open(artifact_path, "rb") as f:
+                self._artifacts = pickle.load(f)
+            surfaces = list(self._artifacts.get("cal_params", {}).keys())
+            log.info(f"  Full calibration chain: {surfaces}")
+            if self._artifacts.get("gbr_models"):
+                log.info(
+                    f"  GBR models: "
+                    f"{list(self._artifacts['gbr_models'].keys())}"
+                )
+            if self._artifacts.get("qm_params"):
+                log.info(
+                    f"  QM params: "
+                    f"{list(self._artifacts['qm_params'].keys())}"
+                )
+            return
+
+        # Fallback: simple linear calibration from speed_figures.csv
+        log.warning("No calibration artifacts — falling back to simple linear")
         fig_path = OUTPUT_DIR / "speed_figures.csv"
         if not fig_path.exists():
             log.warning("No speed_figures.csv — using default calibration")
@@ -809,8 +863,9 @@ class LiteRatingEngine:
             return
 
         log.info("  Fitting calibration from pipeline output...")
-        # Only load columns we need to keep memory low
-        cols = ["timefigure", "figure_final", "raceSurfaceName", "source_year"]
+        cols = [
+            "timefigure", "figure_final", "raceSurfaceName", "source_year",
+        ]
         df = pd.read_csv(fig_path, usecols=cols, low_memory=False)
 
         mask = (
@@ -850,6 +905,8 @@ class LiteRatingEngine:
         df = self._apply_wfa(df)
         df = self._compute_sex_allowance(df)
         df = self._apply_calibration(df)
+        df = self._apply_gbr(df)
+        df = self._apply_quantile_mapping(df)
 
         return df
 
@@ -1173,19 +1230,13 @@ class LiteRatingEngine:
         return df
 
     def _apply_calibration(self, df):
-        """Apply surface-specific linear calibration."""
+        """Apply calibration — full chain if artifacts available, else linear."""
         log.info("Applying calibration...")
 
-        df["figure_calibrated"] = df["figure_final"]
-
-        for surface, (a, b) in self.cal_params.items():
-            mask = (df["raceSurfaceName"] == surface) & df["figure_final"].notna()
-            df.loc[mask, "figure_calibrated"] = (
-                a * df.loc[mask, "figure_final"] + b
-            )
-            n = mask.sum()
-            if n > 0:
-                log.info(f"  {surface}: {n} runners, cal = {a:.3f}x + {b:.1f}")
+        if self._artifacts and self._artifacts.get("cal_params"):
+            df = self._apply_full_calibration(df)
+        else:
+            df = self._apply_simple_calibration(df)
 
         df["figure_calibrated"] = df["figure_calibrated"].round(1)
 
@@ -1210,6 +1261,202 @@ class LiteRatingEngine:
             df.loc[beaten_far, "figure_calibrated"] = np.nan
             log.info(f"  Excluded {n_excluded} runners beaten > 20 lengths")
 
+        return df
+
+    def _apply_simple_calibration(self, df):
+        """Fallback: simple linear calibration."""
+        df["figure_calibrated"] = df["figure_final"]
+        for surface, (a, b) in self.cal_params.items():
+            mask = (
+                (df["raceSurfaceName"] == surface) & df["figure_final"].notna()
+            )
+            df.loc[mask, "figure_calibrated"] = (
+                a * df.loc[mask, "figure_final"] + b
+            )
+            n = mask.sum()
+            if n > 0:
+                log.info(
+                    f"  {surface}: {n} runners, simple cal = {a:.3f}x + {b:.1f}"
+                )
+        return df
+
+    def _apply_full_calibration(self, df):
+        """Apply the full calibration chain from batch pipeline artifacts."""
+        cal = self._artifacts["cal_params"]
+        df["figure_calibrated"] = np.nan
+
+        for surface, params in cal.items():
+            mask = (
+                (df["raceSurfaceName"] == surface) & df["figure_final"].notna()
+            )
+            if mask.sum() == 0:
+                continue
+
+            x = df.loc[mask, "figure_final"].values.astype(float)
+            a = params["a"]
+            b = params["b"]
+            a2 = params["a2"]
+            x_mean = params["x_mean"]
+
+            # Quadratic calibration
+            if a2 != 0:
+                x_c = x - x_mean
+                cal_vals = a * x + a2 * x_c ** 2 + b
+            else:
+                cal_vals = a * x + b
+
+            # Class offsets
+            class_offsets = params.get("class_offsets", {})
+            if class_offsets:
+                rc = (
+                    pd.to_numeric(
+                        df.loc[mask, "raceClass"], errors="coerce"
+                    )
+                    .fillna(0)
+                    .astype(int)
+                    .astype(str)
+                )
+                cal_vals += rc.map(class_offsets).fillna(0).values
+
+            # Course x distance offsets
+            cd_offsets = params.get("course_dist_offsets", {})
+            if cd_offsets:
+                cd_key = (
+                    df.loc[mask, "courseName"]
+                    + "_"
+                    + df.loc[mask, "distance"].round(0).astype(int).astype(str)
+                )
+                cal_vals += cd_key.map(cd_offsets).fillna(0).values
+
+            # Going group offsets
+            going_offsets = params.get("going_offsets", {})
+            if going_offsets:
+                going_grp = (
+                    df.loc[mask, "going"].map(GOING_MAP).fillna("Good")
+                )
+                cal_vals += going_grp.map(going_offsets).fillna(0).values
+
+            # Continuous GA coefficient
+            ga_coeff = params.get("ga_coeff", 0.0)
+            if ga_coeff != 0 and "going_allowance" in df.columns:
+                ga_vals = df.loc[mask, "going_allowance"].fillna(0).values
+                cal_vals += ga_coeff * ga_vals
+
+            # Beaten-length band offsets
+            bl_offsets = params.get("bl_offsets", {})
+            if bl_offsets:
+                bl = (
+                    df.loc[mask, "distanceCumulative"]
+                    .fillna(0)
+                    .clip(lower=0)
+                )
+                bl_band = pd.cut(
+                    bl,
+                    bins=[0, 1, 3, 5, 10, 15, 20],
+                    labels=["0-1", "1-3", "3-5", "5-10", "10-15", "15-20"],
+                ).astype(str).fillna("0-1")
+                bl_band = bl_band.where(
+                    df.loc[mask, "positionOfficial"] != 1, "winner"
+                )
+                cal_vals += bl_band.map(bl_offsets).fillna(0).values
+
+            # Age offsets
+            age_offsets = params.get("age_offsets", {})
+            if age_offsets and "horseAge" in df.columns:
+                age = (
+                    df.loc[mask, "horseAge"]
+                    .clip(upper=12)
+                    .astype(int)
+                    .astype(str)
+                )
+                cal_vals += age.map(age_offsets).fillna(0).values
+
+            df.loc[mask, "figure_calibrated"] = cal_vals
+            n = mask.sum()
+            log.info(
+                f"  {surface}: {n} runners, full calibration chain "
+                f"(a={a:.4f}, b={b:.2f}, a2={a2:.6f}, "
+                f"{len(class_offsets)} class, "
+                f"{len(cd_offsets)} course×dist, "
+                f"{len(going_offsets)} going, "
+                f"ga_coeff={ga_coeff:+.2f}, "
+                f"{len(bl_offsets)} bl, "
+                f"{len(age_offsets)} age offsets)"
+            )
+
+        return df
+
+    def _apply_gbr(self, df):
+        """Apply pre-trained GBR models from batch pipeline."""
+        if not self._artifacts or not self._artifacts.get("gbr_models"):
+            return df
+
+        log.info("Applying GBR enhancement...")
+        gbr_models = self._artifacts["gbr_models"]
+        course_freq = self._artifacts.get("course_freq", {})
+
+        GBR_FEATURES = [
+            "figure_calibrated", "figure_final", "raceClass",
+            "distance", "horseAge", "positionOfficial",
+            "weightCarried", "ga_value", "going_num", "course_freq",
+        ]
+
+        # Temporary feature columns
+        df["going_num"] = df["going"].map(GOING_ORDINAL).fillna(3)
+        df["course_freq"] = df["courseName"].map(course_freq).fillna(0)
+        df["ga_value"] = df["going_allowance"].fillna(0)
+
+        for surface, gbr in gbr_models.items():
+            mask = (
+                (df["raceSurfaceName"] == surface)
+                & df["figure_calibrated"].notna()
+            )
+            if mask.sum() == 0:
+                continue
+
+            sub = df.loc[mask, GBR_FEATURES].copy()
+            for col in GBR_FEATURES:
+                if col not in sub.columns:
+                    sub[col] = 0
+                sub[col] = pd.to_numeric(sub[col], errors="coerce").fillna(0)
+
+            preds = gbr.predict(sub.values)
+            df.loc[mask, "figure_calibrated"] = preds
+            log.info(f"  {surface}: GBR applied to {mask.sum()} runners")
+
+        df.drop(
+            columns=["going_num", "course_freq", "ga_value"],
+            errors="ignore",
+            inplace=True,
+        )
+        return df
+
+    def _apply_quantile_mapping(self, df):
+        """Apply pre-computed quantile mapping from batch pipeline."""
+        if not self._artifacts or not self._artifacts.get("qm_params"):
+            return df
+
+        from scipy.interpolate import PchipInterpolator
+
+        log.info("Applying quantile mapping...")
+
+        for surface, qm in self._artifacts["qm_params"].items():
+            mask = (
+                (df["raceSurfaceName"] == surface)
+                & df["figure_calibrated"].notna()
+            )
+            if mask.sum() == 0:
+                continue
+
+            pred_q = np.array(qm["pred_quantiles"])
+            tf_q = np.array(qm["tf_quantiles"])
+            mapper = PchipInterpolator(pred_q, tf_q, extrapolate=True)
+
+            x = df.loc[mask, "figure_calibrated"].values.astype(float)
+            df.loc[mask, "figure_calibrated"] = mapper(x)
+            log.info(f"  {surface}: QM applied to {mask.sum()} runners")
+
+        df["figure_calibrated"] = df["figure_calibrated"].round(1)
         return df
 
 
