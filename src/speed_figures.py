@@ -1038,7 +1038,7 @@ def calibrate_figures(df):
     Turf and AW have substantially different calibration slopes, so fitting
     them separately reduces error.  Each surface gets its own
       timefigure ≈ a × figure_final + b + class_offset[class]
-    fitted on 2015–2023.
+    fitted on 2015–2025, with recency weighting.
 
     The class offset captures systematic biases that a single linear
     slope cannot (e.g. Group 1 figures consistently over/under-predicted).
@@ -1078,16 +1078,31 @@ def calibrate_figures(df):
         y = fit["timefigure"].values
         x_mean = x.mean()
 
+        # Recency weighting: recent years count more than old years.
+        # Half-life of 4 years: 2025 gets weight 1.0, 2021 gets 0.5,
+        # 2017 gets 0.25, etc.  This lets course×dist offsets track
+        # surface changes (e.g. Dundalk getting progressively slower).
+        RECENCY_HALFLIFE = 4.0
+        max_year = fit["source_year"].max()
+        w = np.power(
+            2.0, -(max_year - fit["source_year"].values) / RECENCY_HALFLIFE
+        )
+        w_sqrt = np.sqrt(w)
+
         # Try quadratic calibration: timefigure = a*x + a2*(x-mean)^2 + b
+        # (weighted least squares: multiply both sides by sqrt(w))
         x_c = x - x_mean
         A_quad = np.vstack([x, x_c ** 2, np.ones(len(x))]).T
-        (a, a2, b), *_ = np.linalg.lstsq(A_quad, y, rcond=None)
+        Aw = A_quad * w_sqrt[:, None]
+        yw = y * w_sqrt
+        (a, a2, b), *_ = np.linalg.lstsq(Aw, yw, rcond=None)
 
         # Check if quadratic actually helps (lower MSE than linear)
         A_lin = np.vstack([x, np.ones(len(x))]).T
-        (a_lin, b_lin), *_ = np.linalg.lstsq(A_lin, y, rcond=None)
-        mse_lin = np.mean((y - a_lin * x - b_lin) ** 2)
-        mse_quad = np.mean((y - a * x - a2 * x_c ** 2 - b) ** 2)
+        Aw_lin = A_lin * w_sqrt[:, None]
+        (a_lin, b_lin), *_ = np.linalg.lstsq(Aw_lin, yw, rcond=None)
+        mse_lin = np.average((y - a_lin * x - b_lin) ** 2, weights=w)
+        mse_quad = np.average((y - a * x - a2 * x_c ** 2 - b) ** 2, weights=w)
 
         if mse_quad < mse_lin * 0.999:
             # Quadratic is meaningfully better
@@ -1111,16 +1126,25 @@ def calibrate_figures(df):
                 f"    {surface:<15}: timefigure ≈ {a:.4f} × figure + {b:.2f}"
             )
 
-        # Per-class residual correction
+        # Per-class residual correction (weighted)
         fit_pred = (
             a * x + a2 * (x - x_mean) ** 2 + b if a2 != 0
             else a * x + b
         )
         residuals = y - fit_pred
-        class_offsets = (
-            pd.Series(residuals, index=fit.index)
-            .groupby(fit["raceClass"])
-            .mean()
+        _w_s = pd.Series(w, index=fit.index)
+
+        def _weighted_group_mean(vals, groups, weights):
+            """Weighted mean per group, returns a Series keyed by group."""
+            df_tmp = pd.DataFrame(
+                {"v": vals, "g": groups, "w": weights}
+            )
+            df_tmp["vw"] = df_tmp["v"] * df_tmp["w"]
+            g = df_tmp.groupby("g")
+            return g["vw"].sum() / g["w"].sum()
+
+        class_offsets = _weighted_group_mean(
+            residuals, fit["raceClass"].values, w
         )
         class_offset_dict = class_offsets.to_dict()
 
@@ -1135,19 +1159,16 @@ def calibrate_figures(df):
         )
         residuals2 = y - fit_pred_with_class
 
-        # Per course×distance residual correction (with shrinkage).
+        # Per course×distance residual correction (weighted, with shrinkage).
         # Directly corrects standard-time errors per track/distance combo.
         SHRINKAGE_K = 100  # regularisation strength
         cd_key = (
             fit["courseName"] + "_" +
             fit["distance"].round(0).astype(int).astype(str)
         )
-        cd_groups = pd.Series(
-            residuals2, index=fit.index
-        ).groupby(cd_key)
-        cd_means = cd_groups.mean()
-        cd_counts = cd_groups.count()
-        cd_shrunk = cd_means * cd_counts / (cd_counts + SHRINKAGE_K)
+        cd_wmeans = _weighted_group_mean(residuals2, cd_key.values, w)
+        cd_wcounts = pd.Series(w, index=fit.index).groupby(cd_key).sum()
+        cd_shrunk = cd_wmeans * cd_wcounts / (cd_wcounts + SHRINKAGE_K)
         course_dist_offset_dict = cd_shrunk.to_dict()
 
         all_cd_key = (
@@ -1184,13 +1205,14 @@ def calibrate_figures(df):
         residuals3 = residuals2 - (
             fit_cd_key.map(course_dist_offset_dict).fillna(0).values
         )
-        going_grp_groups = pd.Series(
-            residuals3, index=fit.index
-        ).groupby(fit_going_grp)
-        going_means = going_grp_groups.mean()
-        going_counts = going_grp_groups.count()
-        going_shrunk = going_means * going_counts / (
-            going_counts + SHRINKAGE_K
+        going_wmeans = _weighted_group_mean(
+            residuals3, fit_going_grp.values, w
+        )
+        going_wcounts = pd.Series(w, index=fit.index).groupby(
+            fit_going_grp
+        ).sum()
+        going_shrunk = going_wmeans * going_wcounts / (
+            going_wcounts + SHRINKAGE_K
         )
         going_offset_dict = going_shrunk.to_dict()
 
@@ -1215,8 +1237,10 @@ def calibrate_figures(df):
         ga_coeff = 0.0
         if ga_has_value.sum() > 200:
             ga_coeff = (
-                np.sum(fit_ga[ga_has_value] * residuals3a[ga_has_value])
-                / (np.sum(fit_ga[ga_has_value] ** 2) + 1e-6)
+                np.sum(w[ga_has_value] * fit_ga[ga_has_value]
+                       * residuals3a[ga_has_value])
+                / (np.sum(w[ga_has_value] * fit_ga[ga_has_value] ** 2)
+                   + 1e-6)
             )
 
         all_ga = (
@@ -1237,10 +1261,14 @@ def calibrate_figures(df):
         if ga_dist_has_value.sum() > 200:
             ga_dist_coeff = (
                 np.sum(
-                    fit_ga_x_dist[ga_dist_has_value]
+                    w[ga_dist_has_value]
+                    * fit_ga_x_dist[ga_dist_has_value]
                     * residuals3b[ga_dist_has_value]
                 )
-                / (np.sum(fit_ga_x_dist[ga_dist_has_value] ** 2) + 1e-6)
+                / (np.sum(
+                    w[ga_dist_has_value]
+                    * fit_ga_x_dist[ga_dist_has_value] ** 2
+                ) + 1e-6)
             )
 
         all_dist = df.loc[surf_mask, "distance"].values
@@ -1263,12 +1291,13 @@ def calibrate_figures(df):
         fit_bl_band = fit_bl_band.where(
             fit["positionOfficial"] != 1, "winner"
         )
-        bl_groups = pd.Series(
-            residuals4, index=fit.index
-        ).groupby(fit_bl_band)
-        bl_means = bl_groups.mean()
-        bl_counts = bl_groups.count()
-        bl_shrunk = bl_means * bl_counts / (bl_counts + SHRINKAGE_K)
+        bl_wmeans = _weighted_group_mean(
+            residuals4, fit_bl_band.values, w
+        )
+        bl_wcounts = pd.Series(w, index=fit.index).groupby(
+            fit_bl_band
+        ).sum()
+        bl_shrunk = bl_wmeans * bl_wcounts / (bl_wcounts + SHRINKAGE_K)
         bl_offset_dict = bl_shrunk.to_dict()
 
         all_bl = df.loc[surf_mask, "distanceCumulative"].fillna(0).clip(lower=0)
@@ -1289,12 +1318,13 @@ def calibrate_figures(df):
             fit_bl_band.map(bl_offset_dict).fillna(0).values
         )
         fit_age = fit["horseAge"].clip(upper=12).astype(int).astype(str)
-        age_groups = pd.Series(
-            residuals5, index=fit.index
-        ).groupby(fit_age)
-        age_means = age_groups.mean()
-        age_counts = age_groups.count()
-        age_shrunk = age_means * age_counts / (age_counts + SHRINKAGE_K)
+        age_wmeans = _weighted_group_mean(
+            residuals5, fit_age.values, w
+        )
+        age_wcounts = pd.Series(w, index=fit.index).groupby(
+            fit_age
+        ).sum()
+        age_shrunk = age_wmeans * age_wcounts / (age_wcounts + SHRINKAGE_K)
         age_offset_dict = age_shrunk.to_dict()
 
         all_age = (
