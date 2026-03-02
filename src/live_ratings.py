@@ -926,9 +926,26 @@ class LiteRatingEngine:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # Round distance to nearest 0.5f for std_key lookup
-        # Use actual yards (includes rail movements) when available
-        if "distanceYards" in df.columns and df["distanceYards"].notna().any():
+        # Round distance to nearest 0.5f for std_key lookup.
+        # Match the batch pipeline (speed_figures.py) which computes:
+        #   total_yards = distanceFurlongs*220 + distanceYards
+        # In Timeform pipeline format, distanceYards is the EXTRA yards
+        # (e.g. 212 in "5f 212y"), NOT total yards.
+        # In HRB-transformed data, distanceYards IS total yards.
+        if (
+            "distanceFurlongs" in df.columns
+            and df["distanceFurlongs"].notna().any()
+        ):
+            # Timeform pipeline format: reconstruct total yards
+            total_yards = (
+                pd.to_numeric(df["distanceFurlongs"], errors="coerce") * 220
+                + pd.to_numeric(
+                    df["distanceYards"], errors="coerce"
+                ).fillna(0)
+            )
+            df["dist_round"] = (total_yards / 110).round() * 110 / 220
+        elif "distanceYards" in df.columns and df["distanceYards"].notna().any():
+            # HRB-transformed data: distanceYards is total yards
             df["dist_round"] = (df["distanceYards"] / 110).round() * 110 / 220
         else:
             df["dist_round"] = (df["distance"] * 2).round(0) / 2
