@@ -642,6 +642,36 @@ def _transform_hrb_data(df):
         log.warning(f"  Unknown courses (excluded): {list(unknown)}")
         out = out[known].copy()
 
+    # Infer raceClass for Irish courses from official rating.
+    # Irish HRB data has race_class="Irish" which parses to NaN.
+    # Map from race median OR to approximate UK class equivalent.
+    ire_no_class = (
+        out["courseName"].isin(IRE_COURSES)
+        & out["raceClass"].isna()
+    )
+    if ire_no_class.any():
+        or_vals = out.loc[ire_no_class, "officialRating"].fillna(0)
+        # Build a temporary race key for grouping
+        _rk = (
+            out.loc[ire_no_class, "meetingDate"].astype(str) + "_"
+            + out.loc[ire_no_class, "courseName"].astype(str) + "_"
+            + out.loc[ire_no_class, "raceNumber"].astype(str)
+        )
+        race_median_or = or_vals.groupby(_rk).transform("median")
+        race_median_or = race_median_or.fillna(or_vals)
+        cls = pd.cut(
+            race_median_or,
+            bins=[-1, 35, 50, 65, 80, 100, 200],
+            labels=[7, 6, 5, 4, 3, 2],
+        )
+        out.loc[ire_no_class, "raceClass"] = pd.to_numeric(
+            cls, errors="coerce"
+        )
+        log.info(
+            f"  Inferred raceClass for {ire_no_class.sum()} Irish runners "
+            f"from OR (median per race)"
+        )
+
     # Drop the temporary column
     out = out.drop(columns=["_raceType"])
 
@@ -877,7 +907,7 @@ class LiteRatingEngine:
             & (df["timefigure"] != 0)
             & df["timefigure"].between(-200, 200)
             & df["figure_final"].notna()
-            & (df["source_year"] <= 2023)
+            & (df["source_year"] <= 2025)
         )
 
         for surface in df["raceSurfaceName"].dropna().unique():
@@ -1398,6 +1428,13 @@ class LiteRatingEngine:
             if ga_coeff != 0 and "going_allowance" in df.columns:
                 ga_vals = df.loc[mask, "going_allowance"].fillna(0).values
                 cal_vals += ga_coeff * ga_vals
+
+            # Distance × GA interaction
+            ga_dist_coeff = params.get("ga_dist_coeff", 0.0)
+            if ga_dist_coeff != 0 and "going_allowance" in df.columns:
+                ga_vals_d = df.loc[mask, "going_allowance"].fillna(0).values
+                dist_vals = df.loc[mask, "distance"].values
+                cal_vals += ga_dist_coeff * ga_vals_d * (dist_vals - 8.0)
 
             # Beaten-length band offsets
             bl_offsets = params.get("bl_offsets", {})

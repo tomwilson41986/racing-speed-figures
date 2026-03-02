@@ -316,6 +316,50 @@ def filter_uk_ire_flat(df):
         filtered["meetingDate"], errors="coerce"
     ).dt.month
 
+    # Infer raceClass for Irish courses from official rating.
+    # Irish races have no raceClass in Timeform data, causing NaN → missing
+    # class offsets in calibration.  Map from OR to approximate UK equivalent.
+    if "raceClass" in filtered.columns:
+        ire_no_class = (
+            filtered["courseName"].isin(IRE_COURSES)
+            & filtered["raceClass"].isna()
+        )
+        if ire_no_class.any():
+            or_vals = pd.to_numeric(
+                filtered.loc[ire_no_class, "performanceRating"],
+                errors="coerce",
+            )
+            if "officialRating" in filtered.columns:
+                or_fallback = pd.to_numeric(
+                    filtered.loc[ire_no_class, "officialRating"],
+                    errors="coerce",
+                ).fillna(0)
+            else:
+                or_fallback = pd.Series(
+                    0, index=filtered.loc[ire_no_class].index
+                )
+            or_vals = or_vals.fillna(or_fallback)
+            # Use race median OR for more stable estimate
+            race_median_or = (
+                filtered.loc[ire_no_class]
+                .groupby("race_id")["performanceRating"]
+                .transform("median")
+            )
+            race_median_or = pd.to_numeric(
+                race_median_or, errors="coerce"
+            ).fillna(or_vals)
+            cls = pd.cut(
+                race_median_or,
+                bins=[-1, 35, 50, 65, 80, 100, 200],
+                labels=[7, 6, 5, 4, 3, 2],
+            )
+            filtered.loc[ire_no_class, "raceClass"] = pd.to_numeric(
+                cls, errors="coerce"
+            )
+            n_inferred = ire_no_class.sum()
+            print(f"    Inferred raceClass for {n_inferred:,} Irish runners "
+                  f"from OR (median per race)")
+
     print(f"  After UK/IRE flat filter: {len(filtered):,} rows")
     print(f"    Unique courses: {filtered['courseName'].nunique()}")
     print(f"    Unique races:   {filtered['race_id'].nunique():,}")
@@ -1020,14 +1064,14 @@ def calibrate_figures(df):
 
     for surface in df["raceSurfaceName"].unique():
         surf_mask = df["raceSurfaceName"] == surface
-        fit = df[fit_mask & surf_mask & (df["source_year"] <= 2024)]
+        fit = df[fit_mask & surf_mask & (df["source_year"] <= 2025)]
 
         if len(fit) < 100:
             print(f"    {surface}: insufficient data — using identity")
             df.loc[surf_mask, "figure_calibrated"] = df.loc[
                 surf_mask, "figure_final"
             ]
-            cal_params[surface] = (1.0, 0.0, 0.0, 0.0, {}, {}, {}, 0.0, {}, {})
+            cal_params[surface] = (1.0, 0.0, 0.0, 0.0, {}, {}, {}, 0.0, 0.0, {}, {})
             continue
 
         x = fit["figure_final"].values
@@ -1182,11 +1226,34 @@ def calibrate_figures(df):
         surf_ga_cont_adj = ga_coeff * all_ga
         df.loc[surf_mask, "figure_calibrated"] += surf_ga_cont_adj
 
+        # Distance × GA interaction: the going effect scales non-linearly
+        # with distance (short races are more affected per-furlong than
+        # long ones).  Fit a separate coefficient on GA * (dist - 8).
+        fit_dist = fit["distance"].values
+        fit_ga_x_dist = fit_ga * (fit_dist - 8.0)
+        ga_dist_has_value = fit_ga_x_dist != 0
+        ga_dist_coeff = 0.0
+        residuals3b = residuals3a - (ga_coeff * fit_ga)
+        if ga_dist_has_value.sum() > 200:
+            ga_dist_coeff = (
+                np.sum(
+                    fit_ga_x_dist[ga_dist_has_value]
+                    * residuals3b[ga_dist_has_value]
+                )
+                / (np.sum(fit_ga_x_dist[ga_dist_has_value] ** 2) + 1e-6)
+            )
+
+        all_dist = df.loc[surf_mask, "distance"].values
+        surf_ga_dist_adj = ga_dist_coeff * all_ga * (all_dist - 8.0)
+        df.loc[surf_mask, "figure_calibrated"] += surf_ga_dist_adj
+
         # Per-beaten-length-band residual correction (with shrinkage).
         # Corrects the systematic positive bias that grows with margin:
         # horses beaten further are consistently over-rated because
         # judge's margin estimates compress at larger distances.
-        residuals4 = residuals3a - (ga_coeff * fit_ga)
+        residuals4 = residuals3a - (ga_coeff * fit_ga) - (
+            ga_dist_coeff * fit_ga_x_dist
+        )
         fit_bl = fit["distanceCumulative"].fillna(0).clip(lower=0)
         fit_bl_band = pd.cut(
             fit_bl, bins=[0, 1, 3, 5, 10, 15, 20],
@@ -1239,7 +1306,8 @@ def calibrate_figures(df):
 
         cal_params[surface] = (
             a, b, a2, x_mean, class_offset_dict, course_dist_offset_dict,
-            going_offset_dict, ga_coeff, bl_offset_dict, age_offset_dict,
+            going_offset_dict, ga_coeff, ga_dist_coeff, bl_offset_dict,
+            age_offset_dict,
         )
         if class_offset_dict:
             offsets_str = ", ".join(
@@ -1259,6 +1327,7 @@ def calibrate_figures(df):
         )
         print(f"      going offsets: {going_str}")
         print(f"      continuous GA coeff: {ga_coeff:+.2f} lbs per s/f")
+        print(f"      dist×GA interaction: {ga_dist_coeff:+.4f} lbs per s/f per furlong from 8f")
         bl_str = ", ".join(
             f"{k}:{v:+.1f}" for k, v in sorted(
                 bl_offset_dict.items()
@@ -1356,7 +1425,7 @@ def enhance_with_gbr(df):
 
     for surface in df["raceSurfaceName"].unique():
         surf_mask = df["raceSurfaceName"] == surface
-        fit_mask = mask & surf_mask & (df["source_year"] <= 2024)
+        fit_mask = mask & surf_mask & (df["source_year"] <= 2025)
         fit = df[fit_mask].copy()
 
         if len(fit) < 1000:
@@ -1462,7 +1531,7 @@ def expand_scale(df):
         & (df["timefigure"] != 0)
         & df["timefigure"].between(-200, 200)
         & df["figure_calibrated"].notna()
-        & (df["source_year"] <= 2024)
+        & (df["source_year"] <= 2025)
     )
 
     quantile_levels = np.linspace(0, 100, N_QUANTILES + 1)
@@ -1696,7 +1765,7 @@ def run_pipeline():
     cal_artifacts = {}
     for surface, params in cal_params.items():
         (a, b, a2, x_mean, cls_off, cd_off, go_off,
-         ga_c, bl_off, age_off) = params
+         ga_c, ga_dc, bl_off, age_off) = params
         cal_artifacts[surface] = {
             "a": float(a), "b": float(b), "a2": float(a2),
             "x_mean": float(x_mean),
@@ -1709,6 +1778,7 @@ def run_pipeline():
             },
             "going_offsets": {str(k): float(v) for k, v in go_off.items()},
             "ga_coeff": float(ga_c),
+            "ga_dist_coeff": float(ga_dc),
             "bl_offsets": {str(k): float(v) for k, v in bl_off.items()},
             "age_offsets": {str(k): float(v) for k, v in age_off.items()},
         }
