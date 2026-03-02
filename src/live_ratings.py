@@ -45,6 +45,8 @@ from speed_figures import (
     LBS_PER_SECOND_5F,
     BENCHMARK_FURLONGS,
     LPL_SURFACE_MULTIPLIER,
+    BL_ATTENUATION_THRESHOLD,
+    BL_ATTENUATION_FACTOR,
     SEX_ALLOWANCE_SUMMER,
     SEX_ALLOWANCE_WINTER,
     FEMALE_GENDERS,
@@ -997,11 +999,13 @@ class LiteRatingEngine:
 
             for mid, group in winners.groupby("meeting_id"):
                 if len(group) >= 3:
-                    vals = group["dev_per_furlong"].sort_values().values
+                    vals = group["dev_per_furlong"].sort_values().values.copy()
                     if len(vals) > 2:
-                        ga = np.mean(vals[1:-1])
-                    else:
-                        ga = np.mean(vals)
+                        # Winsorized mean (matching batch pipeline):
+                        # replace extremes with adjacent values
+                        vals[0] = vals[1]
+                        vals[-1] = vals[-2]
+                    ga = np.mean(vals)
                     ga_dict[mid] = ga
                     log.info(
                         f"  {mid}: computed GA = {ga:+.3f} s/f "
@@ -1084,13 +1088,16 @@ class LiteRatingEngine:
         w["deviation_seconds"] = w["corrected_time"] - w["standard_time"]
         w["deviation_lengths"] = w["deviation_seconds"] / SECONDS_PER_LENGTH
 
-        # Course-specific LPL with generic fallback
+        # Course-specific LPL with generic+surface fallback
         w["lpl"] = w["std_key"].map(self.lpl_dict)
         missing_lpl = w["lpl"].isna()
         if missing_lpl.any():
-            w.loc[missing_lpl, "lpl"] = w.loc[
-                missing_lpl, "distance"
-            ].apply(generic_lbs_per_length)
+            w.loc[missing_lpl, "lpl"] = w.loc[missing_lpl].apply(
+                lambda r: generic_lbs_per_length(
+                    r["distance"], r.get("raceSurfaceName")
+                ),
+                axis=1,
+            )
 
         w["deviation_lbs"] = w["deviation_lengths"] * w["lpl"]
         w["winner_raw_figure"] = BASE_RATING - w["deviation_lbs"]
@@ -1122,17 +1129,23 @@ class LiteRatingEngine:
         # Standard time from lookup
         df_in["standard_time"] = df_in["std_key"].map(self.std_times)
 
-        # LPL
+        # LPL with generic+surface fallback (matching batch pipeline)
         df_in["lpl"] = df_in["std_key"].map(self.lpl_dict)
         missing = df_in["lpl"].isna()
         if missing.any():
-            df_in.loc[missing, "lpl"] = df_in.loc[
-                missing, "distance"
-            ].apply(generic_lbs_per_length)
+            df_in.loc[missing, "lpl"] = df_in.loc[missing].apply(
+                lambda r: generic_lbs_per_length(
+                    r["distance"], r.get("raceSurfaceName")
+                ),
+                axis=1,
+            )
 
-        # Beaten lengths (capped at 30)
+        # Beaten lengths with soft cap (matching batch pipeline)
         is_winner = df_in["positionOfficial"] == 1
-        cum = df_in["distanceCumulative"].fillna(0).clip(lower=0, upper=30)
+        cum_raw = df_in["distanceCumulative"].fillna(0).clip(lower=0)
+        T = BL_ATTENUATION_THRESHOLD
+        F = BL_ATTENUATION_FACTOR
+        cum = np.where(cum_raw <= T, cum_raw, T + F * (cum_raw - T))
 
         df_in["lbs_behind"] = cum * df_in["lpl"]
         df_in.loc[is_winner, "lbs_behind"] = 0.0

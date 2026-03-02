@@ -1674,7 +1674,10 @@ def run_pipeline():
         cal_artifacts[surface] = {
             "a": float(a), "b": float(b), "a2": float(a2),
             "x_mean": float(x_mean),
-            "class_offsets": {str(k): float(v) for k, v in cls_off.items()},
+            "class_offsets": {
+                str(int(float(k))): float(v)
+                for k, v in cls_off.items() if pd.notna(k)
+            },
             "course_dist_offsets": {
                 str(k): float(v) for k, v in cd_off.items()
             },
