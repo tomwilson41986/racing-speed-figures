@@ -786,6 +786,7 @@ class LiteRatingEngine:
 
     def __init__(self):
         self.std_times = {}
+        self.std_distances = {}
         self.lpl_dict = {}
         self.cal_params = {}
         self._artifacts = None
@@ -804,6 +805,7 @@ class LiteRatingEngine:
             )
         std_df = pd.read_csv(std_path)
         self.std_times = dict(zip(std_df["std_key"], std_df["median_time"]))
+        self.std_distances = dict(zip(std_df["std_key"], std_df["distance"]))
         log.info(f"  Standard times: {len(self.std_times)} combos")
 
         # 2. Compute LPL from standard times
@@ -983,6 +985,21 @@ class LiteRatingEngine:
 
         if len(winners) > 0:
             winners["standard_time"] = winners["std_key"].map(self.std_times)
+
+            # Scale standard time to exact race distance (yard precision)
+            winners["std_distance"] = winners["std_key"].map(
+                self.std_distances
+            )
+            has_dist = (
+                winners["std_distance"].notna()
+                & (winners["std_distance"] > 0)
+            )
+            winners.loc[has_dist, "standard_time"] = (
+                winners.loc[has_dist, "standard_time"]
+                * winners.loc[has_dist, "distance"]
+                / winners.loc[has_dist, "std_distance"]
+            )
+
             winners["class_adj"] = winners.apply(
                 lambda r: compute_class_adjustment(
                     r.get("raceClass", 4), r["distance"]
@@ -1082,6 +1099,16 @@ class LiteRatingEngine:
             return df
 
         w["standard_time"] = w["std_key"].map(self.std_times)
+
+        # Scale standard time to exact race distance (yard precision)
+        w["std_distance"] = w["std_key"].map(self.std_distances)
+        has_dist = w["std_distance"].notna() & (w["std_distance"] > 0)
+        w.loc[has_dist, "standard_time"] = (
+            w.loc[has_dist, "standard_time"]
+            * w.loc[has_dist, "distance"]
+            / w.loc[has_dist, "std_distance"]
+        )
+
         w["corrected_time"] = (
             w["finishingTime"] - (w["going_allowance"] * w["distance"])
         )

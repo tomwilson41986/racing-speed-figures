@@ -448,7 +448,7 @@ def compute_standard_times(df):
             median_time=("adj_time", "median"),
             mean_time=("adj_time", "mean"),
             n_races=("adj_time", "count"),
-            distance=("distance", "first"),
+            distance=("distance", "median"),
             courseName=("courseName", "first"),
             surface=("raceSurfaceName", "first"),
         )
@@ -480,7 +480,7 @@ def compute_standard_times(df):
                 median_time=("adj_time", "median"),
                 mean_time=("adj_time", "mean"),
                 n_races=("adj_time", "count"),
-                distance=("distance", "first"),
+                distance=("distance", "median"),
                 courseName=("courseName", "first"),
                 surface=("raceSurfaceName", "first"),
             )
@@ -537,7 +537,7 @@ def compute_standard_times_iterative(df, going_allowances):
             median_time=("adj_time", "median"),
             mean_time=("adj_time", "mean"),
             n_races=("adj_time", "count"),
-            distance=("distance", "first"),
+            distance=("distance", "median"),
             courseName=("courseName", "first"),
             surface=("raceSurfaceName", "first"),
         )
@@ -624,7 +624,7 @@ def compute_course_lpl(std_df):
 # STAGE 3 — GOING ALLOWANCE  (per track, per day)
 # ═════════════════════════════════════════════════════════════════════
 
-def compute_going_allowances(df, std_times):
+def compute_going_allowances(df, std_times, std_distances=None):
     """
     Going allowance per meeting in seconds-per-furlong (s/f).
 
@@ -633,7 +633,8 @@ def compute_going_allowances(df, std_times):
 
       1. For every WINNER on the card whose course/distance has a known
          standard time, compute:
-            deviation_per_furlong = (class_adj_time − standard_time) / distance
+            deviation_per_furlong = (class_adj_time − expected_time) / distance
+         where expected_time = standard_time scaled to the exact race distance.
 
       2. Drop extreme global outliers (1st/99th percentile across dataset).
 
@@ -653,6 +654,16 @@ def compute_going_allowances(df, std_times):
     winners = df[df["positionOfficial"] == 1].copy()
     winners = winners[winners["std_key"].isin(std_times)].copy()
     winners["standard_time"] = winners["std_key"].map(std_times)
+
+    # Scale standard time to exact race distance (yard-level precision)
+    if std_distances is not None:
+        winners["std_distance"] = winners["std_key"].map(std_distances)
+        has_dist = winners["std_distance"].notna() & (winners["std_distance"] > 0)
+        winners.loc[has_dist, "standard_time"] = (
+            winners.loc[has_dist, "standard_time"]
+            * winners.loc[has_dist, "distance"]
+            / winners.loc[has_dist, "std_distance"]
+        )
 
     # Class-adjust actual time before comparing to class-adjusted standard
     winners["class_adj"] = winners.apply(
@@ -710,7 +721,8 @@ def compute_going_allowances(df, std_times):
 # STAGE 4 — WINNER SPEED FIGURES
 # ═════════════════════════════════════════════════════════════════════
 
-def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
+def compute_winner_figures(df, std_times, going_allowances, lpl_dict,
+                           std_distances=None):
     """
     Speed figures for race winners.
 
@@ -725,7 +737,7 @@ def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
          faster gets a higher figure than a Class 6 winner at the same
          course/distance.  The deviation from the class-normalised
          standard captures both the horse's ability AND the class level.
-      2. deviation = corrected_time − standard_time
+      2. expected_time = standard_time × (exact_distance / std_distance)
       3. deviation_lbs = deviation_seconds / seconds_per_length × lpl
       4. winner_figure = BASE_RATING − deviation_lbs
     """
@@ -739,6 +751,16 @@ def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
 
     w["standard_time"] = w["std_key"].map(std_times)
     w["going_allowance"] = w["meeting_id"].map(going_allowances)
+
+    # Scale standard time to exact race distance (yard-level precision)
+    if std_distances is not None:
+        w["std_distance"] = w["std_key"].map(std_distances)
+        has_dist = w["std_distance"].notna() & (w["std_distance"] > 0)
+        w.loc[has_dist, "standard_time"] = (
+            w.loc[has_dist, "standard_time"]
+            * w.loc[has_dist, "distance"]
+            / w.loc[has_dist, "std_distance"]
+        )
 
     # Going-corrected time (NO class adjustment — figure reflects raw speed)
     w["corrected_time"] = (
@@ -1599,10 +1621,11 @@ def run_pipeline():
     # 1 — Standard times (per track / distance / surface)
     print("\nSTAGE 1: Standard times (initial — good going only)")
     std_times, std_df = compute_standard_times(df)
+    std_distances = dict(zip(std_df["std_key"], std_df["distance"]))
 
     # 2 — Going allowance (initial)
     print("\nSTAGE 2: Going allowances (initial)")
-    going_allowances = compute_going_allowances(df, std_times)
+    going_allowances = compute_going_allowances(df, std_times, std_distances)
 
     # Iterative refinement: use going-corrected times to recompute
     # standard times (using ALL goings now), then recompute GA.
@@ -1612,7 +1635,10 @@ def run_pipeline():
         std_times, std_df = compute_standard_times_iterative(
             df, going_allowances
         )
-        going_allowances = compute_going_allowances(df, std_times)
+        std_distances = dict(zip(std_df["std_key"], std_df["distance"]))
+        going_allowances = compute_going_allowances(
+            df, std_times, std_distances
+        )
 
     # 3 — Course-specific lbs per length
     print("\nSTAGE 3: Lbs per length (per track / distance)")
@@ -1621,7 +1647,7 @@ def run_pipeline():
     # 4 — Winner figures
     print("\nSTAGE 4: Winner speed figures")
     winners, winner_fig_dict = compute_winner_figures(
-        df, std_times, going_allowances, lpl_dict
+        df, std_times, going_allowances, lpl_dict, std_distances
     )
 
     # 5 — All-runner figures via beaten lengths
