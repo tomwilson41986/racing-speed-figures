@@ -50,14 +50,14 @@ LBS_PER_SECOND_5F = 20     # Empirical: pairwise analysis against Timeform shows
                            # Cf. BHA ~15, Timeform ~25 (at 60s), our empirical 20.
 BENCHMARK_FURLONGS = 5.0   # Anchor distance
 
-# Surface-specific LPL multipliers.  Empirical pairwise analysis
-# against Timeform shows the optimal LPL exponent differs by surface:
-# Turf lpl ∝ 1/d^0.94, AW lpl ∝ 1/d^0.85.  With base constant 20,
-# Turf is well matched (slope~1.0 at 5-10f) but AW at middle/long
-# distances needs a ~10% boost because the AW exponent is shallower.
+# Surface-specific LPL multipliers.  Pairwise analysis of winner-to-2nd
+# implied LPL against Timeform (0.5-5L beaten, all distances) shows the
+# empirical K constant is ~19-20 for BOTH surfaces — i.e. no surface
+# adjustment is needed.  The earlier 1.10 AW multiplier caused ~15%
+# over-spread at AW tracks (e.g. 7f AW: ours 3.14 vs TF 2.75).
 LPL_SURFACE_MULTIPLIER = {
     "Turf": 1.0,
-    "All Weather": 1.10,
+    "All Weather": 1.0,
 }
 
 # Beaten-length attenuation parameters.  Analysis shows a monotonically
@@ -1020,7 +1020,7 @@ def calibrate_figures(df):
 
     for surface in df["raceSurfaceName"].unique():
         surf_mask = df["raceSurfaceName"] == surface
-        fit = df[fit_mask & surf_mask & (df["source_year"] <= 2023)]
+        fit = df[fit_mask & surf_mask & (df["source_year"] <= 2024)]
 
         if len(fit) < 100:
             print(f"    {surface}: insufficient data — using identity")
@@ -1356,7 +1356,7 @@ def enhance_with_gbr(df):
 
     for surface in df["raceSurfaceName"].unique():
         surf_mask = df["raceSurfaceName"] == surface
-        fit_mask = mask & surf_mask & (df["source_year"] <= 2023)
+        fit_mask = mask & surf_mask & (df["source_year"] <= 2024)
         fit = df[fit_mask].copy()
 
         if len(fit) < 1000:
@@ -1462,7 +1462,7 @@ def expand_scale(df):
         & (df["timefigure"] != 0)
         & df["timefigure"].between(-200, 200)
         & df["figure_calibrated"].notna()
-        & (df["source_year"] <= 2023)
+        & (df["source_year"] <= 2024)
     )
 
     quantile_levels = np.linspace(0, 100, N_QUANTILES + 1)
