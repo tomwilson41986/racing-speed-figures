@@ -63,7 +63,13 @@ OUTPUT_DIR = ROOT_DIR / "output"
 LIVE_DIR = ROOT_DIR / "data" / "live"
 
 # ─── Configuration (environment variables) ───────────────────────────
-RECIPIENT = os.environ.get("RECIPIENT", "racingsquared@gmail.com")
+RECIPIENTS = [
+    "racingsquared@gmail.com",
+    "tom.biggs@blandfordbloodstock.com",
+    "fred@blandfordbloodstock.com",
+    "stuart@blandfordbloodstock.com",
+    "richard@blandfordbloodstock.com",
+]
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
@@ -1655,12 +1661,12 @@ def _fig_class(fig):
     return "avg"
 
 
-def send_email(html, target_date, run_time, recipient=RECIPIENT):
+def send_email(html, target_date, run_time, recipients=RECIPIENTS):
     """Send the ratings email via SMTP."""
     log.info(
         f"Email config: SMTP_USER={'set' if SMTP_USER else 'EMPTY'}, "
         f"SMTP_PASS={'set' if SMTP_PASS else 'EMPTY'}, "
-        f"host={SMTP_HOST}:{SMTP_PORT}, recipient={recipient}"
+        f"host={SMTP_HOST}:{SMTP_PORT}, recipients={recipients}"
     )
 
     if not SMTP_USER or not SMTP_PASS:
@@ -1676,7 +1682,7 @@ def send_email(html, target_date, run_time, recipient=RECIPIENT):
         f"Live Speed Figures — {target_date} ({run_time} GMT)"
     )
     msg["From"] = SMTP_USER
-    msg["To"] = recipient
+    msg["To"] = ", ".join(recipients)
 
     text = (
         f"Live Speed Figures for {target_date}. "
@@ -1693,8 +1699,8 @@ def send_email(html, target_date, run_time, recipient=RECIPIENT):
             server.ehlo()
             log.info(f"Authenticating as {SMTP_USER}...")
             server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(SMTP_USER, recipient, msg.as_string())
-        log.info(f"Email sent successfully to {recipient}")
+            server.sendmail(SMTP_USER, recipients, msg.as_string())
+        log.info(f"Email sent successfully to {recipients}")
         return True
     except smtplib.SMTPAuthenticationError as e:
         log.error(
