@@ -95,20 +95,29 @@ NH_RACE_TYPES = {
 }
 
 # ─── Going allowance estimates (seconds per furlong) ─────────────────
+# These are used as fallback when real GA cannot be computed (e.g.
+# incomplete meetings at the 6pm run).  Values updated 2026-03 from
+# empirical pipeline going allowances (2015-2026, 10,625 meetings).
+# Previous estimates massively underestimated soft (+0.15 vs actual +0.51)
+# and heavy (+0.25 vs actual +0.82), causing 2-3 lbs errors on those
+# going descriptions.
 GOING_GA_ESTIMATES = {
-    "Hard": -0.20, "Firm": -0.12,
-    "Good To Firm": -0.05, "Good to Firm": -0.05,
-    "Good": 0.00,
-    "Good to Yielding": 0.05, "Good To Yielding": 0.05,
-    "Yielding": 0.10, "Yielding To Soft": 0.13,
-    "Good to Soft": 0.08, "Good To Soft": 0.08,
-    "Soft": 0.15, "Soft To Heavy": 0.20,
-    "Heavy": 0.25,
-    "Standard": 0.00, "Std": 0.00,
-    "Standard To Slow": 0.05, "Std/Slow": 0.05, "Standard/Slow": 0.05,
-    "Slow": 0.10,
-    "Standard To Fast": -0.03, "Std/Fast": -0.03,
-    "Fast": -0.08,
+    "Hard": -0.25, "Firm": -0.21,
+    "Good To Firm": -0.09, "Good to Firm": -0.09,
+    "Gd/Frm": -0.09,
+    "Good": 0.05,
+    "Good to Yielding": 0.15, "Good To Yielding": 0.15,
+    "Yielding": 0.35, "Yielding To Soft": 0.40,
+    "Good to Soft": 0.25, "Good To Soft": 0.25,
+    "Gd/Sft": 0.25,
+    "Soft": 0.51, "Soft To Heavy": 0.65,
+    "Sft/Hvy": 0.65, "Hvy/Sft": 0.65,
+    "Heavy": 0.82,
+    "Standard": 0.04, "Std": 0.04,
+    "Standard To Slow": 0.06, "Std/Slow": 0.06, "Standard/Slow": 0.06,
+    "Slow": 0.15,
+    "Standard To Fast": 0.01, "Std/Fast": 0.01,
+    "Fast": -0.03,
 }
 
 # ─── Going group mapping (for calibration offsets) ────────────────
@@ -913,6 +922,7 @@ class LiteRatingEngine:
         df = self._apply_calibration(df)
         df = self._apply_gbr(df)
         df = self._apply_quantile_mapping(df)
+        df = self._apply_oos_corrections(df)
 
         return df
 
@@ -1461,6 +1471,61 @@ class LiteRatingEngine:
             x = df.loc[mask, "figure_calibrated"].values.astype(float)
             df.loc[mask, "figure_calibrated"] = mapper(x)
             log.info(f"  {surface}: QM applied to {mask.sum()} runners")
+
+        df["figure_calibrated"] = df["figure_calibrated"].round(1)
+        return df
+
+    def _apply_oos_corrections(self, df):
+        """
+        Apply post-hoc OOS corrections from batch pipeline.
+
+        These corrections address three systematic bias sources:
+        1. Distance-specific bias (certain dist × surface combos)
+        2. Going-group residual bias (e.g. Good/Firm over-rated)
+        3. Temporal drift (calibration trained on older data)
+        """
+        if not self._artifacts or not self._artifacts.get("oos_corrections"):
+            return df
+
+        log.info("Applying OOS corrections...")
+
+        corrections = self._artifacts["oos_corrections"]
+
+        for surface, params in corrections.items():
+            mask = (
+                (df["raceSurfaceName"] == surface)
+                & df["figure_calibrated"].notna()
+            )
+            if mask.sum() == 0:
+                continue
+
+            total_adj = np.zeros(mask.sum())
+
+            # Distance correction
+            dist_corr = params.get("dist_corrections", {})
+            if dist_corr:
+                dist_round = df.loc[mask, "distance"].round(0).astype(int)
+                dist_adj = dist_round.map(dist_corr).fillna(0).values
+                total_adj += dist_adj
+
+            # Going correction
+            going_corr = params.get("going_corrections", {})
+            if going_corr:
+                going_grp = df.loc[mask, "going"].map(GOING_MAP).fillna("Good")
+                going_adj = going_grp.map(going_corr).fillna(0).values
+                total_adj += going_adj
+
+            # Temporal correction (always applied for live data)
+            temporal = params.get("temporal_offset", 0.0)
+            total_adj += temporal
+
+            df.loc[mask, "figure_calibrated"] -= total_adj
+
+            n_adj = (np.abs(total_adj) > 0.01).sum()
+            log.info(
+                f"  {surface}: OOS corrections applied to {n_adj} runners "
+                f"(temporal={temporal:+.2f})"
+            )
 
         df["figure_calibrated"] = df["figure_calibrated"].round(1)
         return df
