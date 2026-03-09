@@ -77,31 +77,67 @@ class Runner(BaseModel):
 
     # Result fields (only populated for completed races)
     ordreArrivee: Optional[int] = None
-    tempsObtenu: Optional[int] = None  # raw 1/100ths encoding
+    tempsObtenu: Optional[int] = None  # raw packed encoding (if present)
     reductionKilometrique: Optional[str] = None
 
-    # Weight — poids for flat, poidsConditionMonte may appear instead
+    # Weight — handicapPoids in hectograms (e.g. 580 = 58.0kg)
+    handicapPoids: Optional[int] = None
     poids: Optional[float] = None
     poidsConditionMonte: Optional[float] = None
 
-    # Beaten distance — may be None for winner or non-placed
-    ecart: Optional[str] = None
+    # Beaten distance — distanceChevalPrecedent.libelleCourt (e.g. "1 L 1/2")
+    distanceChevalPrecedent: Optional[dict] = None
+    ecart: Optional[str] = None  # fallback
 
-    # Connections
+    # Connections — PMU uses "driver" even for flat jockeys
     driver: Optional[str] = None
     jockey: Optional[str] = None
     entraineur: Optional[str] = None
+
+    # Breeding
+    nomPere: Optional[str] = None  # sire
+    nomMere: Optional[str] = None  # dam
+    nomPereMere: Optional[str] = None  # dam's sire
 
     # Form / ratings
     musique: Optional[str] = None
     gainsParticipant: Optional[dict] = None
     handicapDistance: Optional[int] = None
+    handicapValeur: Optional[float] = None
+
+    # Odds — nested in dernierRapportDirect.rapport
+    dernierRapportDirect: Optional[dict] = None
 
     @property
     def time_seconds(self) -> Optional[float]:
         """Return tempsObtenu converted to seconds, or None."""
         if self.tempsObtenu is not None and self.tempsObtenu > 0:
             return temps_obtenu_to_seconds(self.tempsObtenu)
+        return None
+
+    @property
+    def weight_kg(self) -> Optional[float]:
+        """Return weight in kg from handicapPoids (hectograms) or poids."""
+        if self.handicapPoids is not None:
+            return self.handicapPoids / 10.0
+        if self.poids is not None:
+            return self.poids
+        if self.poidsConditionMonte is not None:
+            return self.poidsConditionMonte
+        return None
+
+    @property
+    def beaten_distance_str(self) -> Optional[str]:
+        """Return beaten distance as short string, e.g. '1 L 1/2'."""
+        if isinstance(self.distanceChevalPrecedent, dict):
+            return self.distanceChevalPrecedent.get("libelleCourt")
+        return self.ecart
+
+    @property
+    def odds(self) -> Optional[float]:
+        """Return starting price from dernierRapportDirect."""
+        if isinstance(self.dernierRapportDirect, dict):
+            return self.dernierRapportDirect.get("rapport")
         return None
 
 
@@ -284,15 +320,22 @@ class PMUClient:
                     ordreArrivee=p.get("ordreArrivee"),
                     tempsObtenu=p.get("tempsObtenu"),
                     reductionKilometrique=p.get("reductionKilometrique"),
+                    handicapPoids=p.get("handicapPoids"),
                     poids=p.get("poids"),
                     poidsConditionMonte=p.get("poidsConditionMonte"),
+                    distanceChevalPrecedent=p.get("distanceChevalPrecedent"),
                     ecart=p.get("ecart"),
                     driver=p.get("driver"),
                     jockey=p.get("jockey"),
                     entraineur=p.get("entraineur"),
+                    nomPere=p.get("nomPere"),
+                    nomMere=p.get("nomMere"),
+                    nomPereMere=p.get("nomPereMere"),
                     musique=p.get("musique"),
                     gainsParticipant=p.get("gainsParticipant"),
                     handicapDistance=p.get("handicapDistance"),
+                    handicapValeur=p.get("handicapValeur"),
+                    dernierRapportDirect=p.get("dernierRapportDirect"),
                 )
             )
 

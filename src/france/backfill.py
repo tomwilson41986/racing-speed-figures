@@ -33,11 +33,11 @@ def _jittered_sleep(base: float = 1.0):
     time.sleep(base * random.uniform(0.5, 1.5))
 
 
-def _extract_hippodrome(reunion: dict) -> tuple[str, str]:
-    """Return (code, name) from a reunion dict, tolerating varied shapes."""
-    hippo = reunion.get("hippodrome", {})
+def _extract_hippodrome(data: dict) -> tuple[str, str]:
+    """Return (code, name) from a reunion or course dict, tolerating varied shapes."""
+    hippo = data.get("hippodrome", {})
     if isinstance(hippo, dict):
-        code = hippo.get("code", hippo.get("libelleCourt", ""))
+        code = hippo.get("codeHippodrome", hippo.get("code", hippo.get("libelleCourt", "")))
         name = hippo.get("libelleLong", hippo.get("libelleCourt", ""))
     else:
         code = str(hippo) if hippo else ""
@@ -50,6 +50,42 @@ def _extract_country(reunion: dict) -> str:
     if isinstance(pays, dict):
         return pays.get("code", "")
     return str(pays) if pays else ""
+
+
+def _extract_going(course: dict) -> str:
+    """Extract going description from penetrometre or terrain fields."""
+    pen = course.get("penetrometre")
+    if isinstance(pen, dict):
+        return pen.get("intitule", "")
+    return course.get("terrain", "")
+
+
+def _extract_beaten_distance(participant: dict) -> Optional[str]:
+    """Extract beaten distance string from distanceChevalPrecedent."""
+    dcp = participant.get("distanceChevalPrecedent")
+    if isinstance(dcp, dict):
+        return dcp.get("libelleCourt")
+    return participant.get("ecart")
+
+
+def _extract_odds(participant: dict) -> Optional[float]:
+    """Extract starting price from dernierRapportDirect."""
+    rapport = participant.get("dernierRapportDirect")
+    if isinstance(rapport, dict):
+        return rapport.get("rapport")
+    return participant.get("coteDirect")
+
+
+def _extract_weight_kg(participant: dict) -> Optional[float]:
+    """Convert handicapPoids (hectograms) to kg, or fall back to poids."""
+    hp = participant.get("handicapPoids")
+    if hp is not None:
+        return hp / 10.0
+    for field in ("poids", "poidsConditionMonte"):
+        val = participant.get(field)
+        if val is not None:
+            return float(val)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +123,20 @@ def _ingest_race(
     )
 
     _jittered_sleep()
-    participants_data = client.get_participants(race_date, reunion_num, course_num)
+    # Use raw JSON (not parsed Runner models) for flexible field access
+    participants_url = client._build_url(
+        race_date, f"R{reunion_num}", f"C{course_num}", "participants"
+    )
+    raw_data = client._fetch_json(participants_url)
+    participants_data = raw_data.get("participants", []) if raw_data else None
+
+    # dureeCourse is winner time in milliseconds at course level
+    duree_ms = course.get("dureeCourse")
+    winner_time_s: Optional[float] = None
+    if duree_ms and duree_ms > 0:
+        winner_time_s = duree_ms / 1000.0
+
+    going = _extract_going(course)
 
     race_row = RaceRow(
         meeting_id=meeting_row.id,
@@ -97,10 +146,11 @@ def _ingest_race(
         discipline=course.get("discipline"),
         specialite=course.get("specialite"),
         prize_money=course.get("montantPrix"),
-        going=course.get("terrain"),
+        going=going,
         parcours=course.get("parcours"),
         corde=course.get("corde"),
         num_starters=course.get("nombreDeclaresPartants"),
+        winner_time_s=winner_time_s,
     )
     session.add(race_row)
     session.flush()  # get race_row.id
@@ -109,19 +159,14 @@ def _ingest_race(
         log.warning("No participants returned for R%sC%s.", reunion_num, course_num)
         return race_row
 
-    winner_time: Optional[float] = None
-
     for p in participants_data:
+        # Individual runner times: tempsObtenu may or may not be present
         raw_temps = p.get("tempsObtenu")
         time_s: Optional[float] = None
         if raw_temps and raw_temps > 0:
             time_s = temps_obtenu_to_seconds(raw_temps)
 
         finish_pos = p.get("ordreArrivee")
-        if finish_pos == 1 and time_s is not None:
-            winner_time = time_s
-
-        weight = p.get("poids") or p.get("poidsConditionMonte")
 
         runner = RunnerRow(
             race_id=race_row.id,
@@ -132,19 +177,16 @@ def _ingest_race(
             finish_position=finish_pos,
             temps_obtenu=raw_temps,
             time_seconds=time_s,
-            beaten_lengths=p.get("ecart"),
-            weight_kg=weight,
-            jockey=p.get("jockey"),
+            beaten_lengths=_extract_beaten_distance(p),
+            weight_kg=_extract_weight_kg(p),
+            jockey=p.get("driver", p.get("jockey", "")),
             trainer=p.get("entraineur"),
-            sire=p.get("pere"),
-            dam=p.get("mere"),
-            odds=p.get("coteDirect"),
+            sire=p.get("nomPere"),
+            dam=p.get("nomMere"),
+            odds=_extract_odds(p),
             raw_json=json.dumps(p, ensure_ascii=False),
         )
         session.add(runner)
-
-    if winner_time is not None:
-        race_row.winner_time_s = winner_time
 
     return race_row
 
