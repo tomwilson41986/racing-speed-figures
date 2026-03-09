@@ -283,6 +283,20 @@ def last_ingested_date(session: Session) -> Optional[datetime.date]:
     return result
 
 
+def _dates_by_year(
+    start_date: datetime.date, end_date: datetime.date
+) -> list[tuple[int, datetime.date, datetime.date]]:
+    """Split a date range into (year, year_start, year_end) chunks."""
+    chunks = []
+    current_year = start_date.year
+    while current_year <= end_date.year:
+        y_start = max(start_date, datetime.date(current_year, 1, 1))
+        y_end = min(end_date, datetime.date(current_year, 12, 31))
+        chunks.append((current_year, y_start, y_end))
+        current_year += 1
+    return chunks
+
+
 def backfill_date_range(
     start_date: datetime.date,
     end_date: datetime.date,
@@ -307,6 +321,11 @@ def backfill_date_range(
     -------
     dict  with keys: dates_processed, races_ingested, errors
     """
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        tqdm = None
+
     if client is None:
         client = PMUClient()
 
@@ -314,7 +333,6 @@ def backfill_date_range(
     if resume:
         last = last_ingested_date(session)
         if last is not None and last >= start_date:
-            # Start from the day after the last ingested date
             start_date = last + datetime.timedelta(days=1)
             log.info("Resuming from %s (last ingested: %s)", start_date, last)
 
@@ -322,26 +340,51 @@ def backfill_date_range(
         log.info("Nothing to backfill — already up to date.")
         return {"dates_processed": 0, "races_ingested": 0, "errors": 0}
 
-    total_days = (end_date - start_date).days + 1
     stats = {"dates_processed": 0, "races_ingested": 0, "errors": 0}
+    year_chunks = _dates_by_year(start_date, end_date)
+    total_years = len(year_chunks)
 
-    current = start_date
-    while current <= end_date:
-        try:
-            n = ingest_day(client, session, current)
-            stats["races_ingested"] += n
-            log.info(
-                "%s: %d flat races ingested  [day %d/%d]",
-                current.isoformat(), n,
-                stats["dates_processed"] + 1, total_days,
+    for yi, (year, y_start, y_end) in enumerate(year_chunks, 1):
+        year_days = (y_end - y_start).days + 1
+        year_races = 0
+        year_errors = 0
+
+        if tqdm is not None:
+            day_iter = tqdm(
+                range(year_days),
+                desc=f"{year} ({yi}/{total_years})",
+                unit="day",
+                leave=True,
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} days [{elapsed}<{remaining}, {postfix}]",
             )
-        except Exception:
-            log.exception("Failed to process %s — will continue.", current.isoformat())
-            stats["errors"] += 1
-            session.rollback()
+        else:
+            day_iter = range(year_days)
 
-        stats["dates_processed"] += 1
-        current += datetime.timedelta(days=1)
-        _jittered_sleep(0.3)  # small pause between programme fetches
+        current = y_start
+        for di in day_iter:
+            try:
+                n = ingest_day(client, session, current)
+                stats["races_ingested"] += n
+                year_races += n
+            except Exception:
+                log.exception("Failed to process %s — will continue.", current.isoformat())
+                stats["errors"] += 1
+                year_errors += 1
+                session.rollback()
+
+            stats["dates_processed"] += 1
+            current += datetime.timedelta(days=1)
+
+            if tqdm is not None:
+                day_iter.set_postfix(
+                    races=year_races, errors=year_errors, refresh=False
+                )
+
+            _jittered_sleep(0.3)
+
+        log.info(
+            "Year %d complete: %d races ingested, %d errors.",
+            year, year_races, year_errors,
+        )
 
     return stats
