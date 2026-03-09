@@ -1,0 +1,305 @@
+"""
+Historical backfill: scrape PMU flat race results day-by-day and store in DB.
+
+Designed to be idempotent — skips dates/races already ingested.
+Supports resuming from the last successful date.
+
+Typical throughput: ~1 req/sec, ~3 requests per race day (programme + N
+participant pages).  Full 2015–2026 backfill ≈ 12 hours.
+"""
+
+import datetime
+import json
+import logging
+import random
+import time
+from typing import Optional
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from .database import MeetingRow, RaceRow, RunnerRow
+from .pmu_client import PMUClient, temps_obtenu_to_seconds
+
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _jittered_sleep(base: float = 1.0):
+    """Sleep with random jitter (0.5× to 1.5× base)."""
+    time.sleep(base * random.uniform(0.5, 1.5))
+
+
+def _extract_hippodrome(reunion: dict) -> tuple[str, str]:
+    """Return (code, name) from a reunion dict, tolerating varied shapes."""
+    hippo = reunion.get("hippodrome", {})
+    if isinstance(hippo, dict):
+        code = hippo.get("code", hippo.get("libelleCourt", ""))
+        name = hippo.get("libelleLong", hippo.get("libelleCourt", ""))
+    else:
+        code = str(hippo) if hippo else ""
+        name = code
+    return code, name
+
+
+def _extract_country(reunion: dict) -> str:
+    pays = reunion.get("pays", {})
+    if isinstance(pays, dict):
+        return pays.get("code", "")
+    return str(pays) if pays else ""
+
+
+# ---------------------------------------------------------------------------
+# Core ingestion for a single race
+# ---------------------------------------------------------------------------
+
+def _ingest_race(
+    client: PMUClient,
+    session: Session,
+    meeting_row: MeetingRow,
+    race_date: datetime.date,
+    reunion_num: int,
+    course: dict,
+) -> Optional[RaceRow]:
+    """Fetch participants for one race and write to DB.  Returns the RaceRow or None."""
+    course_num = course.get("numOrdre", 0)
+
+    # Skip if already ingested
+    existing = session.execute(
+        select(RaceRow).where(
+            RaceRow.meeting_id == meeting_row.id,
+            RaceRow.course_num == course_num,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        log.debug("Race R%sC%s already in DB, skipping.", reunion_num, course_num)
+        return existing
+
+    hippo_code = meeting_row.hippodrome_code or ""
+    distance = course.get("distance")
+    log.info(
+        "Processing %s R%sC%s (%s %sm)...",
+        race_date.isoformat(), reunion_num, course_num,
+        hippo_code, distance,
+    )
+
+    _jittered_sleep()
+    participants_data = client.get_participants(race_date, reunion_num, course_num)
+
+    race_row = RaceRow(
+        meeting_id=meeting_row.id,
+        course_num=course_num,
+        race_name=course.get("libelle", ""),
+        distance_m=distance,
+        discipline=course.get("discipline"),
+        specialite=course.get("specialite"),
+        prize_money=course.get("montantPrix"),
+        going=course.get("terrain"),
+        parcours=course.get("parcours"),
+        corde=course.get("corde"),
+        num_starters=course.get("nombreDeclaresPartants"),
+    )
+    session.add(race_row)
+    session.flush()  # get race_row.id
+
+    if participants_data is None:
+        log.warning("No participants returned for R%sC%s.", reunion_num, course_num)
+        return race_row
+
+    winner_time: Optional[float] = None
+
+    for p in participants_data:
+        raw_temps = p.get("tempsObtenu")
+        time_s: Optional[float] = None
+        if raw_temps and raw_temps > 0:
+            time_s = temps_obtenu_to_seconds(raw_temps)
+
+        finish_pos = p.get("ordreArrivee")
+        if finish_pos == 1 and time_s is not None:
+            winner_time = time_s
+
+        weight = p.get("poids") or p.get("poidsConditionMonte")
+
+        runner = RunnerRow(
+            race_id=race_row.id,
+            num_pmu=p.get("numPmu"),
+            horse_name=p.get("nom", ""),
+            age=p.get("age"),
+            sex=p.get("sexe"),
+            finish_position=finish_pos,
+            temps_obtenu=raw_temps,
+            time_seconds=time_s,
+            beaten_lengths=p.get("ecart"),
+            weight_kg=weight,
+            jockey=p.get("jockey"),
+            trainer=p.get("entraineur"),
+            sire=p.get("pere"),
+            dam=p.get("mere"),
+            odds=p.get("coteDirect"),
+            raw_json=json.dumps(p, ensure_ascii=False),
+        )
+        session.add(runner)
+
+    if winner_time is not None:
+        race_row.winner_time_s = winner_time
+
+    return race_row
+
+
+# ---------------------------------------------------------------------------
+# Single-day ingestion
+# ---------------------------------------------------------------------------
+
+def ingest_day(
+    client: PMUClient,
+    session: Session,
+    race_date: datetime.date,
+) -> int:
+    """Fetch and store all PLAT races for a single date.
+
+    Returns the number of races ingested (new ones only).
+    """
+    # Check if any meeting already exists for this date (quick skip)
+    date_str = race_date.strftime("%d%m%Y")
+    programme = client.get_programme(race_date)
+    if programme is None:
+        log.warning("No programme for %s, skipping.", race_date.isoformat())
+        return 0
+
+    reunions = programme.get("programme", {}).get("reunions", [])
+    if not reunions:
+        # Some responses nest differently
+        reunions = programme.get("reunions", [])
+
+    races_ingested = 0
+
+    for reunion in reunions:
+        reunion_num = reunion.get("numOfficiel")
+        if reunion_num is None:
+            continue
+
+        # Check which courses are PLAT
+        flat_courses = [
+            c for c in reunion.get("courses", [])
+            if c.get("discipline") == "PLAT"
+        ]
+        if not flat_courses:
+            continue
+
+        # Ensure meeting row exists
+        existing_meeting = session.execute(
+            select(MeetingRow).where(
+                MeetingRow.race_date == race_date,
+                MeetingRow.reunion_num == reunion_num,
+            )
+        ).scalar_one_or_none()
+
+        if existing_meeting is None:
+            hippo_code, hippo_name = _extract_hippodrome(reunion)
+            country = _extract_country(reunion)
+            meeting_row = MeetingRow(
+                race_date=race_date,
+                reunion_num=reunion_num,
+                hippodrome_code=hippo_code,
+                hippodrome_name=hippo_name,
+                country=country,
+            )
+            session.add(meeting_row)
+            session.flush()
+        else:
+            meeting_row = existing_meeting
+
+        for course in flat_courses:
+            try:
+                race_row = _ingest_race(
+                    client, session, meeting_row, race_date, reunion_num, course,
+                )
+                if race_row is not None:
+                    races_ingested += 1
+            except Exception:
+                log.exception(
+                    "Error ingesting R%sC%s on %s — continuing.",
+                    reunion_num, course.get("numOrdre"), race_date.isoformat(),
+                )
+
+    session.commit()
+    return races_ingested
+
+
+# ---------------------------------------------------------------------------
+# Date-range backfill
+# ---------------------------------------------------------------------------
+
+def last_ingested_date(session: Session) -> Optional[datetime.date]:
+    """Return the most recent race_date in the meetings table, or None."""
+    result = session.execute(
+        select(MeetingRow.race_date).order_by(MeetingRow.race_date.desc()).limit(1)
+    ).scalar_one_or_none()
+    return result
+
+
+def backfill_date_range(
+    start_date: datetime.date,
+    end_date: datetime.date,
+    session: Session,
+    client: Optional[PMUClient] = None,
+    resume: bool = True,
+) -> dict:
+    """Backfill all PLAT races from *start_date* to *end_date* inclusive.
+
+    Parameters
+    ----------
+    start_date, end_date : date
+        Inclusive date bounds.
+    session : Session
+        Active SQLAlchemy session.
+    client : PMUClient, optional
+        Reuses an existing client; creates one if not provided.
+    resume : bool
+        If True, skip dates up to the last ingested date in the DB.
+
+    Returns
+    -------
+    dict  with keys: dates_processed, races_ingested, errors
+    """
+    if client is None:
+        client = PMUClient()
+
+    # Resume support
+    if resume:
+        last = last_ingested_date(session)
+        if last is not None and last >= start_date:
+            # Start from the day after the last ingested date
+            start_date = last + datetime.timedelta(days=1)
+            log.info("Resuming from %s (last ingested: %s)", start_date, last)
+
+    if start_date > end_date:
+        log.info("Nothing to backfill — already up to date.")
+        return {"dates_processed": 0, "races_ingested": 0, "errors": 0}
+
+    total_days = (end_date - start_date).days + 1
+    stats = {"dates_processed": 0, "races_ingested": 0, "errors": 0}
+
+    current = start_date
+    while current <= end_date:
+        try:
+            n = ingest_day(client, session, current)
+            stats["races_ingested"] += n
+            log.info(
+                "%s: %d flat races ingested  [day %d/%d]",
+                current.isoformat(), n,
+                stats["dates_processed"] + 1, total_days,
+            )
+        except Exception:
+            log.exception("Failed to process %s — will continue.", current.isoformat())
+            stats["errors"] += 1
+            session.rollback()
+
+        stats["dates_processed"] += 1
+        current += datetime.timedelta(days=1)
+        _jittered_sleep(0.3)  # small pause between programme fetches
+
+    return stats
