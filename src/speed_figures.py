@@ -874,10 +874,7 @@ def get_wfa_allowance(age, month, distance, surface=None):
     age, month, distance = int(age), int(month), float(distance)
     is_aw = surface is not None and "Weather" in str(surface)
 
-    # Older horse decline (Turf only, ages 7+)
-    if age >= 7 and not is_aw:
-        return float(OLDER_DECLINE_TURF.get(min(age, 12), -6))
-
+    # No age-based adjustments for horses 4+
     if age >= 4:
         return 0.0
 
@@ -1199,7 +1196,7 @@ def calibrate_figures(df):
         residuals5 = residuals4 - (
             fit_bl_band.map(bl_offset_dict).fillna(0).values
         )
-        fit_age = fit["horseAge"].clip(upper=12).astype(int).astype(str)
+        fit_age = fit["horseAge"].clip(lower=2, upper=4).astype(int).astype(str)
         age_groups = pd.Series(
             residuals5, index=fit.index
         ).groupby(fit_age)
@@ -1209,7 +1206,7 @@ def calibrate_figures(df):
         age_offset_dict = age_shrunk.to_dict()
 
         all_age = (
-            df.loc[surf_mask, "horseAge"].clip(upper=12)
+            df.loc[surf_mask, "horseAge"].clip(lower=2, upper=4)
             .astype(int).astype(str)
         )
         surf_age_adj = all_age.map(age_offset_dict).fillna(0)
@@ -1347,6 +1344,9 @@ def enhance_with_gbr(df):
                 fit[col] = 0
             fit[col] = pd.to_numeric(fit[col], errors="coerce").fillna(0)
 
+        # Cap age at 4 — no age-based discrimination for horses 4+
+        fit["horseAge"] = fit["horseAge"].clip(upper=4)
+
         X_fit = fit[FEATURES].values
         y_fit = fit["timefigure"].values
 
@@ -1369,6 +1369,9 @@ def enhance_with_gbr(df):
             all_surf[col] = pd.to_numeric(
                 all_surf[col], errors="coerce"
             ).fillna(0)
+
+        # Cap age at 4 — no age-based discrimination for horses 4+
+        all_surf["horseAge"] = all_surf["horseAge"].clip(upper=4)
 
         # Only predict where figure_calibrated exists
         has_fig = all_surf["figure_calibrated"].notna() & (
