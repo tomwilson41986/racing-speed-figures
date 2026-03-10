@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from .database import MeetingRow, RaceRow, RunnerRow
 from .pmu_client import PMUClient, temps_obtenu_to_seconds
+from .s3_sync import S3Sync
 
 log = logging.getLogger(__name__)
 
@@ -303,6 +304,8 @@ def backfill_date_range(
     session: Session,
     client: Optional[PMUClient] = None,
     resume: bool = True,
+    s3_sync: Optional[S3Sync] = None,
+    s3_sync_interval: int = 300,
 ) -> dict:
     """Backfill all PLAT races from *start_date* to *end_date* inclusive.
 
@@ -316,6 +319,10 @@ def backfill_date_range(
         Reuses an existing client; creates one if not provided.
     resume : bool
         If True, skip dates up to the last ingested date in the DB.
+    s3_sync : S3Sync, optional
+        If provided, periodically upload the DB to S3.
+    s3_sync_interval : int
+        Seconds between S3 uploads (default 300 = 5 minutes).
 
     Returns
     -------
@@ -380,11 +387,20 @@ def backfill_date_range(
                     races=year_races, errors=year_errors, refresh=False
                 )
 
+            # Periodic S3 sync
+            if s3_sync is not None:
+                s3_sync.maybe_sync(interval_seconds=s3_sync_interval)
+
             _jittered_sleep(0.3)
 
         log.info(
             "Year %d complete: %d races ingested, %d errors.",
             year, year_races, year_errors,
         )
+
+    # Final S3 upload when backfill completes
+    if s3_sync is not None:
+        log.info("Final S3 sync...")
+        s3_sync.upload()
 
     return stats

@@ -25,6 +25,7 @@ from .database import (
 )
 from .backfill import backfill_date_range, ingest_day
 from .pmu_client import PMUClient
+from .s3_sync import S3Sync
 
 
 def _setup_logging(verbose: bool):
@@ -55,8 +56,12 @@ def cli(ctx, db, verbose):
 @click.option("--end", required=True, type=click.DateTime(formats=["%Y-%m-%d"]),
               help="End date (YYYY-MM-DD).")
 @click.option("--no-resume", is_flag=True, help="Ignore last ingested date, start fresh.")
+@click.option("--s3-bucket", default=None, help="S3 bucket to sync DB to during backfill.")
+@click.option("--s3-key", default="france.db", help="S3 object key for the DB file.")
+@click.option("--s3-interval", default=300, type=int,
+              help="Seconds between S3 uploads (default 300).")
 @click.pass_context
-def backfill(ctx, start, end, no_resume):
+def backfill(ctx, start, end, no_resume, s3_bucket, s3_key, s3_interval):
     """Backfill historical flat race results from PMU."""
     engine = ctx.obj["engine"]
     session = get_session(engine)
@@ -65,6 +70,16 @@ def backfill(ctx, start, end, no_resume):
     start_d = start.date()
     end_d = end.date()
     total_days = (end_d - start_d).days + 1
+
+    # Resolve DB file path from connection string
+    db_url = str(engine.url)
+    db_path = db_url.replace("sqlite:///", "") if "sqlite:///" in db_url else "france.db"
+
+    # Set up S3 sync if bucket provided
+    s3_sync = None
+    if s3_bucket:
+        s3_sync = S3Sync(bucket=s3_bucket, key=s3_key, db_path=db_path)
+        click.echo(f"S3 sync: s3://{s3_bucket}/{s3_key} (every {s3_interval}s)")
 
     click.echo(f"Backfill: {start_d} → {end_d}  ({total_days} days)")
     click.echo(f"DB: {engine.url}")
@@ -78,9 +93,14 @@ def backfill(ctx, start, end, no_resume):
             session=session,
             client=client,
             resume=not no_resume,
+            s3_sync=s3_sync,
+            s3_sync_interval=s3_interval,
         )
     except KeyboardInterrupt:
         click.echo("\nInterrupted — progress has been committed up to the last complete day.")
+        if s3_sync:
+            click.echo("Uploading latest DB to S3 before exit...")
+            s3_sync.upload()
         session.close()
         sys.exit(1)
     finally:
@@ -90,6 +110,38 @@ def backfill(ctx, start, end, no_resume):
     click.echo(f"Done.  Days processed: {stats['dates_processed']}  "
                f"Races ingested: {stats['races_ingested']}  "
                f"Errors: {stats['errors']}")
+
+
+@cli.command("s3-upload")
+@click.option("--s3-bucket", required=True, help="S3 bucket name.")
+@click.option("--s3-key", default="france.db", help="S3 object key.")
+@click.pass_context
+def s3_upload(ctx, s3_bucket, s3_key):
+    """Upload the current database to S3."""
+    db_url = str(ctx.obj["engine"].url)
+    db_path = db_url.replace("sqlite:///", "") if "sqlite:///" in db_url else "france.db"
+    sync = S3Sync(bucket=s3_bucket, key=s3_key, db_path=db_path)
+    if sync.upload():
+        click.echo("Upload complete.")
+    else:
+        click.echo("Upload failed.", err=True)
+        sys.exit(1)
+
+
+@cli.command("s3-download")
+@click.option("--s3-bucket", required=True, help="S3 bucket name.")
+@click.option("--s3-key", default="france.db", help="S3 object key.")
+@click.pass_context
+def s3_download(ctx, s3_bucket, s3_key):
+    """Download the database from S3."""
+    db_url = str(ctx.obj["engine"].url)
+    db_path = db_url.replace("sqlite:///", "") if "sqlite:///" in db_url else "france.db"
+    sync = S3Sync(bucket=s3_bucket, key=s3_key, db_path=db_path)
+    if sync.download():
+        click.echo("Download complete.")
+    else:
+        click.echo("Download failed or no file on S3.", err=True)
+        sys.exit(1)
 
 
 @cli.command("ingest-today")
