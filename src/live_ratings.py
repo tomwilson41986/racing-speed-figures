@@ -977,9 +977,18 @@ class LiteRatingEngine:
         Estimate going allowance for each meeting.
 
         If >=3 winners have known finishing times and standard times,
-        compute a real going allowance.  Otherwise fall back to an
-        estimate derived from the going description.
+        compute a real going allowance with:
+          - Per-meeting outlier removal (z-score based)
+          - Winsorized median (consistent with pipeline)
+          - Bayesian shrinkage toward going-description prior
+          - Non-linear correction for extreme going
+        Otherwise fall back to an estimate derived from going description.
         """
+        from speed_figures import (
+            GA_OUTLIER_ZSCORE, GA_SHRINKAGE_K, GA_NONLINEAR_THRESHOLD,
+            GA_NONLINEAR_BETA, GOING_GA_PRIOR, IRE_COURSES,
+        )
+
         log.info("Estimating going allowances...")
 
         meetings = df.groupby("meeting_id").first()[
@@ -1013,15 +1022,47 @@ class LiteRatingEngine:
 
             for mid, group in winners.groupby("meeting_id"):
                 if len(group) >= 3:
-                    vals = group["dev_per_furlong"].sort_values().values
-                    if len(vals) > 2:
-                        ga = np.mean(vals[1:-1])
-                    else:
-                        ga = np.mean(vals)
+                    vals = group["dev_per_furlong"].sort_values().values.copy()
+                    n = len(vals)
+
+                    # Per-meeting z-score outlier removal
+                    if n > 2:
+                        med = np.median(vals)
+                        std = np.std(vals, ddof=1)
+                        if std > 0:
+                            z = np.abs((vals - med) / std)
+                            vals = vals[z <= GA_OUTLIER_ZSCORE]
+                            n = len(vals)
+
+                    if n < 3:
+                        continue
+
+                    # Winsorized median
+                    if n > 2:
+                        vals[0] = vals[1]
+                        vals[-1] = vals[-2]
+                    raw_ga = float(np.median(vals))
+
+                    # Bayesian shrinkage toward going-description prior
+                    going_desc = meetings.loc[mid, "going"] if mid in meetings.index else "Good"
+                    if pd.isna(going_desc):
+                        going_desc = "Good"
+                    prior_ga = GOING_GA_PRIOR.get(going_desc, 0.0)
+                    course = meetings.loc[mid, "courseName"] if mid in meetings.index else ""
+                    k = GA_SHRINKAGE_K / 2.0 if course in IRE_COURSES else GA_SHRINKAGE_K
+                    ga = (n * raw_ga + k * prior_ga) / (n + k)
+
+                    # Non-linear correction for extreme going
+                    abs_ga = abs(ga)
+                    if abs_ga > GA_NONLINEAR_THRESHOLD:
+                        sign = 1.0 if ga > 0 else -1.0
+                        excess = abs_ga - GA_NONLINEAR_THRESHOLD
+                        ga += sign * GA_NONLINEAR_BETA * excess ** 2
+
                     ga_dict[mid] = ga
                     log.info(
                         f"  {mid}: computed GA = {ga:+.3f} s/f "
-                        f"({len(group)} winners)"
+                        f"({len(group)} winners, raw={raw_ga:+.3f})"
                     )
 
         # Fill remaining meetings with estimated GA
