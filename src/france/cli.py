@@ -9,9 +9,13 @@ Usage:
 
 import datetime
 import logging
+import os
 import sys
 
 import click
+from dotenv import load_dotenv
+
+load_dotenv()
 from sqlalchemy import func, select
 
 from .database import (
@@ -56,8 +60,10 @@ def cli(ctx, db, verbose):
 @click.option("--end", required=True, type=click.DateTime(formats=["%Y-%m-%d"]),
               help="End date (YYYY-MM-DD).")
 @click.option("--no-resume", is_flag=True, help="Ignore last ingested date, start fresh.")
-@click.option("--s3-bucket", default=None, help="S3 bucket to sync DB to during backfill.")
-@click.option("--s3-key", default="france.db", help="S3 object key for the DB file.")
+@click.option("--s3-bucket", default=lambda: os.environ.get("S3_BUCKET"),
+              help="S3 bucket to sync DB to during backfill (default: $S3_BUCKET).")
+@click.option("--s3-key", default=lambda: os.environ.get("S3_KEY", "france.db"),
+              help="S3 object key for the DB file (default: $S3_KEY or france.db).")
 @click.option("--s3-interval", default=300, type=int,
               help="Seconds between S3 uploads (default 300).")
 @click.pass_context
@@ -113,11 +119,16 @@ def backfill(ctx, start, end, no_resume, s3_bucket, s3_key, s3_interval):
 
 
 @cli.command("s3-upload")
-@click.option("--s3-bucket", required=True, help="S3 bucket name.")
-@click.option("--s3-key", default="france.db", help="S3 object key.")
+@click.option("--s3-bucket", default=lambda: os.environ.get("S3_BUCKET"),
+              help="S3 bucket name (default: $S3_BUCKET).")
+@click.option("--s3-key", default=lambda: os.environ.get("S3_KEY", "france.db"),
+              help="S3 object key (default: $S3_KEY or france.db).")
 @click.pass_context
 def s3_upload(ctx, s3_bucket, s3_key):
     """Upload the current database to S3."""
+    if not s3_bucket:
+        click.echo("Error: --s3-bucket or S3_BUCKET env var required.", err=True)
+        sys.exit(1)
     db_url = str(ctx.obj["engine"].url)
     db_path = db_url.replace("sqlite:///", "") if "sqlite:///" in db_url else "france.db"
     sync = S3Sync(bucket=s3_bucket, key=s3_key, db_path=db_path)
@@ -129,11 +140,16 @@ def s3_upload(ctx, s3_bucket, s3_key):
 
 
 @cli.command("s3-download")
-@click.option("--s3-bucket", required=True, help="S3 bucket name.")
-@click.option("--s3-key", default="france.db", help="S3 object key.")
+@click.option("--s3-bucket", default=lambda: os.environ.get("S3_BUCKET"),
+              help="S3 bucket name (default: $S3_BUCKET).")
+@click.option("--s3-key", default=lambda: os.environ.get("S3_KEY", "france.db"),
+              help="S3 object key (default: $S3_KEY or france.db).")
 @click.pass_context
 def s3_download(ctx, s3_bucket, s3_key):
     """Download the database from S3."""
+    if not s3_bucket:
+        click.echo("Error: --s3-bucket or S3_BUCKET env var required.", err=True)
+        sys.exit(1)
     db_url = str(ctx.obj["engine"].url)
     db_path = db_url.replace("sqlite:///", "") if "sqlite:///" in db_url else "france.db"
     sync = S3Sync(bucket=s3_bucket, key=s3_key, db_path=db_path)
