@@ -8,7 +8,9 @@ Target: timefigure (Timeform)
 Goal: MAE < 3
 """
 
+import logging
 import re
+import time
 
 import pandas as pd
 import numpy as np
@@ -18,6 +20,11 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.isotonic import IsotonicRegression
 import xgboost as xgb
 import lightgbm as lgb
+
+from src.custom_metrics import CustomMetricsEngine
+from src.field_mapping import timeform_to_custom_schema, get_new_feature_columns
+
+log = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore")
 
@@ -50,6 +57,8 @@ def load_raw_extra_cols(years=range(2015, 2027)):
         "raceType", "raceSurfaceName", "positionOfficial",
         "tfwfa", "horseAge",
         "sectionalFinishingTime",
+        # Additional columns for CustomMetricsEngine integration
+        "stallion", "dam", "dam_stallion", "headgear",
     ]
     for year in years:
         path = os.path.join(DATA_DIR, f"timeform_{year}.csv")
@@ -290,6 +299,9 @@ def build_features(df, raw_extra):
     # ── Horse historical features (previous performances) ──
     df = _add_horse_history_features(df)
 
+    # ── CustomMetricsEngine features ──
+    df = _add_custom_metrics_features(df)
+
     print(f"  Features built: {len(df):,} rows")
     return df
 
@@ -407,6 +419,45 @@ def _add_horse_history_features(df):
     return df
 
 
+def _add_custom_metrics_features(df):
+    """
+    Run CustomMetricsEngine on Timeform data via field-mapping adapter.
+
+    Translates column names to the engine's expected schema, computes all
+    100+ lag-safe metrics, then joins the new columns back.
+    """
+    print("  Computing CustomMetricsEngine features...")
+    t0 = time.time()
+
+    # Snapshot original columns to identify new ones later
+    original_cols = set(df.columns)
+
+    # Translate Timeform columns → custom_metrics schema
+    df_custom = timeform_to_custom_schema(df)
+
+    # Run the engine
+    engine = CustomMetricsEngine(windows=[3, 5, 10])
+    df_custom = engine.calculate_all(df_custom)
+
+    # Identify new feature columns produced by the engine
+    new_cols = get_new_feature_columns(
+        pd.DataFrame(columns=list(original_cols)),
+        df_custom,
+    )
+
+    # Filter to columns not already in df (avoid collisions)
+    new_cols = [c for c in new_cols if c not in original_cols]
+    print(f"    {len(new_cols)} new feature columns from CustomMetricsEngine")
+
+    # Join new columns back (same index alignment)
+    for col in new_cols:
+        df[col] = df_custom[col].values
+
+    elapsed = time.time() - t0
+    print(f"    CustomMetricsEngine completed in {elapsed:.1f}s")
+    return df
+
+
 def get_feature_cols():
     """Return the list of feature columns for the ML model."""
     return [
@@ -490,6 +541,152 @@ def get_feature_cols():
         "adj_rating",
         "sectional_time",
         "tf_wfa",
+
+        # ── CustomMetricsEngine features (Phase 1: highest impact) ──
+
+        # Actual lengths beaten (from distanceCumulative → total_dst_bt)
+        "LB",
+        "preracehorsecareerLB",
+        "LR_LB",
+        "LR3_LB",
+        "LR5_LB",
+        "FSALB",
+
+        # Speed figures (from finishingTime → comptime_numeric)
+        "RSR",
+        "preracehorsecareerRSR",
+        "LR_RSR",
+        "LR3_RSR",
+        "LR5_RSR",
+        "best_RSR",
+        "RSR_gap",
+        "SFI",
+        "SFI_3",
+
+        # OR trajectory
+        "or_change",
+        "or_change_3",
+        "career_best_or",
+        "or_vs_best",
+        "or_off_peak",
+        "or_vs_last_win",
+
+        # Equipment changes
+        "headgear_change",
+        "first_time_headgear",
+        "headgear_removed",
+        "has_headgear",
+
+        # ── Phase 2: high impact ──
+
+        # Pedigree (sire/damsire with Bayesian shrinkage)
+        "sire_win_rate",
+        "sire_place_rate",
+        "sire_avg_nfp",
+        "sire_wiv",
+        "sire_going_nfp",
+        "sire_going_win_rate",
+        "sire_dist_nfp",
+        "sire_dist_win_rate",
+        "sire_runners",
+        "damsire_avg_nfp",
+        "damsire_win_rate",
+        "damsire_going_nfp",
+        "damsire_dist_nfp",
+        "debut_x_sire_nfp",
+        "debut_x_sire_wiv",
+        "debut_x_trainer_wiv",
+
+        # Trainer/jockey hot form (14/30 day rolling)
+        "trainer_sr_14d",
+        "trainer_sr_30d",
+        "trainer_form_delta",
+        "jockey_sr_14d",
+        "jockey_sr_30d",
+        "jockey_form_delta",
+
+        # Track preference (horse/trainer/jockey at-track stats)
+        "horse_track_nfp",
+        "horse_track_win_rate",
+        "horse_track_runs",
+        "trainer_track_win_rate",
+        "trainer_track_runs",
+        "jockey_track_win_rate",
+        "jockey_track_runs",
+
+        # ── Phase 3: medium impact ──
+
+        # Expectation residuals (actual vs market-expected performance)
+        "NFP_residual",
+        "career_residual",
+        "residual_exp3",
+        "residual_exp5",
+        "career_win_surprise",
+
+        # Form trajectory (improving/declining)
+        "form_slope_3",
+        "form_slope_5",
+        "is_improving",
+        "is_declining",
+
+        # Consistency
+        "career_nfp_std",
+        "recent_nfp_std",
+        "career_place_rate",
+        "career_win_rate",
+        "recent_win_rate",
+        "recent_place_rate",
+
+        # Unexposure / aptitude
+        "unexposure_score",
+        "is_debut",
+        "first_at_distance",
+        "first_at_going",
+        "first_at_course",
+        "dist_from_preferred",
+        "going_from_preferred",
+        "dist_change_lr",
+
+        # Class movement
+        "class_change",
+        "is_class_drop",
+        "is_class_rise",
+        "class_vs_avg",
+
+        # Weight differential
+        "weight_vs_avg",
+        "weight_vs_min",
+        "weight_change_lr",
+
+        # Surface preference
+        "surface_nfp",
+        "surface_win_rate",
+        "first_on_surface",
+
+        # Draw bias
+        "draw_relative",
+        "draw_quartile",
+
+        # Exponential decay form (Benter-style)
+        "EXP_NFP3",
+        "EXP_NFP5",
+        "EXP_NFP10",
+        "EXP_RB3",
+        "EXP_RB5",
+
+        # Core metrics (NFP, RB, WIV families)
+        "preracehorsecareerNFP",
+        "preracehorsecareerRB",
+        "preracehorsecareerWIV",
+        "preracehorsecareerWAX",
+        "LRNFP",
+        "LR3NFPtotal",
+        "LR5NFPtotal",
+        "preracehorsecareerORR2",
+
+        # Trainer-jockey combo
+        "trainerjockeycareerWIV",
+        "trainerjockeycareerNFP",
     ]
 
 
