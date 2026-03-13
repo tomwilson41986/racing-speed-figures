@@ -1905,6 +1905,9 @@ def run_pipeline():
         "figure_final", "figure_calibrated",
         "timefigure", "performanceRating",
         "source_year",
+        # Additional columns for CustomMetricsEngine integration
+        "stallion", "dam", "dam_stallion", "headgear",
+        "distanceFurlongs", "distanceYards",
     ]
     out_cols = [c for c in out_cols if c in all_figs.columns]
     out_df = all_figs[out_cols]
