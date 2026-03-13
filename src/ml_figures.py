@@ -58,7 +58,9 @@ def load_raw_extra_cols(years=range(2015, 2027)):
         "tfwfa", "horseAge",
         "sectionalFinishingTime",
         # Additional columns for CustomMetricsEngine integration
-        "stallion", "dam", "dam_stallion", "headgear",
+        "sireName", "damName", "damSireName",
+        "equipmentDescription", "equipmentChar", "equipmentFirstTime",
+        "performanceCommentPremium",
     ]
     for year in years:
         path = os.path.join(DATA_DIR, f"timeform_{year}.csv")
@@ -104,8 +106,10 @@ def build_features(df, raw_extra):
         "ispDecimal", "betfairWinSP",
         "preRaceMasterRating", "preRaceAdjustedRating",
         "eligibilitySexLimit", "courseExtraId",
+        "jockeyFullName", "trainerFullName",
         "jockeyUpLift", "trainerUpLift",
         "prizeFund", "prizeFundWinner",
+        "raceType",
         "tfwfa", "sectionalFinishingTime",
     ]
     extra_only = [c for c in extra_only if c in raw_extra.columns]

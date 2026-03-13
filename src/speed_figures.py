@@ -1906,7 +1906,8 @@ def run_pipeline():
         "timefigure", "performanceRating",
         "source_year",
         # Additional columns for CustomMetricsEngine integration
-        "stallion", "dam", "dam_stallion", "headgear",
+        "sireName", "damName", "damSireName",
+        "equipmentDescription", "performanceCommentPremium",
         "distanceFurlongs", "distanceYards",
     ]
     out_cols = [c for c in out_cols if c in all_figs.columns]

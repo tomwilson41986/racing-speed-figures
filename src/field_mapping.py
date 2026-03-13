@@ -17,8 +17,7 @@ log = logging.getLogger(__name__)
 
 # ── Timeform → CustomMetrics column mapping ────────────────────────────
 # Keys = Timeform CSV column name, Values = custom_metrics expected name.
-# Only columns that differ are listed; same-name columns (stallion, dam,
-# dam_stallion, headgear) pass through unchanged.
+# Verified against actual Timeform CSV headers (timeform_2024.csv).
 TIMEFORM_TO_CUSTOM: dict[str, str] = {
     "meetingDate": "race_date",
     "courseName": "track",
@@ -43,6 +42,12 @@ TIMEFORM_TO_CUSTOM: dict[str, str] = {
     "finishingTime": "comptime_numeric",
     "ispDecimal": "odds",
     "performanceRating": "official_rating",
+    # Timeform uses different names for breeding/equipment columns
+    "sireName": "stallion",
+    "damSireName": "dam_stallion",
+    "damName": "dam",
+    "equipmentDescription": "headgear",
+    "performanceCommentPremium": "comment",
 }
 
 # Reverse mapping for converting results back
@@ -73,7 +78,7 @@ def timeform_to_custom_schema(df: pd.DataFrame) -> pd.DataFrame:
     out.rename(columns=rename_map, inplace=True)
 
     # Log which custom_metrics columns are available vs missing
-    expected = set(TIMEFORM_TO_CUSTOM.values()) | {"stallion", "dam", "dam_stallion", "headgear", "comment"}
+    expected = set(TIMEFORM_TO_CUSTOM.values())
     available = expected & set(out.columns)
     missing = expected - available
     log.info(
