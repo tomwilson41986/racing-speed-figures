@@ -74,6 +74,13 @@ MIN_RACES_STANDARD_TIME = 20   # Minimum winners for a reliable standard time
 MIN_RACES_GOING_ALLOWANCE = 3  # Minimum races on a card for going allowance
 INTERPOLATED_GA_WEIGHT = 0.7   # Discount weight for interpolated standard times in GA
 
+# Going allowance robustness parameters
+GA_OUTLIER_ZSCORE = 3.0          # Per-meeting z-score threshold for outlier removal
+GA_SHRINKAGE_K = 3.0             # Bayesian shrinkage strength toward going-description prior
+GA_NONLINEAR_THRESHOLD = 0.30    # GA magnitude (s/f) above which non-linear correction kicks in
+GA_NONLINEAR_BETA = 0.25         # Quadratic coefficient for extreme going correction
+GA_CONVERGENCE_TOL = 0.005       # Mean absolute change (s/f) for iteration convergence
+
 # Class adjustments in seconds per mile (8 furlongs).
 # These are subtracted from raw finishing times to normalise to a common
 # class baseline before computing standard times.  All values are negative
@@ -126,6 +133,25 @@ GOOD_GOING = {
     "Good to Yielding", "Good To Yielding",
     # AW (abbreviated forms in data)
     "Std", "Std/Slow", "Std/Fast", "Standard/Slow",
+}
+
+# ── Going description GA priors (for Bayesian shrinkage) ──
+# Empirical mean GA per going description (2015-2026, 10,625 meetings).
+# Used as the prior in Bayesian shrinkage for small-card meetings.
+GOING_GA_PRIOR = {
+    "Hard": -0.25, "Firm": -0.21,
+    "Good To Firm": -0.09, "Good to Firm": -0.09, "Gd/Frm": -0.09,
+    "Good": 0.05,
+    "Good to Yielding": 0.15, "Good To Yielding": 0.15,
+    "Yielding": 0.35, "Yielding To Soft": 0.40,
+    "Good to Soft": 0.25, "Good To Soft": 0.25, "Gd/Sft": 0.25,
+    "Soft": 0.51, "Soft To Heavy": 0.65, "Sft/Hvy": 0.65, "Hvy/Sft": 0.65,
+    "Heavy": 0.82,
+    "Standard": 0.04, "Std": 0.04,
+    "Standard To Slow": 0.06, "Std/Slow": 0.06, "Standard/Slow": 0.06,
+    "Slow": 0.15,
+    "Standard To Fast": 0.01, "Std/Fast": 0.01,
+    "Fast": -0.03,
 }
 
 # ── Sex allowance (flat) ──
@@ -767,14 +793,36 @@ def compute_going_allowances(df, std_times):
          standard time, compute:
             deviation_per_furlong = (class_adj_time − standard_time) / distance
 
-      2. Drop extreme global outliers (1st/99th percentile across dataset).
+      2. Per-meeting outlier removal: within each meeting, remove any
+         deviation more than GA_OUTLIER_ZSCORE standard deviations from
+         the meeting median.  This preserves legitimate extreme-going
+         meetings while removing genuine anomalies.
 
-      3. Within each meeting (= track + day + surface), trim the highest
-         and lowest deviation, then average the rest.  This card-wide
-         average IS the going allowance.
+      3. Within each meeting (= track + day + surface), compute a
+         Winsorized median (clamp extremes to adjacent values, take
+         median).  This is the raw going allowance.
 
-      4. Meetings with fewer than MIN_RACES_GOING_ALLOWANCE winners are
+      4. Split-card detection: within each meeting, test for a
+         significant shift in going between early and late races
+         (e.g. rain mid-card).  If detected, split into two segments
+         with separate GAs.
+
+      5. Bayesian shrinkage: blend the raw GA toward the going-
+         description prior, weighted by card size.  Small cards are
+         shrunk more heavily; large cards (6+) retain near-raw values.
+         Irish meetings use a weaker prior (lower k) due to unreliable
+         official going descriptions.
+
+      6. Non-linear correction: for extreme going (|GA| > threshold),
+         apply a quadratic adjustment to capture the non-linear
+         relationship between ground conditions and time.
+
+      7. Meetings with fewer than MIN_RACES_GOING_ALLOWANCE winners are
          excluded (unreliable).
+
+    Returns:
+      ga_dict    — {meeting_id: ga_value} for each valid meeting
+      ga_se_dict — {meeting_id: standard_error} for uncertainty estimates
 
     Convention:
       positive GA → ground slower than standard (soft)
@@ -809,12 +857,44 @@ def compute_going_allowances(df, std_times):
     winners["deviation"] = winners["adj_time"] - winners["standard_time"]
     winners["dev_per_furlong"] = winners["deviation"] / winners["distance"]
 
-    # Global outlier removal
-    q_lo = winners["dev_per_furlong"].quantile(0.01)
-    q_hi = winners["dev_per_furlong"].quantile(0.99)
-    winners = winners[
-        winners["dev_per_furlong"].between(q_lo, q_hi)
-    ]
+    # ── Per-meeting outlier removal (replaces global 1st/99th percentile) ──
+    # Within each meeting, remove deviations that are extreme relative to
+    # the meeting's own distribution.  This preserves meetings on genuine
+    # extreme going while removing individual race anomalies.
+    meeting_medians = winners.groupby("meeting_id")["dev_per_furlong"].median()
+    meeting_stds = winners.groupby("meeting_id")["dev_per_furlong"].std()
+    winners["_meeting_med"] = winners["meeting_id"].map(meeting_medians)
+    winners["_meeting_std"] = winners["meeting_id"].map(meeting_stds)
+    has_std = winners["_meeting_std"].notna() & (winners["_meeting_std"] > 0)
+    z_scores = (
+        (winners["dev_per_furlong"] - winners["_meeting_med"])
+        / winners["_meeting_std"]
+    ).abs()
+    # Keep rows where z-score is within threshold, or where std was 0/NaN
+    winners = winners[~has_std | (z_scores <= GA_OUTLIER_ZSCORE)].copy()
+    winners.drop(columns=["_meeting_med", "_meeting_std"], inplace=True)
+
+    # ── Split-card going detection ──
+    # For meetings with 6+ races ordered by race number, test whether
+    # the first half and second half have significantly different mean
+    # deviations.  If so, assign separate meeting_id segments.
+    original_meeting_ids = set(winners["meeting_id"].unique())
+    split_meetings = set()
+
+    for mid, group in winners.groupby("meeting_id"):
+        if len(group) < 6:
+            continue
+        ordered = group.sort_values("raceNumber")
+        n = len(ordered)
+        half = n // 2
+        first_half = ordered.iloc[:half]["dev_per_furlong"]
+        second_half = ordered.iloc[half:]["dev_per_furlong"]
+
+        n1, n2 = len(first_half), len(second_half)
+        if n1 < 2 or n2 < 2:
+            continue
+        m1, m2 = first_half.mean(), second_half.mean()
+        s1, s2 = first_half.std(), second_half.std()
 
     # Weighted winsorized mean within each meeting.
     # Interpolated deviations get lower weight (INTERPOLATED_GA_WEIGHT).
@@ -833,9 +913,58 @@ def compute_going_allowances(df, std_times):
     ga_series = (
         winners.groupby("meeting_id")[["dev_per_furlong", "ga_weight"]]
         .apply(_weighted_winsorized_mean)
+        if s1 == 0 and s2 == 0:
+            continue
+        se = np.sqrt(s1**2 / n1 + s2**2 / n2)
+        if se == 0:
+            continue
+        t_stat = abs(m1 - m2) / se
+
+        # Conservative threshold: t > 2.5 (~p < 0.02 two-tailed)
+        # and minimum absolute difference of 0.10 s/f (practical significance)
+        if t_stat > 2.5 and abs(m1 - m2) > 0.10:
+            winners.loc[ordered.index[:half], "meeting_id"] = mid + "_early"
+            winners.loc[ordered.index[half:], "meeting_id"] = mid + "_late"
+            split_meetings.add(mid)
+
+    if split_meetings:
+        print(f"    Split-card going detected: {len(split_meetings)} meetings split")
+
+    # ── Winsorized median within each meeting ──
+    # Uses median (not mean) for consistency with standard time computation
+    # and greater robustness to skewed distributions on extreme going.
+    def _winsorized_median(group):
+        vals = group.sort_values().values.copy()
+        n = len(vals)
+        if n <= 2:
+            return np.median(vals)
+        # Winsorize: clamp extremes to adjacent values
+        vals[0] = vals[1]
+        vals[-1] = vals[-2]
+        return np.median(vals)
+
+    ga_series = (
+        winners.groupby("meeting_id")["dev_per_furlong"]
+        .apply(_winsorized_median)
     )
     ga_count = (
         winners.groupby("meeting_id")["dev_per_furlong"].count()
+    )
+
+    # ── GA standard error per meeting (for uncertainty propagation) ──
+    def _winsorized_se(group):
+        vals = group.sort_values().values.copy()
+        n = len(vals)
+        if n <= 1:
+            return np.nan
+        if n > 2:
+            vals[0] = vals[1]
+            vals[-1] = vals[-2]
+        return np.std(vals, ddof=1) / np.sqrt(n)
+
+    ga_se_series = (
+        winners.groupby("meeting_id")["dev_per_furlong"]
+        .apply(_winsorized_se)
     )
 
     # Keep only meetings with enough races
@@ -854,13 +983,64 @@ def compute_going_allowances(df, std_times):
     if n_temporal > 0:
         print(f"    Meetings recovered via temporal neighbors: +{n_temporal:,}")
     print(f"    Total meetings with GA: {len(ga_dict):,}")
+    ga_se_dict = ga_se_series[ga_se_series.index.isin(valid_ids)].to_dict()
+    ga_n = ga_count[ga_count.index.isin(valid_ids)].to_dict()
+
+    # ── Bayesian shrinkage toward going-description prior ──
+    # Blend raw GA with going-description estimate proportional to
+    # inverse card size.  Irish meetings use weaker shrinkage (k/2)
+    # because Irish going descriptions are unreliable.
+    # Extract the going description for each meeting
+    meeting_going = (
+        df.groupby("meeting_id")["going"].first().to_dict()
+    )
+    meeting_course = (
+        df.groupby("meeting_id")["courseName"].first().to_dict()
+    )
+
+    shrunk_dict = {}
+    for mid, raw_ga in ga_dict.items():
+        n = ga_n.get(mid, MIN_RACES_GOING_ALLOWANCE)
+        going_desc = meeting_going.get(
+            mid.replace("_early", "").replace("_late", ""), "Good"
+        )
+        prior_ga = GOING_GA_PRIOR.get(going_desc, 0.0)
+
+        # Irish courses get weaker shrinkage (less trust in official going)
+        course = meeting_course.get(
+            mid.replace("_early", "").replace("_late", ""), ""
+        )
+        k = GA_SHRINKAGE_K / 2.0 if course in IRE_COURSES else GA_SHRINKAGE_K
+
+        shrunk_ga = (n * raw_ga + k * prior_ga) / (n + k)
+        shrunk_dict[mid] = shrunk_ga
+
+    ga_dict = shrunk_dict
+
+    # ── Non-linear correction for extreme going ──
+    # On extreme going (|GA| > threshold), the linear s/f model
+    # underestimates the true effect.  Apply a quadratic boost.
+    corrected_dict = {}
+    for mid, ga in ga_dict.items():
+        abs_ga = abs(ga)
+        if abs_ga > GA_NONLINEAR_THRESHOLD:
+            sign = 1.0 if ga > 0 else -1.0
+            excess = abs_ga - GA_NONLINEAR_THRESHOLD
+            correction = GA_NONLINEAR_BETA * excess ** 2
+            corrected_dict[mid] = ga + sign * correction
+        else:
+            corrected_dict[mid] = ga
+
+    ga_dict = corrected_dict
+
+    print(f"    Meetings with going allowance: {len(ga_dict):,}")
     print(
         f"    GA range: {min(ga_dict.values()):.3f} to "
         f"{max(ga_dict.values()):.3f} s/f"
     )
     print(f"    GA mean:  {np.mean(list(ga_dict.values())):.3f} s/f")
 
-    return ga_dict
+    return ga_dict, ga_se_dict
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -2012,17 +2192,31 @@ def run_pipeline():
 
     # 2 — Going allowance (initial)
     print("\nSTAGE 2: Going allowances (initial)")
-    going_allowances = compute_going_allowances(df, std_times)
+    going_allowances, ga_se = compute_going_allowances(df, std_times)
 
     # Iterative refinement: use going-corrected times to recompute
     # standard times (using ALL goings now), then recompute GA.
-    N_ITER = 3
-    for iteration in range(N_ITER):
-        print(f"\n  ── Iterative refinement {iteration + 1}/{N_ITER} ──")
+    # Stops early if GA values converge (mean |change| < tolerance).
+    MAX_ITER = 5
+    for iteration in range(MAX_ITER):
+        print(f"\n  ── Iterative refinement {iteration + 1}/{MAX_ITER} ──")
+        prev_ga = going_allowances.copy()
         std_times, std_df = compute_standard_times_iterative(
             df, going_allowances
         )
-        going_allowances = compute_going_allowances(df, std_times)
+        going_allowances, ga_se = compute_going_allowances(df, std_times)
+
+        # Convergence check
+        common_keys = set(prev_ga.keys()) & set(going_allowances.keys())
+        if common_keys:
+            changes = [
+                abs(going_allowances[k] - prev_ga[k]) for k in common_keys
+            ]
+            mean_change = np.mean(changes)
+            print(f"    Mean |GA change|: {mean_change:.5f} s/f")
+            if mean_change < GA_CONVERGENCE_TOL:
+                print(f"    Converged after {iteration + 1} iterations")
+                break
 
     # 3 — Course-specific lbs per length
     print("\nSTAGE 3: Lbs per length (per track / distance)")
@@ -2052,10 +2246,13 @@ def run_pipeline():
     print("\nSTAGE 8: Sex allowance")
     all_figs = apply_sex_allowance(all_figs)
 
-    # Attach GA value for continuous going correction in calibration
+    # Attach GA value and uncertainty for continuous going correction
     all_figs["ga_value"] = all_figs["meeting_id"].map(
         going_allowances
     ).fillna(0)
+    all_figs["ga_se"] = all_figs["meeting_id"].map(ga_se).fillna(
+        all_figs["ga_value"].std() * 0.5  # conservative fallback SE
+    )
 
     # Figure confidence based on going allowance magnitude
     abs_ga = all_figs["ga_value"].abs()
@@ -2148,7 +2345,8 @@ def run_pipeline():
         "timefigure", "performanceRating",
         "source_year",
         # Additional columns for CustomMetricsEngine integration
-        "stallion", "dam", "dam_stallion", "headgear",
+        "sireName", "damName", "damSireName",
+        "equipmentDescription", "performanceCommentPremium",
         "distanceFurlongs", "distanceYards",
     ]
     out_cols = [c for c in out_cols if c in all_figs.columns]
