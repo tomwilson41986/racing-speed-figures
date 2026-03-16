@@ -72,6 +72,7 @@ BL_ATTENUATION_FACTOR = 0.5       # Beyond threshold, each extra length
 MIN_RACES_STANDARD_TIME = 20   # Minimum winners for a reliable standard time
                                 # (empirical: 15-20 bracket has MAE 12.2 vs 8.8 for 100+)
 MIN_RACES_GOING_ALLOWANCE = 3  # Minimum races on a card for going allowance
+INTERPOLATED_GA_WEIGHT = 0.7   # Discount weight for interpolated standard times in GA
 
 # Class adjustments in seconds per mile (8 furlongs).
 # These are subtracted from raw finishing times to normalise to a common
@@ -670,6 +671,91 @@ def compute_course_lpl(std_df):
 # STAGE 3 — GOING ALLOWANCE  (per track, per day)
 # ═════════════════════════════════════════════════════════════════════
 
+def _build_interpolated_std_times(std_times):
+    """Interpolate standard times for missing distances at each course/surface.
+
+    For GA inference only — NOT used for final figure computation.
+    Uses linear interpolation between adjacent known distances at the
+    same course/surface.  Only interpolates WITHIN the range of known
+    distances (no extrapolation).
+
+    Returns: dict of std_key → interpolated_time (excludes keys already
+    in std_times).
+    """
+    # Parse std_times keys: "CourseName_Distance_Surface"
+    from collections import defaultdict
+    course_surface_dists = defaultdict(dict)
+    for key, time_val in std_times.items():
+        parts = key.rsplit("_", 2)
+        if len(parts) != 3:
+            continue
+        course, dist_str, surface = parts
+        try:
+            dist = float(dist_str)
+        except ValueError:
+            continue
+        course_surface_dists[(course, surface)][dist] = time_val
+
+    interpolated = {}
+    for (course, surface), dist_time in course_surface_dists.items():
+        if len(dist_time) < 2:
+            continue
+        dists = sorted(dist_time.keys())
+        times = [dist_time[d] for d in dists]
+
+        # Generate 0.5f increments within [min, max] known distances
+        d = dists[0]
+        while d <= dists[-1]:
+            key = f"{course}_{d}_{surface}"
+            if key not in std_times:
+                # Linear interpolation between surrounding known distances
+                # Find bracketing known distances
+                lo_idx = 0
+                for i, kd in enumerate(dists):
+                    if kd <= d:
+                        lo_idx = i
+                    else:
+                        break
+                hi_idx = min(lo_idx + 1, len(dists) - 1)
+                if lo_idx != hi_idx:
+                    lo_d, hi_d = dists[lo_idx], dists[hi_idx]
+                    lo_t, hi_t = times[lo_idx], times[hi_idx]
+                    frac = (d - lo_d) / (hi_d - lo_d)
+                    interpolated[key] = lo_t + frac * (hi_t - lo_t)
+            d = round(d + 0.5, 1)
+
+    return interpolated
+
+
+def _temporal_neighbor_ga(undersized_meetings, ga_dict):
+    """For meetings without GA, borrow from same course/surface ±1 day.
+
+    Returns: dict of meeting_id → inferred GA for recovered meetings.
+    """
+    recovered = {}
+    for meeting_id in undersized_meetings:
+        parts = meeting_id.split("_", 2)
+        if len(parts) != 3:
+            continue
+        date_str, course, surface = parts
+        try:
+            date_dt = pd.to_datetime(date_str)
+        except Exception:
+            continue
+
+        neighbor_gas = []
+        for delta in [-1, +1]:
+            neighbor_date = (date_dt + pd.Timedelta(days=delta)).strftime("%Y-%m-%d")
+            neighbor_id = f"{neighbor_date}_{course}_{surface}"
+            if neighbor_id in ga_dict:
+                neighbor_gas.append(ga_dict[neighbor_id])
+
+        if neighbor_gas:
+            recovered[meeting_id] = np.mean(neighbor_gas)
+
+    return recovered
+
+
 def compute_going_allowances(df, std_times):
     """
     Going allowance per meeting in seconds-per-furlong (s/f).
@@ -696,9 +782,21 @@ def compute_going_allowances(df, std_times):
     """
     print("\n  Computing going allowances (per track / day)...")
 
+    # Layer 1: Interpolated standard times for GA inference
+    # This lets winners at unusual distances contribute to the meeting GA
+    interp_std = _build_interpolated_std_times(std_times)
+    all_std_for_ga = {**interp_std, **std_times}  # exact takes precedence
+
     winners = df[df["positionOfficial"] == 1].copy()
-    winners = winners[winners["std_key"].isin(std_times)].copy()
-    winners["standard_time"] = winners["std_key"].map(std_times)
+    winners = winners[winners["std_key"].isin(all_std_for_ga)].copy()
+    winners["standard_time"] = winners["std_key"].map(all_std_for_ga)
+    winners["ga_weight"] = np.where(
+        winners["std_key"].isin(std_times), 1.0, INTERPOLATED_GA_WEIGHT
+    )
+
+    n_exact = winners["std_key"].isin(std_times).sum()
+    n_interp = len(winners) - n_exact
+    print(f"    Winners for GA: {n_exact:,} exact + {n_interp:,} interpolated")
 
     # Class-adjust actual time before comparing to class-adjusted standard
     winners["class_adj"] = winners.apply(
@@ -718,21 +816,23 @@ def compute_going_allowances(df, std_times):
         winners["dev_per_furlong"].between(q_lo, q_hi)
     ]
 
-    # Winsorized mean within each meeting (more robust than trimmed mean:
-    # replaces extremes rather than discarding them, retaining more data).
-    def _trimmed_mean(group):
-        vals = group.sort_values().values.copy()
-        n = len(vals)
+    # Weighted winsorized mean within each meeting.
+    # Interpolated deviations get lower weight (INTERPOLATED_GA_WEIGHT).
+    def _weighted_winsorized_mean(group):
+        sorted_g = group.sort_values("dev_per_furlong")
+        devs = sorted_g["dev_per_furlong"].values.copy()
+        weights = sorted_g["ga_weight"].values.copy()
+        n = len(devs)
         if n <= 2:
-            return np.mean(vals)
+            return np.average(devs, weights=weights)
         # Winsorize: clamp extremes to adjacent values
-        vals[0] = vals[1]
-        vals[-1] = vals[-2]
-        return np.mean(vals)
+        devs[0] = devs[1]
+        devs[-1] = devs[-2]
+        return np.average(devs, weights=weights)
 
     ga_series = (
-        winners.groupby("meeting_id")["dev_per_furlong"]
-        .apply(_trimmed_mean)
+        winners.groupby("meeting_id")[["dev_per_furlong", "ga_weight"]]
+        .apply(_weighted_winsorized_mean)
     )
     ga_count = (
         winners.groupby("meeting_id")["dev_per_furlong"].count()
@@ -741,8 +841,19 @@ def compute_going_allowances(df, std_times):
     # Keep only meetings with enough races
     valid_ids = ga_count[ga_count >= MIN_RACES_GOING_ALLOWANCE].index
     ga_dict = ga_series[ga_series.index.isin(valid_ids)].to_dict()
+    n_exact_ga = len(ga_dict)
 
-    print(f"    Meetings with going allowance: {len(ga_dict):,}")
+    # Layer 2: Temporal neighbor pooling for meetings still missing GA
+    all_meeting_ids = set(df["meeting_id"].unique())
+    undersized = all_meeting_ids - set(ga_dict.keys())
+    temporal_ga = _temporal_neighbor_ga(undersized, ga_dict)
+    n_temporal = len(temporal_ga)
+    ga_dict.update(temporal_ga)
+
+    print(f"    Meetings with going allowance: {n_exact_ga:,} (direct)")
+    if n_temporal > 0:
+        print(f"    Meetings recovered via temporal neighbors: +{n_temporal:,}")
+    print(f"    Total meetings with GA: {len(ga_dict):,}")
     print(
         f"    GA range: {min(ga_dict.values()):.3f} to "
         f"{max(ga_dict.values()):.3f} s/f"
