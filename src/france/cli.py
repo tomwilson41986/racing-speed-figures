@@ -1,9 +1,12 @@
 """
-CLI for French racing data ingestion and status.
+CLI for French racing data ingestion, speed figures, and status.
 
 Usage:
     python -m src.france.cli backfill --start 2015-01-01 --end 2026-03-09
     python -m src.france.cli ingest-today
+    python -m src.france.cli compute-figures
+    python -m src.france.cli compute-figures --date 2026-03-15
+    python -m src.france.cli figures-status
     python -m src.france.cli status
 """
 
@@ -19,6 +22,7 @@ load_dotenv()
 from sqlalchemy import func, select
 
 from .database import (
+    DailyFigureRow,
     MeetingRow,
     RaceRow,
     RunnerRow,
@@ -248,6 +252,137 @@ def status(ctx):
                 click.echo(f"  {month}  {days:>3} days  {bar}")
             if len(monthly) > 12:
                 click.echo(f"  ... ({len(monthly) - 12} earlier months omitted)")
+
+    finally:
+        session.close()
+
+
+@cli.command("compute-figures")
+@click.option("--date", "single_date", type=click.DateTime(formats=["%Y-%m-%d"]),
+              default=None, help="Compute figures for a single date only.")
+@click.option("--start", type=click.DateTime(formats=["%Y-%m-%d"]),
+              default=None, help="Start date for figure computation.")
+@click.option("--end", type=click.DateTime(formats=["%Y-%m-%d"]),
+              default=None, help="End date for figure computation.")
+@click.option("--no-persist", is_flag=True,
+              help="Compute figures but don't write to DB.")
+@click.pass_context
+def compute_figures(ctx, single_date, start, end, no_persist):
+    """Compute speed figures for French flat races.
+
+    With no date options, computes figures for ALL data in the database.
+    Use --date for a single day, or --start/--end for a range.
+    """
+    from .speed_figures import persist_figures, run_pipeline
+
+    engine = ctx.obj["engine"]
+    session = get_session(engine)
+
+    start_d = single_date.date() if single_date else (start.date() if start else None)
+    end_d = single_date.date() if single_date else (end.date() if end else None)
+
+    if single_date:
+        click.echo(f"Computing figures for {start_d} ...")
+    elif start_d or end_d:
+        click.echo(f"Computing figures: {start_d or '...'} → {end_d or '...'}")
+    else:
+        click.echo("Computing figures for ALL data ...")
+
+    try:
+        df = run_pipeline(session, start_date=start_d, end_date=end_d)
+
+        if df.empty:
+            click.echo("No data to compute figures for.")
+            return
+
+        has_fig = df["figure_final"].notna()
+        click.echo(f"\nRunners with figures: {has_fig.sum():,} / {len(df):,}")
+
+        if has_fig.any():
+            click.echo(f"Figure range: {df.loc[has_fig, 'figure_final'].min():.0f} "
+                        f"to {df.loc[has_fig, 'figure_final'].max():.0f}")
+            click.echo(f"Figure mean:  {df.loc[has_fig, 'figure_final'].mean():.1f}")
+            click.echo(f"Figure std:   {df.loc[has_fig, 'figure_final'].std():.1f}")
+
+        if not no_persist:
+            n = persist_figures(session, df)
+            click.echo(f"Persisted figures for {n:,} runners.")
+        else:
+            click.echo("(--no-persist: figures not written to DB)")
+
+    finally:
+        session.close()
+
+
+@cli.command("figures-status")
+@click.pass_context
+def figures_status(ctx):
+    """Show speed figure coverage statistics."""
+    engine = ctx.obj["engine"]
+    session = get_session(engine)
+
+    try:
+        n_runners = session.execute(
+            select(func.count(RunnerRow.id))
+        ).scalar() or 0
+        n_with_fig = session.execute(
+            select(func.count(RunnerRow.id)).where(RunnerRow.speed_figure.isnot(None))
+        ).scalar() or 0
+        n_daily = session.execute(
+            select(func.count(DailyFigureRow.id))
+        ).scalar() or 0
+
+        click.echo("=== Speed Figure Coverage ===")
+        click.echo(f"Total runners:          {n_runners:>8,}")
+        click.echo(f"Runners with figures:   {n_with_fig:>8,}")
+        if n_runners > 0:
+            pct = 100.0 * n_with_fig / n_runners
+            click.echo(f"Coverage:               {pct:>7.1f}%")
+        click.echo(f"Daily figure records:   {n_daily:>8,}")
+
+        if n_with_fig == 0:
+            click.echo("\nNo figures computed yet. Run 'compute-figures' to start.")
+            return
+
+        # Distribution summary
+        from sqlalchemy import cast, Float
+        avg_fig = session.execute(
+            select(func.avg(RunnerRow.speed_figure)).where(
+                RunnerRow.speed_figure.isnot(None)
+            )
+        ).scalar()
+        min_fig = session.execute(
+            select(func.min(RunnerRow.speed_figure)).where(
+                RunnerRow.speed_figure.isnot(None)
+            )
+        ).scalar()
+        max_fig = session.execute(
+            select(func.max(RunnerRow.speed_figure)).where(
+                RunnerRow.speed_figure.isnot(None)
+            )
+        ).scalar()
+
+        click.echo(f"\nFigure distribution:")
+        click.echo(f"  Min:  {min_fig:>8.1f}")
+        click.echo(f"  Mean: {avg_fig:>8.1f}")
+        click.echo(f"  Max:  {max_fig:>8.1f}")
+
+        # Coverage by year
+        click.echo("\nCoverage by year:")
+        yearly = session.execute(
+            select(
+                func.strftime("%Y", MeetingRow.race_date).label("year"),
+                func.count(RunnerRow.id).label("total"),
+                func.count(RunnerRow.speed_figure).label("with_fig"),
+            )
+            .join(RaceRow, RaceRow.meeting_id == MeetingRow.id)
+            .join(RunnerRow, RunnerRow.race_id == RaceRow.id)
+            .group_by("year")
+            .order_by("year")
+        ).all()
+        for year, total, with_fig in yearly:
+            pct = 100.0 * with_fig / total if total > 0 else 0
+            click.echo(f"  {year}  {with_fig:>7,} / {total:>7,}  ({pct:.0f}%)")
 
     finally:
         session.close()
