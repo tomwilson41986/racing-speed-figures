@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 
+from . import constants as C
 from .constants import (
     BASE_RATING,
     BASE_WEIGHT_LBS,
@@ -42,7 +43,6 @@ from .constants import (
     LBS_PER_SECOND_5F,
     LPL_SURFACE_MULTIPLIER,
     MIN_RACES_GOING_ALLOWANCE,
-    MIN_RACES_STANDARD_TIME,
     SECONDS_PER_LENGTH,
 )
 from .database import DailyFigureRow, RunnerRow
@@ -134,7 +134,7 @@ def compute_standard_times(df):
     all_std_keys = set(winners["std_key"].unique())
     good_keys = set(
         std_times.loc[
-            std_times["n_races"] >= MIN_RACES_STANDARD_TIME, "std_key"
+            std_times["n_races"] >= C.MIN_RACES_STANDARD_TIME, "std_key"
         ]
     )
     needs_fallback = all_std_keys - good_keys
@@ -165,9 +165,9 @@ def compute_standard_times(df):
         std_times = pd.concat([std_times, fallback], ignore_index=True)
 
     # Keep only combos with enough data
-    valid = std_times[std_times["n_races"] >= MIN_RACES_STANDARD_TIME].copy()
+    valid = std_times[std_times["n_races"] >= C.MIN_RACES_STANDARD_TIME].copy()
     log.info("    Standard-time combos (>= %d races): %s",
-             MIN_RACES_STANDARD_TIME, f"{len(valid):,}")
+             C.MIN_RACES_STANDARD_TIME, f"{len(valid):,}")
     log.info("    Dropped (insufficient data): %s",
              f"{len(std_times) - len(valid):,}")
 
@@ -214,15 +214,15 @@ def compute_standard_times_iterative(df, going_allowances):
         })
     std_agg = pd.DataFrame(std_rows)
 
-    valid = std_agg[std_agg["n_races"] >= MIN_RACES_STANDARD_TIME].copy()
+    valid = std_agg[std_agg["n_races"] >= C.MIN_RACES_STANDARD_TIME].copy()
 
-    # Shrinkage for combos with 10+ but < MIN_RACES_STANDARD_TIME races:
+    # Shrinkage for combos with 10+ but < C.MIN_RACES_STANDARD_TIME races:
     # blend their median with the overall distance median (same as UK
     # Irish shrinkage).
     SHRINKAGE_K = 10
     below_threshold = std_agg[
         (std_agg["n_races"] >= 10)
-        & (std_agg["n_races"] < MIN_RACES_STANDARD_TIME)
+        & (std_agg["n_races"] < C.MIN_RACES_STANDARD_TIME)
     ].copy()
 
     if len(below_threshold) > 0 and len(valid) > 0:
@@ -238,7 +238,7 @@ def compute_standard_times_iterative(df, going_allowances):
         log.info("    Shrinkage combos added: %s", f"{len(below_threshold):,}")
 
     log.info("    Standard-time combos (>= %d races): %s (using all goings)",
-             MIN_RACES_STANDARD_TIME, f"{len(valid):,}")
+             C.MIN_RACES_STANDARD_TIME, f"{len(valid):,}")
 
     std_dict = dict(zip(valid["std_key"], valid["median_time"]))
     return std_dict, valid

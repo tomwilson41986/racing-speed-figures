@@ -266,17 +266,25 @@ def status(ctx):
               default=None, help="End date for figure computation.")
 @click.option("--no-persist", is_flag=True,
               help="Compute figures but don't write to DB.")
+@click.option("--min-races", type=int, default=None,
+              help="Override minimum races for standard times (default 20).")
 @click.pass_context
-def compute_figures(ctx, single_date, start, end, no_persist):
+def compute_figures(ctx, single_date, start, end, no_persist, min_races):
     """Compute speed figures for French flat races.
 
     With no date options, computes figures for ALL data in the database.
     Use --date for a single day, or --start/--end for a range.
     """
     from .speed_figures import persist_figures, run_pipeline
+    from . import constants as C
 
     engine = ctx.obj["engine"]
     session = get_session(engine)
+
+    # Allow overriding minimum races threshold for limited data
+    if min_races is not None:
+        C.MIN_RACES_STANDARD_TIME = min_races
+        click.echo(f"(Using --min-races={min_races} for standard times)")
 
     start_d = single_date.date() if single_date else (start.date() if start else None)
     end_d = single_date.date() if single_date else (end.date() if end else None)

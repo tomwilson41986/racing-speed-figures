@@ -18,21 +18,25 @@ import pandas as pd
 # Order matters: more specific patterns first.  Each entry is
 # (compiled regex, numeric value in lengths).
 _BL_PATTERNS: list[tuple[re.Pattern, float]] = [
-    # Short head / nose variants
-    (re.compile(r"^(?:Courte\s+)?Tte$|^Cte?\s*Tte$|^C\.?T\.?$", re.I), 0.1),
-    (re.compile(r"^Courte\s+T[eêè]te$", re.I), 0.05),
-    (re.compile(r"^Nez$", re.I), 0.03),
-    # Neck
-    (re.compile(r"^Enc(?:olure)?$|^Enk$|^Nk$", re.I), 0.25),
+    # "Courte Tete" / "CTE TETE" / "CT" = short head (must match before plain "TETE")
+    (re.compile(r"^C(?:OURTE|TE)\.?\s+T(?:[EÊÈ]TE|TE)\.?$", re.I), 0.05),
+    (re.compile(r"^C\.?T\.?$", re.I), 0.05),
+    # "Courte Encolure" / "CTE ENC." = short neck (must match before plain "ENC")
+    (re.compile(r"^C(?:OURTE|TE)\.?\s+ENC(?:OLURE)?\.?$", re.I), 0.15),
+    # Nose
+    (re.compile(r"^NEZ$", re.I), 0.03),
+    # Neck — "ENCOLURE" / "ENC" / "ENK" / "NK"
+    (re.compile(r"^ENC(?:OLURE)?\.?$|^ENK$|^NK$", re.I), 0.25),
     # "Loin" = far (large margin)
-    (re.compile(r"^Loin$", re.I), 30.0),
-    # "Tête" / "Tte" on its own (head)
-    (re.compile(r"^T[eêè]te$|^Tte$", re.I), 0.1),
+    (re.compile(r"^LOIN$", re.I), 30.0),
+    # "Tête" / "TETE" / "TTE" = head
+    (re.compile(r"^T[EÊÈE]TE$|^TTE$", re.I), 0.1),
 ]
 
-# Numeric patterns: "3/4 L", "1 L 1/2", "2 L 3/4", "5", "1/2", etc.
+# Numeric patterns: "3/4 L", "1 L 1/2", "2 L 3/4", "5", "1/2", "1 L", etc.
+# Handles: "N L", "N L F", "F L", "N", "F" where N=integer, F=fraction
 _NUMERIC_RE = re.compile(
-    r"^(\d+)?\s*(?:L\s*)?(\d+/\d+)?(?:\s*L)?$", re.I
+    r"^(\d+)?\s*(?:L\s+)?(\d+/\d+)?\s*(?:L\.?)?$", re.I
 )
 
 _FRACTION_MAP = {

@@ -70,26 +70,43 @@ KG_TO_LBS = 2.20462
 
 # Going descriptions considered "Good/Standard" for standard-time
 # compilation (mirrors GOOD_GOING in UK pipeline).
-FRANCE_GOOD_GOING = {"Bon", "Bon Léger", "Bon Leger"}
+FRANCE_GOOD_GOING = {
+    "Bon", "Bon Léger", "Bon Leger", "Bon léger", "Léger",
+    "PSF STANDARD", "PSF RAPIDE",
+}
 
 # Going-description GA priors for Bayesian shrinkage (seeds — to be
 # refined empirically after initial backfill, same methodology as UK
 # GOING_GA_PRIOR derived from 10,625 meetings).
 FRANCE_GOING_GA_PRIOR = {
+    # Turf going descriptions (actual values from PMU data)
     "Très Sec":      -0.25,
     "Tres Sec":      -0.25,
+    "Très leger":    -0.09,
+    "Tres leger":    -0.09,
     "Sec":           -0.21,
     "Bon Léger":     -0.09,
     "Bon Leger":     -0.09,
+    "Bon léger":     -0.09,
+    "Léger":         -0.09,
     "Bon":            0.05,
     "Bon Souple":     0.25,
+    "Bon souple":     0.25,
     "Souple":         0.51,
     "Très Souple":    0.65,
     "Tres Souple":    0.65,
+    "Très souple":    0.65,
     "Collant":        0.82,
     "Lourd":          0.82,
-    # PSF (artificial surface)
+    # PSF (artificial surface) — actual descriptions from data
+    "PSF STANDARD":   0.04,
+    "PSF RAPIDE":    -0.03,
+    "PSF LENTE":      0.06,
+    "PSF":            0.04,
     "Standard":       0.04,
+    # Unknown/empty
+    "Inconnu":        0.05,
+    "":               0.05,
 }
 
 # Ordinal encoding for potential future ML use
@@ -174,12 +191,16 @@ FRANCE_PSF_HIPPODROMES = {
 _PSF_KEYWORDS = {"PSF", "FIBRE", "FIBRESAND", "POLYTRACK", "SABLE"}
 
 
-def detect_surface(hippodrome_code: str, parcours: str) -> str:
+def detect_surface(hippodrome_code: str, parcours: str, going: str = "") -> str:
     """Return 'All Weather' if the race is on PSF, else 'Turf'."""
     parc = str(parcours or "").upper()
     for kw in _PSF_KEYWORDS:
         if kw in parc:
             return "All Weather"
+    # Check going description — PMU uses "PSF STANDARD", "PSF RAPIDE", etc.
+    go = str(going or "").upper()
+    if go.startswith("PSF"):
+        return "All Weather"
     return "Turf"
 
 
