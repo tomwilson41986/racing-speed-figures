@@ -1456,6 +1456,7 @@ class LiteRatingEngine:
             "figure_calibrated", "figure_final", "raceClass",
             "distance", "horseAge", "positionOfficial",
             "weightCarried", "ga_value", "going_num", "course_freq",
+            "numberOfRunners", "draw",
         ]
 
         # Temporary feature columns
