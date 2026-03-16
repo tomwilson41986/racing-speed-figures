@@ -188,18 +188,21 @@ SURFACE_CHANGE_CUTOFFS = {
 # Negative residuals (younger horse outperforms baseline) are capped at 0.
 
 WFA_3YO_TURF = {
-    1:  {5: 10, 6: 10, 7: 8,  8: 9,  10: 8,  12: 5},
-    2:  {5: 10, 6: 10, 7: 8,  8: 9,  10: 8,  12: 5},
-    3:  {5: 10, 6: 10, 7: 8,  8: 9,  10: 8,  12: 4},
-    4:  {5: 9,  6: 9,  7: 7,  8: 8,  10: 9,  12: 4},
-    5:  {5: 7,  6: 8,  7: 5,  8: 10, 10: 9,  12: 3},
-    6:  {5: 8,  6: 5,  7: 3,  8: 7,  10: 3,  12: 6,  14: 4},
-    7:  {5: 7,  6: 3,  7: 0,  8: 3,  10: 1,  12: 4,  14: 0,  16: 0},
-    8:  {5: 6,  6: 2,  7: 0,  8: 2,  10: 1,  12: 0,  14: 3,  16: 0},
-    9:  {5: 5,  6: 5,  7: 1,  8: 5,  10: 4,  12: 2,  14: 3,  16: 2},
+    # Smoothed: enforced monotone non-increasing by distance within each
+    # month (younger horses cannot be MORE disadvantaged at shorter trips).
+    # Sparse long-distance cells (14f, 16f) filled by interpolation.
+    1:  {5: 10, 6: 10, 7: 9,  8: 9,  10: 8,  12: 6,  14: 5,  16: 4},
+    2:  {5: 10, 6: 10, 7: 9,  8: 9,  10: 8,  12: 6,  14: 5,  16: 4},
+    3:  {5: 10, 6: 10, 7: 9,  8: 9,  10: 8,  12: 5,  14: 4,  16: 3},
+    4:  {5: 9,  6: 9,  7: 8,  8: 8,  10: 9,  12: 5,  14: 4,  16: 3},
+    5:  {5: 8,  6: 8,  7: 7,  8: 10, 10: 9,  12: 5,  14: 4,  16: 3},
+    6:  {5: 8,  6: 6,  7: 5,  8: 7,  10: 5,  12: 6,  14: 4,  16: 3},
+    7:  {5: 7,  6: 3,  7: 2,  8: 3,  10: 2,  12: 4,  14: 1,  16: 0},
+    8:  {5: 6,  6: 2,  7: 1,  8: 2,  10: 1,  12: 1,  14: 1,  16: 0},
+    9:  {5: 5,  6: 5,  7: 4,  8: 5,  10: 4,  12: 3,  14: 3,  16: 2},
     10: {5: 5,  6: 4,  7: 4,  8: 4,  10: 4,  12: 4,  14: 4,  16: 4},
-    11: {5: 3,  6: 3,  7: 2,  8: 4,  10: 4,  12: 3,  14: 3,  16: 3},
-    12: {5: 3,  6: 3,  7: 2,  8: 4,  10: 4,  12: 3,  14: 3,  16: 3},
+    11: {5: 3,  6: 3,  7: 3,  8: 4,  10: 4,  12: 3,  14: 3,  16: 3},
+    12: {5: 3,  6: 3,  7: 3,  8: 4,  10: 4,  12: 3,  14: 3,  16: 3},
 }
 
 WFA_3YO_AW = {
@@ -556,24 +559,67 @@ def compute_standard_times_iterative(df, going_allowances):
     )
     winners["adj_time"] = winners["corrected_time"] - winners["class_adj"]
 
-    # Standard times from ALL goings (now that we've corrected for going)
-    std_agg = (
-        winners.groupby("std_key")
-        .agg(
-            median_time=("adj_time", "median"),
-            mean_time=("adj_time", "mean"),
-            n_races=("adj_time", "count"),
-            distance=("distance", "first"),
-            courseName=("courseName", "first"),
-            surface=("raceSurfaceName", "first"),
-        )
-        .reset_index()
-    )
+    # Recency weighting: half-life of 4 years.  More recent data counts
+    # more, which tracks surface/configuration drift over time.
+    HALF_LIFE_YEARS = 4.0
+    max_year = winners["source_year"].max()
+    winners["years_ago"] = max_year - winners["source_year"]
+    winners["recency_weight"] = 0.5 ** (winners["years_ago"] / HALF_LIFE_YEARS)
+
+    # Weighted standard times using recency weights
+    def _weighted_median(group):
+        times = group["adj_time"].values
+        weights = group["recency_weight"].values
+        sorted_idx = np.argsort(times)
+        times = times[sorted_idx]
+        weights = weights[sorted_idx]
+        cum_w = np.cumsum(weights)
+        mid = cum_w[-1] / 2.0
+        idx = np.searchsorted(cum_w, mid)
+        return times[min(idx, len(times) - 1)]
+
+    std_rows = []
+    for key, grp in winners.groupby("std_key"):
+        std_rows.append({
+            "std_key": key,
+            "median_time": _weighted_median(grp),
+            "mean_time": np.average(grp["adj_time"], weights=grp["recency_weight"]),
+            "n_races": len(grp),
+            "distance": grp["distance"].iloc[0],
+            "courseName": grp["courseName"].iloc[0],
+            "surface": grp["raceSurfaceName"].iloc[0],
+        })
+    std_agg = pd.DataFrame(std_rows)
 
     valid = std_agg[std_agg["n_races"] >= MIN_RACES_STANDARD_TIME].copy()
+
+    # Irish shrinkage: include Irish combos with 10+ races, blending
+    # their median time with the overall distance median.  Irish tracks
+    # have less data, so we shrink toward the generic to reduce noise.
+    IRISH_MIN_RACES = 10
+    SHRINKAGE_K = 10  # strength of pull toward generic
+    below_threshold = std_agg[
+        (std_agg["n_races"] >= IRISH_MIN_RACES)
+        & (std_agg["n_races"] < MIN_RACES_STANDARD_TIME)
+        & std_agg["courseName"].isin(IRE_COURSES)
+    ].copy()
+
+    if len(below_threshold) > 0:
+        # Compute generic standard time per distance (median across all courses)
+        dist_median = valid.groupby(valid["distance"].round(0))["median_time"].median()
+        for idx, row in below_threshold.iterrows():
+            d_round = round(row["distance"])
+            if d_round in dist_median.index:
+                generic_std = dist_median[d_round]
+                n = row["n_races"]
+                blended = (n * row["median_time"] + SHRINKAGE_K * generic_std) / (n + SHRINKAGE_K)
+                below_threshold.loc[idx, "median_time"] = blended
+        valid = pd.concat([valid, below_threshold], ignore_index=True)
+        print(f"    Irish shrinkage combos added: {len(below_threshold):,}")
+
     print(
         f"    Standard-time combos (≥ {MIN_RACES_STANDARD_TIME} races): "
-        f"{len(valid):,} (using all goings)"
+        f"{len(valid):,} (using all goings, incl. Irish shrinkage)"
     )
 
     std_dict = dict(zip(valid["std_key"], valid["median_time"]))
@@ -940,11 +986,18 @@ def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
 # STAGE 5 — ALL-RUNNER FIGURES  (beaten lengths)
 # ═════════════════════════════════════════════════════════════════════
 
-def compute_all_figures(df, winner_fig_dict, lpl_dict):
+def compute_all_figures(df, winner_fig_dict, lpl_dict, std_times=None,
+                        going_allowances=None):
     """
     Extend figures to every runner via cumulative beaten lengths.
 
-    horse_figure = winner_figure − (attenuated_bl × course_lpl)
+    horse_figure = winner_figure − (attenuated_bl × velocity_lpl)
+
+    Velocity-weighted LPL: adjusts the base LPL by the ratio of standard
+    time to actual race time.  Faster races produce bigger gaps per unit
+    of ability, so LPL is higher.  This naturally adjusts for going
+    (soft = slower = lower LPL) without needing explicit going-dependent
+    LPL.  Formula: velocity_lpl = lpl_base × (standard_time / winner_time)
 
     Beaten lengths use a soft cap: full precision up to
     BL_ATTENUATION_THRESHOLD, then reduced beyond that to attenuate
@@ -968,14 +1021,37 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict):
             axis=1,
         )
 
+    # Velocity-weighted LPL: adjust by standard_time / winner_time ratio
+    if std_times is not None:
+        # Get winner finishing time per race
+        winners = out[out["positionOfficial"] == 1][["race_id", "finishingTime"]].copy()
+        winners = winners.rename(columns={"finishingTime": "winner_time"})
+        winners = winners.drop_duplicates(subset="race_id")
+        out = out.merge(winners, on="race_id", how="left")
+
+        out["standard_time"] = out["std_key"].map(std_times)
+        has_both = out["standard_time"].notna() & out["winner_time"].notna() & (out["winner_time"] > 0)
+        # Clamp ratio to [0.85, 1.15] to prevent extreme adjustments
+        velocity_ratio = (out["standard_time"] / out["winner_time"]).clip(0.85, 1.15)
+        out.loc[has_both, "lpl"] = out.loc[has_both, "lpl"] * velocity_ratio[has_both]
+        n_adjusted = has_both.sum()
+        print(f"    Velocity-weighted LPL applied to {n_adjusted:,} runners")
+        out.drop(columns=["winner_time", "standard_time"], inplace=True, errors="ignore")
+
     is_winner = out["positionOfficial"] == 1
     cum_raw = out["distanceCumulative"].fillna(0).clip(lower=0)
 
-    # Soft cap: full precision up to BL_ATTENUATION_THRESHOLD,
-    # then attenuated beyond.  Lowered from 20L based on analysis
-    # showing beaten-length bias rises from ~5L onwards.
-    T = BL_ATTENUATION_THRESHOLD
+    # Going-dependent beaten-length attenuation.
+    # On soft/heavy going, fields bunch up (lower threshold).
+    # On firm going, fields spread out (higher threshold).
+    # GA > 0 means soft ground, GA < 0 means fast ground.
     F = BL_ATTENUATION_FACTOR
+    if going_allowances is not None:
+        ga = out["meeting_id"].map(going_allowances).fillna(0)
+        # Shift threshold: heavy (ga~+1.5) → T-12, good (ga~0) → T, firm (ga~-0.5) → T+4
+        T = np.clip(BL_ATTENUATION_THRESHOLD + (ga * -8), 10, 30)
+    else:
+        T = BL_ATTENUATION_THRESHOLD
     cum = np.where(cum_raw <= T, cum_raw, T + F * (cum_raw - T))
 
     out["lbs_behind"] = cum * out["lpl"]
@@ -1037,8 +1113,10 @@ def get_wfa_allowance(age, month, distance, surface=None):
     age, month, distance = int(age), int(month), float(distance)
     is_aw = surface is not None and "Weather" in str(surface)
 
-    # No age-based adjustments for horses 4+
+    # Older-horse decline (Turf only, ages 7+)
     if age >= 4:
+        if age >= 7 and not is_aw:
+            return float(OLDER_DECLINE_TURF.get(age, OLDER_DECLINE_TURF.get(12, -3)))
         return 0.0
 
     if age == 3:
@@ -1148,17 +1226,25 @@ def calibrate_figures(df):
 
     # Exclude beaten-far runners from calibration FIT — their figures
     # are noisy and drag the regression slope down.
+    # Also exclude extreme going (|GA| > 2.0) — unreliable figures.
     fit_mask = mask & (
         (df["distanceCumulative"].fillna(0) <= 20)
         | (df["positionOfficial"] == 1)
-    )
+    ) & (df["ga_value"].abs() <= 2.0)
 
     df["figure_calibrated"] = np.nan
     cal_params = {}
 
+    # Adaptive calibration window: all years up to max_year - 1
+    # (excludes current partial year to avoid data leakage)
+    max_year = int(df["source_year"].max())
+    cal_train_end = max_year - 1
+    print(f"    Calibration training window: up to {cal_train_end}")
+
     for surface in df["raceSurfaceName"].unique():
         surf_mask = df["raceSurfaceName"] == surface
-        fit = df[fit_mask & surf_mask & (df["source_year"] <= 2023)]
+        fit = df[fit_mask & surf_mask
+                 & (df["source_year"] <= cal_train_end)]
 
         if len(fit) < 100:
             print(f"    {surface}: insufficient data — using identity")
@@ -1477,10 +1563,21 @@ def enhance_with_gbr(df):
         df["courseName"].map(course_counts).fillna(0) / len(df)
     )
 
+    # Add numberOfRunners (field size proxy) and draw (stall position, AW bias)
+    if "numberOfRunners" not in df.columns:
+        df["numberOfRunners"] = 0
+    df["numberOfRunners"] = pd.to_numeric(
+        df["numberOfRunners"], errors="coerce"
+    ).fillna(0)
+    if "draw" not in df.columns:
+        df["draw"] = 0
+    df["draw"] = pd.to_numeric(df["draw"], errors="coerce").fillna(0)
+
     FEATURES = [
         "figure_calibrated", "figure_final", "raceClass",
         "distance", "horseAge", "positionOfficial",
         "weightCarried", "ga_value", "going_num", "course_freq",
+        "numberOfRunners", "draw",
     ]
 
     mask = (
@@ -1490,11 +1587,16 @@ def enhance_with_gbr(df):
         & df["figure_calibrated"].notna()
     )
 
+    # Adaptive training window: all years up to max_year - 1
+    max_year = int(df["source_year"].max())
+    gbr_train_end = max_year - 1
+    print(f"    GBR training window: up to {gbr_train_end}")
+
     gbr_models = {}
 
     for surface in df["raceSurfaceName"].unique():
         surf_mask = df["raceSurfaceName"] == surface
-        fit_mask = mask & surf_mask & (df["source_year"] <= 2023)
+        fit_mask = mask & surf_mask & (df["source_year"] <= gbr_train_end)
         fit = df[fit_mask].copy()
 
         if len(fit) < 1000:
@@ -1601,12 +1703,17 @@ def expand_scale(df):
 
     N_QUANTILES = 20  # fewer bins = more aggressive tail correction
 
+    # Adaptive training window: all years up to max_year - 1
+    max_year = int(df["source_year"].max())
+    qm_train_end = max_year - 1
+    print(f"    Quantile mapping training window: up to {qm_train_end}")
+
     mask = (
         df["timefigure"].notna()
         & (df["timefigure"] != 0)
         & df["timefigure"].between(-200, 200)
         & df["figure_calibrated"].notna()
-        & (df["source_year"] <= 2023)
+        & (df["source_year"] <= qm_train_end)
     )
 
     quantile_levels = np.linspace(0, 100, N_QUANTILES + 1)
@@ -1721,8 +1828,11 @@ def apply_oos_corrections(df):
         & df["figure_calibrated"].notna()
     )
 
-    # Use 2015-2023 for learning corrections
-    fit_mask = mask & (df["source_year"] <= 2023)
+    # Adaptive training window: all years up to max_year - 1
+    max_year = int(df["source_year"].max())
+    oos_train_end = max_year - 1
+    print(f"    OOS correction training window: up to {oos_train_end}")
+    fit_mask = mask & (df["source_year"] <= oos_train_end)
 
     ins = df[fit_mask].copy()
     ins["error"] = ins["figure_calibrated"] - ins["timefigure"]
@@ -1919,6 +2029,16 @@ def validate_figures(df):
     print(f"    {'Median':15} {valid[fc].median():10.1f} {valid['timefigure'].median():10.1f}")
     print(f"    {'Std':15} {valid[fc].std():10.1f} {valid['timefigure'].std():10.1f}")
 
+    # By figure confidence band
+    if "figure_confidence" in valid.columns:
+        print(f"\n  By figure confidence:")
+        for conf in ["high", "medium", "low"]:
+            s = valid[valid["figure_confidence"] == conf]
+            if len(s) > 50:
+                m = (s[fc] - s["timefigure"]).abs().mean()
+                c = s[fc].corr(s["timefigure"]) if len(s) > 2 else 0
+                print(f"    {conf:<10} r={c:.4f}  MAE={m:.2f}  (n={len(s):,})")
+
     return valid
 
 
@@ -1982,7 +2102,9 @@ def run_pipeline():
 
     # 5 — All-runner figures via beaten lengths
     print("\nSTAGE 5: All-runner figures (beaten lengths)")
-    all_figs = compute_all_figures(df, winner_fig_dict, lpl_dict)
+    all_figs = compute_all_figures(df, winner_fig_dict, lpl_dict,
+                                    std_times=std_times,
+                                    going_allowances=going_allowances)
 
     # 6 — Weight-carried adjustment
     print("\nSTAGE 6: Weight-carried adjustment")
@@ -2003,6 +2125,15 @@ def run_pipeline():
     all_figs["ga_se"] = all_figs["meeting_id"].map(ga_se).fillna(
         all_figs["ga_value"].std() * 0.5  # conservative fallback SE
     )
+
+    # Figure confidence based on going allowance magnitude
+    abs_ga = all_figs["ga_value"].abs()
+    all_figs["figure_confidence"] = np.where(
+        abs_ga <= 0.5, "high",
+        np.where(abs_ga <= 1.5, "medium", "low")
+    )
+    conf_counts = all_figs["figure_confidence"].value_counts()
+    print(f"\n  Figure confidence: {dict(conf_counts)}")
 
     # 9 — Calibration & validation
     print("\nSTAGE 9: Calibration")
