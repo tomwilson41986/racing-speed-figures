@@ -764,18 +764,16 @@ def apply_weight_adjustment(df):
 
 def apply_wfa_adjustment(df):
     """
-    Weight-for-age adjustment.
-    Imports ``get_wfa_allowance`` from the UK pipeline (same biological
-    curve; reused for France initially).
+    Weight-for-age adjustment using empirical WFA table derived from
+    GBR Timeform timefigure gaps (2021-2025, ~270k runners).
     """
-    from src.speed_figures import get_wfa_allowance
+    from .constants import get_france_wfa_allowance
 
-    log.info("  Applying WFA adjustment...")
+    log.info("  Applying WFA adjustment (empirical)...")
 
     df["wfa_adj"] = df.apply(
-        lambda r: get_wfa_allowance(
+        lambda r: get_france_wfa_allowance(
             r["horseAge"], r["month"], r["distance"],
-            r.get("raceSurfaceName"),
         ),
         axis=1,
     )

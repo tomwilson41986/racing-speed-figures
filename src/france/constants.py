@@ -240,8 +240,68 @@ FRANCE_SEX_MAP = {
 
 
 # ─────────────────────────────────────────────────────────────────────
-# WFA TABLES  (reused from UK — same biological curve)
+# WFA TABLES  (empirical, derived from GBR Timeform timefigures 2021-2025)
 # ─────────────────────────────────────────────────────────────────────
-# Imported at use-time from src.speed_figures to avoid circular imports
-# or duplication of large tables.  The French pipeline calls
-# ``get_wfa_allowance`` from the UK module directly.
+# Measures the actual timefigure gap between 3yo and 4-5yo runners
+# across ~270k rated GBR flat runners.  These values are significantly
+# lower than the original UK WFA table which over-estimated by ~3.5 lbs
+# on average (and up to +13 lbs at 8-10f in Apr/May).
+
+# 3yo WFA table: rows = months 1-12, columns keyed by distance in furlongs.
+# Values in lbs.  No surface split — sample sizes too thin when split.
+_EMPIRICAL_WFA_3YO = {
+    #        5f  6f  7f  8f 10f 12f
+    1:  [5,  5,  7,  5,  4,  0],
+    2:  [9,  3,  9,  5,  4,  0],
+    3:  [6,  4,  5,  5,  2,  0],
+    4:  [5,  2,  2,  1,  0,  0],
+    5:  [5,  2,  5,  0,  0,  0],
+    6:  [1,  7,  4,  3,  2,  0],
+    7:  [2,  4,  6,  2,  2,  0],
+    8:  [2,  4,  4,  3,  1,  0],
+    9:  [2,  3,  2,  3,  1,  0],
+    10: [2,  2,  3,  1,  0,  0],
+    11: [3,  3,  3,  2,  1,  1],
+    12: [4,  0,  5,  1,  3,  0],
+}
+_WFA_DIST_COLS = [5, 6, 7, 8, 10, 12]
+
+# 2yo allowance: use a flat 12 lbs (conservative; insufficient French
+# 2yo mixed-age data to derive empirically).
+_WFA_2YO_FLAT = 12
+
+
+def get_france_wfa_allowance(age, month, distance_furlongs):
+    """Return empirical WFA allowance in lbs for a French flat runner.
+
+    Parameters
+    ----------
+    age : int
+        Horse age (2, 3, 4, …)
+    month : int
+        Calendar month 1-12.
+    distance_furlongs : float
+        Race distance in furlongs.
+
+    Returns
+    -------
+    float  (always >= 0)
+    """
+    if age >= 4:
+        return 0.0
+    if age == 2:
+        return float(_WFA_2YO_FLAT)
+    # age == 3
+    row = _EMPIRICAL_WFA_3YO.get(int(month))
+    if row is None:
+        return 0.0
+    d = float(distance_furlongs)
+    # Linear interpolation between bracketing distances
+    for i in range(len(_WFA_DIST_COLS) - 1):
+        lo, hi = _WFA_DIST_COLS[i], _WFA_DIST_COLS[i + 1]
+        if d <= lo:
+            return float(row[i])
+        if d < hi:
+            frac = (d - lo) / (hi - lo)
+            return row[i] + frac * (row[i + 1] - row[i])
+    return float(row[-1])

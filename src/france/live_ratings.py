@@ -174,12 +174,11 @@ class FranceLiveRatingEngine:
         df.loc[has_w, "weight_adj"] = df.loc[has_w, "weightCarried"] - BASE_WEIGHT_LBS
         df["figure_after_weight"] = df["raw_figure"] + df["weight_adj"]
 
-        # --- WFA adjustment ---
-        from src.speed_figures import get_wfa_allowance
+        # --- WFA adjustment (empirical, derived from GBR timefigures) ---
+        from .constants import get_france_wfa_allowance
         df["wfa_adj"] = df.apply(
-            lambda r: get_wfa_allowance(
+            lambda r: get_france_wfa_allowance(
                 r["horseAge"], r["month"], r["distance"],
-                r.get("raceSurfaceName"),
             ),
             axis=1,
         )
