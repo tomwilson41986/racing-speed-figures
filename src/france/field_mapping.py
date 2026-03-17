@@ -200,6 +200,9 @@ def _map_fields(df: pd.DataFrame) -> pd.DataFrame:
     # Maiden flag (for standard-time filtering)
     out["is_maiden"] = out["race_name"].apply(is_maiden_race)
 
+    # Source year (for recency weighting — mirrors UK pipeline's source_year)
+    out["source_year"] = pd.to_datetime(out["race_date"]).dt.year
+
     return out
 
 

@@ -14,15 +14,15 @@ Pipeline stages (mirroring the UK pipeline in ``src/speed_figures.py``):
   6. Apply weight-carried adjustment
   7. Apply weight-for-age (WFA) adjustment
   8. Apply sex allowance (not applied — same finding as UK)
-
-Stages 9-10 (Timeform calibration + GBR) are NOT used — there is no
-external calibration target for France.  Figures are self-calibrated
-on the 100-point scale (100 = standard time on good ground at 9st 0lb).
+  9. Self-calibration (distribution matching by class to UK reference)
+  9b. Beaten-length band correction
+  9c. Empirical GA prior refinement
 """
 
 import logging
 import os
 import pickle
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -42,15 +42,32 @@ from .constants import (
     GA_NONLINEAR_THRESHOLD,
     GA_OUTLIER_ZSCORE,
     GA_SHRINKAGE_K,
+    INTERPOLATED_GA_WEIGHT,
     LBS_PER_SECOND_5F,
     LPL_SURFACE_MULTIPLIER,
     MIN_RACES_GOING_ALLOWANCE,
+    RECENCY_HALF_LIFE_YEARS,
     SECONDS_PER_LENGTH,
 )
 from .database import DailyFigureRow, RunnerRow
 from .field_mapping import load_france_dataframe
 
 log = logging.getLogger(__name__)
+
+
+# ── UK reference distributions for self-calibration (by class) ──
+# Mean and std of Timeform timefigures per class from UK data (2015-2025).
+# Used as the target distribution for French self-calibration.
+# Derived from the UK pipeline's calibrated output.
+UK_CLASS_DISTRIBUTION = {
+    "1": {"mean": 108.0, "std": 11.0},  # Group races
+    "2": {"mean": 99.0,  "std": 10.5},  # Listed / Premier
+    "3": {"mean": 91.0,  "std": 10.0},
+    "4": {"mean": 83.0,  "std": 10.0},
+    "5": {"mean": 75.0,  "std": 10.0},
+    "6": {"mean": 68.0,  "std": 10.0},
+    "7": {"mean": 60.0,  "std": 10.5},  # Lowest class
+}
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -83,9 +100,20 @@ def _filter_std_time_winners(winners):
     if "is_maiden" in winners.columns:
         mask &= ~winners["is_maiden"].fillna(False)
 
+    # Exclude 2yo-only races: if all runners in the race are age 2
+    if "horseAge" in winners.columns and "race_id" in winners.columns:
+        race_max_age = winners.groupby("race_id")["horseAge"].transform("max")
+        race_min_age = winners.groupby("race_id")["horseAge"].transform("min")
+        is_2yo_only = (race_max_age == 2) & (race_min_age == 2)
+        n_2yo = is_2yo_only.sum()
+        if n_2yo > 0:
+            log.info("    Excluded %s 2yo-only winners from standard-time compilation",
+                     f"{n_2yo:,}")
+        mask &= ~is_2yo_only
+
     n_excluded = (~mask).sum()
     if n_excluded > 0:
-        log.info("    Excluded %s maiden winners from standard-time compilation",
+        log.info("    Excluded %s maiden/2yo-only winners from standard-time compilation",
                  f"{n_excluded:,}")
 
     return winners[mask].copy()
@@ -96,10 +124,9 @@ def compute_standard_times(df):
     Standard times per track / distance / surface.
 
     Same algorithm as UK ``compute_standard_times()``:
-      1. Collect winning times (excluding maidens)
+      1. Collect winning times (excluding maidens + 2yo-only)
       2. Prefer races on good going; fall back to all goings
-      3. Apply class adjustment to normalise times
-      4. Take the median → standard time
+      3. Take the median → standard time
     """
     log.info("  Computing standard times (per track / distance / surface)...")
 
@@ -110,10 +137,8 @@ def compute_standard_times(df):
     log.info("    Winners total: %s", f"{len(winners):,}")
     log.info("    Winners on good going: %s", f"{len(winners_good):,}")
 
-    # No class adjustment for France — the adjustment uses a fixed class
-    # ("4") producing a constant offset that inflates figures by ~100 pts
-    # because no Timeform calibration step exists to absorb the bias.
-    # Standard times are raw median winning times.
+    # No class adjustment for France — the constant offset cancels between
+    # standard-time and figure computation (audit confirmed this is correct).
     winners_good["adj_time"] = winners_good["finishingTime"]
 
     std_times = (
@@ -172,11 +197,10 @@ def compute_standard_times_iterative(df, going_allowances):
     """
     Recompute standard times using going-corrected times from ALL goings.
 
-    Same algorithm as UK ``compute_standard_times_iterative()``:
-    after GA estimates exist, correct every winner's time for going,
-    then use ALL goings for more robust standard times.
+    Now includes recency weighting (half-life 4yr) matching the UK pipeline,
+    so more recent data is weighted more heavily.
     """
-    log.info("    Recomputing standard times (going-corrected, all goings)...")
+    log.info("    Recomputing standard times (going-corrected, all goings, recency-weighted)...")
 
     winners = df[df["positionOfficial"] == 1].copy()
     winners = _filter_std_time_winners(winners)
@@ -190,12 +214,32 @@ def compute_standard_times_iterative(df, going_allowances):
     # No class adjustment for France (see compute_standard_times comment)
     winners["adj_time"] = winners["corrected_time"]
 
+    # Recency weighting: half-life of 4 years (same as UK pipeline).
+    # More recent data counts more, tracking surface/configuration drift.
+    if "source_year" in winners.columns:
+        max_year = winners["source_year"].max()
+        winners["years_ago"] = max_year - winners["source_year"]
+        winners["recency_weight"] = 0.5 ** (winners["years_ago"] / RECENCY_HALF_LIFE_YEARS)
+    else:
+        winners["recency_weight"] = 1.0
+
+    def _weighted_median(group):
+        times = group["adj_time"].values
+        weights = group["recency_weight"].values
+        sorted_idx = np.argsort(times)
+        times = times[sorted_idx]
+        weights = weights[sorted_idx]
+        cum_w = np.cumsum(weights)
+        mid = cum_w[-1] / 2.0
+        idx = np.searchsorted(cum_w, mid)
+        return times[min(idx, len(times) - 1)]
+
     std_rows = []
     for key, grp in winners.groupby("std_key"):
         std_rows.append({
             "std_key": key,
-            "median_time": grp["adj_time"].median(),
-            "mean_time": grp["adj_time"].mean(),
+            "median_time": _weighted_median(grp),
+            "mean_time": np.average(grp["adj_time"], weights=grp["recency_weight"]),
             "n_races": len(grp),
             "distance": grp["distance"].iloc[0],
             "courseName": grp["courseName"].iloc[0],
@@ -205,9 +249,9 @@ def compute_standard_times_iterative(df, going_allowances):
 
     valid = std_agg[std_agg["n_races"] >= C.MIN_RACES_STANDARD_TIME].copy()
 
-    # Shrinkage for combos with 10+ but < C.MIN_RACES_STANDARD_TIME races:
+    # Shrinkage for combos with 10+ but < MIN_RACES_STANDARD_TIME races:
     # blend their median with the overall distance median (same as UK
-    # Irish shrinkage).
+    # Irish shrinkage, applied to all French combos).
     SHRINKAGE_K = 10
     below_threshold = std_agg[
         (std_agg["n_races"] >= 10)
@@ -226,7 +270,7 @@ def compute_standard_times_iterative(df, going_allowances):
         valid = pd.concat([valid, below_threshold], ignore_index=True)
         log.info("    Shrinkage combos added: %s", f"{len(below_threshold):,}")
 
-    log.info("    Standard-time combos (>= %d races): %s (using all goings)",
+    log.info("    Standard-time combos (>= %d races): %s (using all goings, recency-weighted)",
              C.MIN_RACES_STANDARD_TIME, f"{len(valid):,}")
 
     std_dict = dict(zip(valid["std_key"], valid["median_time"]))
@@ -286,24 +330,115 @@ def compute_course_lpl(std_df):
 # STAGE 3 — GOING ALLOWANCE  (per track, per day)
 # ═════════════════════════════════════════════════════════════════════
 
+def _build_interpolated_std_times(std_times):
+    """Interpolate standard times for missing distances at each course/surface.
+
+    For GA inference only — NOT used for final figure computation.
+    Ported from UK pipeline: uses linear interpolation between adjacent
+    known distances at the same course/surface.  Only interpolates WITHIN
+    the range of known distances (no extrapolation).
+
+    Returns: dict of std_key → interpolated_time (excludes keys already
+    in std_times).
+    """
+    course_surface_dists = defaultdict(dict)
+    for key, time_val in std_times.items():
+        parts = key.rsplit("_", 2)
+        if len(parts) != 3:
+            continue
+        course, dist_str, surface = parts
+        try:
+            dist = float(dist_str)
+        except ValueError:
+            continue
+        course_surface_dists[(course, surface)][dist] = time_val
+
+    interpolated = {}
+    for (course, surface), dist_time in course_surface_dists.items():
+        if len(dist_time) < 2:
+            continue
+        dists = sorted(dist_time.keys())
+        times = [dist_time[d] for d in dists]
+
+        # Generate 0.5f increments within [min, max] known distances
+        d = dists[0]
+        while d <= dists[-1]:
+            key = f"{course}_{d}_{surface}"
+            if key not in std_times:
+                # Find bracketing known distances
+                lo_idx = 0
+                for i, kd in enumerate(dists):
+                    if kd <= d:
+                        lo_idx = i
+                    else:
+                        break
+                hi_idx = min(lo_idx + 1, len(dists) - 1)
+                if lo_idx != hi_idx:
+                    lo_d, hi_d = dists[lo_idx], dists[hi_idx]
+                    lo_t, hi_t = times[lo_idx], times[hi_idx]
+                    frac = (d - lo_d) / (hi_d - lo_d)
+                    interpolated[key] = lo_t + frac * (hi_t - lo_t)
+            d = round(d + 0.5, 1)
+
+    return interpolated
+
+
+def _temporal_neighbor_ga(undersized_meetings, ga_dict):
+    """For meetings without GA, borrow from same course/surface ±1 day.
+
+    Ported from UK pipeline.
+    Returns: dict of meeting_id → inferred GA for recovered meetings.
+    """
+    recovered = {}
+    for meeting_id in undersized_meetings:
+        parts = meeting_id.split("_", 2)
+        if len(parts) != 3:
+            continue
+        date_str, course, surface = parts
+        try:
+            date_dt = pd.to_datetime(date_str)
+        except Exception:
+            continue
+
+        neighbor_gas = []
+        for delta in [-1, +1]:
+            neighbor_date = (date_dt + pd.Timedelta(days=delta)).strftime("%Y-%m-%d")
+            neighbor_id = f"{neighbor_date}_{course}_{surface}"
+            if neighbor_id in ga_dict:
+                neighbor_gas.append(ga_dict[neighbor_id])
+
+        if neighbor_gas:
+            recovered[meeting_id] = np.mean(neighbor_gas)
+
+    return recovered
+
+
 def compute_going_allowances(df, std_times):
     """
     Going allowance per meeting in seconds-per-furlong (s/f).
 
-    Same algorithm as UK ``compute_going_allowances()``:
-      1. Per-winner deviation from standard time
-      2. Per-meeting outlier removal (z-score)
-      3. Winsorized median within each meeting
-      4. Split-card going detection
-      5. Bayesian shrinkage toward French going-description prior
-      6. Non-linear correction for extreme going
-      7. Minimum races filter
+    Now includes (ported from UK pipeline):
+      - Interpolated standard times for GA inference (more winners contribute)
+      - Weighted winsorized mean (interpolated deviations get lower weight)
+      - Temporal neighbor pooling (meetings with too few races borrow ±1 day)
     """
     log.info("  Computing going allowances (per track / day)...")
 
+    # Layer 1: Interpolated standard times for GA inference
+    interp_std = _build_interpolated_std_times(std_times)
+    all_std_for_ga = {**interp_std, **std_times}  # exact takes precedence
+
     winners = df[df["positionOfficial"] == 1].copy()
-    winners = winners[winners["std_key"].isin(std_times)].copy()
-    winners["standard_time"] = winners["std_key"].map(std_times)
+    winners = winners[winners["std_key"].isin(all_std_for_ga)].copy()
+    winners["standard_time"] = winners["std_key"].map(all_std_for_ga)
+    winners["ga_weight"] = np.where(
+        winners["std_key"].isin(std_times), 1.0, INTERPOLATED_GA_WEIGHT
+    )
+
+    n_exact = winners["std_key"].isin(std_times).sum()
+    n_interp = len(winners) - n_exact
+    log.info("    Winners for GA: %s exact + %s interpolated",
+             f"{n_exact:,}", f"{n_interp:,}")
 
     # No class adjustment for France (consistent with standard times)
     # Per-furlong deviation from standard
@@ -356,19 +491,23 @@ def compute_going_allowances(df, std_times):
         log.info("    Split-card going detected: %d meetings split",
                  len(split_meetings))
 
-    # ── Winsorized median within each meeting ──
-    def _winsorized_median(group):
-        vals = group.sort_values().values.copy()
-        n = len(vals)
+    # ── Weighted winsorized mean within each meeting ──
+    # Interpolated deviations get lower weight (INTERPOLATED_GA_WEIGHT).
+    def _weighted_winsorized_mean(group):
+        sorted_g = group.sort_values("dev_per_furlong")
+        devs = sorted_g["dev_per_furlong"].values.copy()
+        weights = sorted_g["ga_weight"].values.copy()
+        n = len(devs)
         if n <= 2:
-            return np.median(vals)
-        vals[0] = vals[1]
-        vals[-1] = vals[-2]
-        return np.median(vals)
+            return np.average(devs, weights=weights)
+        # Winsorize: clamp extremes to adjacent values
+        devs[0] = devs[1]
+        devs[-1] = devs[-2]
+        return np.average(devs, weights=weights)
 
     ga_series = (
-        winners.groupby("meeting_id")["dev_per_furlong"]
-        .apply(_winsorized_median)
+        winners.groupby("meeting_id")[["dev_per_furlong", "ga_weight"]]
+        .apply(_weighted_winsorized_mean)
     )
     ga_count = (
         winners.groupby("meeting_id")["dev_per_furlong"].count()
@@ -393,8 +532,21 @@ def compute_going_allowances(df, std_times):
     # Keep only meetings with enough races
     valid_ids = ga_count[ga_count >= MIN_RACES_GOING_ALLOWANCE].index
     ga_dict = ga_series[ga_series.index.isin(valid_ids)].to_dict()
+    n_exact_ga = len(ga_dict)
     ga_se_dict = ga_se_series[ga_se_series.index.isin(valid_ids)].to_dict()
     ga_n = ga_count[ga_count.index.isin(valid_ids)].to_dict()
+
+    # Layer 2: Temporal neighbor pooling for meetings still missing GA
+    all_meeting_ids = set(df["meeting_id"].unique())
+    undersized = all_meeting_ids - set(ga_dict.keys())
+    temporal_ga = _temporal_neighbor_ga(undersized, ga_dict)
+    n_temporal = len(temporal_ga)
+    ga_dict.update(temporal_ga)
+
+    log.info("    Meetings with going allowance: %s (direct)", f"{n_exact_ga:,}")
+    if n_temporal > 0:
+        log.info("    Meetings recovered via temporal neighbors: +%s", f"{n_temporal:,}")
+    log.info("    Total meetings with GA: %s", f"{len(ga_dict):,}")
 
     # ── Bayesian shrinkage toward French going-description prior ──
     meeting_going = (
@@ -409,9 +561,7 @@ def compute_going_allowances(df, std_times):
         )
         prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.0)
 
-        # All French meetings use same shrinkage strength
         k = GA_SHRINKAGE_K
-
         shrunk_ga = (n * raw_ga + k * prior_ga) / (n + k)
         shrunk_dict[mid] = shrunk_ga
 
@@ -629,8 +779,339 @@ def apply_sex_allowance(df):
     """
     log.info("  Sex allowance: NOT applied (same finding as UK)")
     df["sex_adj"] = 0.0
-    df["figure_final"] = df["figure_after_wfa"]
+    df["figure_after_sex"] = df["figure_after_wfa"]
     return df
+
+
+# ═════════════════════════════════════════════════════════════════════
+# STAGE 9 — SELF-CALIBRATION (distribution matching by class)
+# ═════════════════════════════════════════════════════════════════════
+
+def calibrate_to_uk_scale(df):
+    """
+    Self-calibration: align French figure distribution to UK reference
+    distribution by class.
+
+    Since no Timeform timefigure exists for French racing, we use the
+    known UK class distributions as calibration targets.  For each class,
+    we compute the French mean and std, then apply a linear transform:
+
+        calibrated = UK_mean + (raw - FR_mean) × (UK_std / FR_std)
+
+    This ensures French Group 1 figures have the same mean/spread as UK
+    Group 1 figures, French Class 4 matches UK Class 4, etc.
+
+    Additionally applies:
+      - Beaten-length band correction (horses beaten further systematically
+        over-rated due to margin estimation noise)
+      - Per-going-group residual correction
+      - Continuous GA correction
+    """
+    log.info("  Calibrating to UK scale (distribution matching by class)...")
+
+    has_fig = df["figure_after_sex"].notna()
+    if not has_fig.any():
+        df["figure_calibrated"] = df["figure_after_sex"]
+        return df, {}
+
+    df["figure_calibrated"] = df["figure_after_sex"].copy()
+    cal_params = {}
+
+    # ── Per-class distribution matching ──
+    for cls, uk_dist in UK_CLASS_DISTRIBUTION.items():
+        cls_mask = (df["raceClass"] == cls) & has_fig
+        if cls_mask.sum() < 30:
+            continue
+
+        fr_vals = df.loc[cls_mask, "figure_after_sex"]
+        fr_mean = fr_vals.mean()
+        fr_std = fr_vals.std()
+
+        if fr_std == 0 or pd.isna(fr_std):
+            continue
+
+        uk_mean = uk_dist["mean"]
+        uk_std = uk_dist["std"]
+
+        # Linear transform: map FR distribution → UK distribution
+        scale = uk_std / fr_std
+        shift = uk_mean - fr_mean * scale
+
+        df.loc[cls_mask, "figure_calibrated"] = (
+            df.loc[cls_mask, "figure_after_sex"] * scale + shift
+        )
+
+        cal_params[cls] = {
+            "fr_mean": fr_mean, "fr_std": fr_std,
+            "uk_mean": uk_mean, "uk_std": uk_std,
+            "scale": scale, "shift": shift,
+            "n_runners": int(cls_mask.sum()),
+        }
+        log.info("    Class %s: FR(%.1f±%.1f) → UK(%.1f±%.1f)  scale=%.3f shift=%+.1f  n=%s",
+                 cls, fr_mean, fr_std, uk_mean, uk_std, scale, shift,
+                 f"{cls_mask.sum():,}")
+
+    # For classes not matched (insufficient data), apply the global transform
+    unmatched = has_fig & df["figure_calibrated"].eq(df["figure_after_sex"])
+    if unmatched.any() and cal_params:
+        # Use the weighted average transform across all matched classes
+        total_n = sum(p["n_runners"] for p in cal_params.values())
+        avg_scale = sum(p["scale"] * p["n_runners"] for p in cal_params.values()) / total_n
+        avg_shift = sum(p["shift"] * p["n_runners"] for p in cal_params.values()) / total_n
+        df.loc[unmatched, "figure_calibrated"] = (
+            df.loc[unmatched, "figure_after_sex"] * avg_scale + avg_shift
+        )
+        log.info("    Unmatched classes: applied global scale=%.3f shift=%+.1f to %s runners",
+                 avg_scale, avg_shift, f"{unmatched.sum():,}")
+
+    # ── Beaten-length band correction ──
+    # Horses beaten further are systematically over-rated because beaten-length
+    # estimates compress at larger margins.  Compute mean figure by BL band
+    # for winners vs beaten horses and apply correction.
+    bl_corrections = _compute_bl_band_corrections(df)
+    if bl_corrections:
+        cum_bl = df["distanceCumulative"].fillna(0).clip(lower=0)
+        bl_band = pd.cut(
+            cum_bl, bins=[0, 1, 3, 5, 10, 15, 20, 999],
+            labels=["0-1", "1-3", "3-5", "5-10", "10-15", "15-20", "20+"],
+            include_lowest=True,
+        ).astype(str).fillna("0-1")
+        # Winners get their own band
+        bl_band = bl_band.where(df["positionOfficial"] != 1, "winner")
+
+        bl_adj = bl_band.map(bl_corrections).fillna(0)
+        df.loc[has_fig, "figure_calibrated"] += bl_adj[has_fig]
+
+        bl_str = ", ".join(f"{k}:{v:+.1f}" for k, v in sorted(bl_corrections.items()))
+        log.info("    BL band corrections: %s", bl_str)
+
+    # ── Per-going-group residual correction ──
+    going_corrections = _compute_going_corrections(df)
+    if going_corrections:
+        going_group_map = _french_going_group_map()
+        df_going_grp = df["going"].map(going_group_map).fillna("Bon")
+        going_adj = df_going_grp.map(going_corrections).fillna(0)
+        df.loc[has_fig, "figure_calibrated"] += going_adj[has_fig]
+
+        going_str = ", ".join(f"{k}:{v:+.1f}" for k, v in sorted(going_corrections.items()))
+        log.info("    Going corrections: %s", going_str)
+
+    # ── Continuous GA correction ──
+    if "ga_value" in df.columns:
+        ga_coeff = _compute_ga_correction_coeff(df)
+        if abs(ga_coeff) > 0.01:
+            ga_adj = ga_coeff * df["ga_value"].fillna(0)
+            df.loc[has_fig, "figure_calibrated"] += ga_adj[has_fig]
+            log.info("    Continuous GA coeff: %+.2f lbs per s/f", ga_coeff)
+            cal_params["ga_coeff"] = ga_coeff
+
+    # ── Exclude runners beaten > 20 lengths (unreliable) ──
+    beaten_far = (
+        df["distanceCumulative"].notna()
+        & (df["distanceCumulative"] > 20)
+        & (df["positionOfficial"] != 1)
+    )
+    n_excluded = beaten_far.sum()
+    if n_excluded > 0:
+        df.loc[beaten_far, "figure_calibrated"] = np.nan
+        log.info("    Excluded %s runners beaten > 20 lengths", f"{n_excluded:,}")
+
+    # Non-finishers
+    no_pos = df["positionOfficial"].isna() | (df["positionOfficial"] == 0)
+    df.loc[no_pos, "figure_calibrated"] = np.nan
+
+    return df, cal_params
+
+
+def _compute_bl_band_corrections(df):
+    """Compute beaten-length band corrections using internal consistency.
+
+    Winners are the anchor (correction=0).  For each BL band, compute
+    the systematic residual (how much beaten horses' figures deviate from
+    what the winner-based race quality suggests).
+
+    Uses shrinkage (K=100) to regularise small-sample bands.
+    """
+    has_fig = df["figure_calibrated"].notna()
+    if not has_fig.any():
+        return {}
+
+    # Get winner figure per race
+    winners = df[has_fig & (df["positionOfficial"] == 1)][["race_id", "figure_calibrated"]].copy()
+    winners = winners.rename(columns={"figure_calibrated": "race_quality"})
+    winners = winners.drop_duplicates("race_id")
+
+    beaten = df[has_fig & (df["positionOfficial"] > 1)].copy()
+    if beaten.empty:
+        return {}
+
+    beaten = beaten.merge(winners, on="race_id", how="inner")
+    if beaten.empty:
+        return {}
+
+    # Expected figure = race_quality - lbs_behind (already computed)
+    # Residual = actual figure - expected
+    # But since figure_calibrated = winner_figure - lbs_behind + adjustments,
+    # we approximate the residual as figure_calibrated vs race_quality expectation
+    beaten["residual"] = beaten["figure_calibrated"] - beaten["race_quality"]
+
+    cum_bl = beaten["distanceCumulative"].fillna(0).clip(lower=0)
+    beaten["bl_band"] = pd.cut(
+        cum_bl, bins=[0, 1, 3, 5, 10, 15, 20, 999],
+        labels=["0-1", "1-3", "3-5", "5-10", "10-15", "15-20", "20+"],
+        include_lowest=True,
+    ).astype(str).fillna("0-1")
+
+    SHRINKAGE_K = 100
+    band_groups = beaten.groupby("bl_band")["residual"]
+    band_means = band_groups.mean()
+    band_counts = band_groups.count()
+
+    # Shrunk corrections: positive residual means over-rated → subtract
+    corrections = {}
+    for band in band_means.index:
+        n = band_counts[band]
+        raw = band_means[band]
+        shrunk = raw * n / (n + SHRINKAGE_K)
+        # We want to SUBTRACT the over-rating (negative correction)
+        corrections[band] = -shrunk
+
+    # Winner band gets no correction
+    corrections["winner"] = 0.0
+
+    return corrections
+
+
+def _french_going_group_map():
+    """Map French going descriptions to groups for correction."""
+    return {
+        "Très Sec": "Sec", "Tres Sec": "Sec", "Sec": "Sec",
+        "Très leger": "BonLeger", "Tres leger": "BonLeger",
+        "Bon Léger": "BonLeger", "Bon Leger": "BonLeger",
+        "Bon léger": "BonLeger", "Léger": "BonLeger",
+        "Bon": "Bon",
+        "Bon Souple": "BonSouple", "Bon souple": "BonSouple",
+        "Souple": "Souple",
+        "Très Souple": "Lourd", "Tres Souple": "Lourd",
+        "Très souple": "Lourd", "Collant": "Lourd", "Lourd": "Lourd",
+        "PSF STANDARD": "PSF", "PSF RAPIDE": "PSF",
+        "PSF LENTE": "PSF", "PSF": "PSF", "Standard": "PSF",
+        "Inconnu": "Bon", "": "Bon",
+    }
+
+
+def _compute_going_corrections(df):
+    """Compute per-going-group residual correction with shrinkage."""
+    has_fig = df["figure_calibrated"].notna()
+    if not has_fig.any():
+        return {}
+
+    going_map = _french_going_group_map()
+    going_grp = df.loc[has_fig, "going"].map(going_map).fillna("Bon")
+
+    # We don't have an external target, so use the class-adjusted mean:
+    # the residual is figure_calibrated - class_expected_mean
+    class_means = {}
+    for cls, uk_dist in UK_CLASS_DISTRIBUTION.items():
+        class_means[cls] = uk_dist["mean"]
+
+    expected = df.loc[has_fig, "raceClass"].map(class_means)
+    residual = df.loc[has_fig, "figure_calibrated"] - expected
+    residual = residual.dropna()
+
+    if residual.empty:
+        return {}
+
+    going_grp_aligned = going_grp.loc[residual.index]
+    SHRINKAGE_K = 200  # heavier shrinkage — no external target
+    grp_groups = residual.groupby(going_grp_aligned)
+    grp_means = grp_groups.mean()
+    grp_counts = grp_groups.count()
+
+    corrections = {}
+    for grp in grp_means.index:
+        n = grp_counts[grp]
+        raw = grp_means[grp]
+        # Negative correction: if going group is over-rated, subtract
+        corrections[grp] = -(raw * n / (n + SHRINKAGE_K))
+
+    return corrections
+
+
+def _compute_ga_correction_coeff(df):
+    """Compute continuous GA correction coefficient."""
+    has_fig = df["figure_calibrated"].notna() & df["ga_value"].notna()
+    if has_fig.sum() < 200:
+        return 0.0
+
+    # Residual from class expected mean
+    class_means = {}
+    for cls, uk_dist in UK_CLASS_DISTRIBUTION.items():
+        class_means[cls] = uk_dist["mean"]
+
+    expected = df.loc[has_fig, "raceClass"].map(class_means)
+    residual = df.loc[has_fig, "figure_calibrated"] - expected
+    ga_vals = df.loc[has_fig, "ga_value"]
+
+    both_valid = residual.notna() & ga_vals.notna() & (ga_vals != 0)
+    if both_valid.sum() < 200:
+        return 0.0
+
+    r = residual[both_valid].values
+    g = ga_vals[both_valid].values
+    coeff = np.sum(g * r) / (np.sum(g ** 2) + 1e-6)
+
+    return float(coeff)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# STAGE 9c — EMPIRICAL GA PRIOR REFINEMENT
+# ═════════════════════════════════════════════════════════════════════
+
+def compute_empirical_ga_priors(df, ga_dict):
+    """
+    Compute empirical going-allowance priors from actual French data.
+
+    After sufficient data has been accumulated, this replaces the seed
+    values in FRANCE_GOING_GA_PRIOR with data-driven estimates.
+
+    Returns a dict of going_description → mean_ga.
+    """
+    log.info("  Computing empirical GA priors from French data...")
+
+    meeting_going = df.groupby("meeting_id")["going"].first()
+    meeting_ga = pd.Series(ga_dict)
+
+    # Join: for each meeting that has both a going description and a GA
+    combined = pd.DataFrame({
+        "going": meeting_going,
+        "ga": meeting_ga,
+    }).dropna()
+
+    if combined.empty:
+        log.info("    No data for empirical priors — keeping seeds")
+        return dict(FRANCE_GOING_GA_PRIOR)
+
+    empirical = combined.groupby("going")["ga"].agg(["mean", "count"])
+    MIN_MEETINGS = 20  # need enough data to be reliable
+
+    updated_priors = dict(FRANCE_GOING_GA_PRIOR)
+    n_updated = 0
+    for going_desc, row in empirical.iterrows():
+        if row["count"] >= MIN_MEETINGS:
+            updated_priors[going_desc] = float(row["mean"])
+            n_updated += 1
+
+    log.info("    Updated %d going priors empirically (from %d total descriptions)",
+             n_updated, len(empirical))
+    if n_updated > 0:
+        for going_desc, row in empirical[empirical["count"] >= MIN_MEETINGS].iterrows():
+            seed = FRANCE_GOING_GA_PRIOR.get(going_desc, "N/A")
+            log.info("      %s: seed=%.3f → empirical=%.3f (n=%d)",
+                     going_desc, seed if isinstance(seed, float) else 0.0,
+                     row["mean"], int(row["count"]))
+
+    return updated_priors
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -640,7 +1121,7 @@ def apply_sex_allowance(df):
 def run_pipeline(session: Session, start_date=None, end_date=None,
                  n_iterations: int = 2, return_artifacts: bool = False):
     """
-    Execute the full French speed-figure pipeline (stages 0-8).
+    Execute the full French speed-figure pipeline (stages 0-9c).
 
     Parameters
     ----------
@@ -656,7 +1137,8 @@ def run_pipeline(session: Session, start_date=None, end_date=None,
     -------
     pd.DataFrame (if return_artifacts=False)
     dict with keys 'df', 'std_dict', 'std_df', 'lpl_dict', 'ga_dict',
-        'ga_se_dict' (if return_artifacts=True)
+        'ga_se_dict', 'cal_params', 'empirical_ga_priors'
+        (if return_artifacts=True)
     """
     log.info("=" * 70)
     log.info("FRENCH SPEED FIGURES PIPELINE")
@@ -687,7 +1169,10 @@ def run_pipeline(session: Session, start_date=None, end_date=None,
         lpl_dict = compute_course_lpl(std_df)
         ga_dict, ga_se_dict = compute_going_allowances(df, std_dict)
 
-    # Store GA value on the main DataFrame for potential later use
+    # Stage 9c: Compute empirical GA priors (for future use / artifact persistence)
+    empirical_ga_priors = compute_empirical_ga_priors(df, ga_dict)
+
+    # Store GA value on the main DataFrame for calibration stages
     df["ga_value"] = df["meeting_id"].map(ga_dict).fillna(0)
 
     # Stage 4: Winner figures
@@ -709,6 +1194,12 @@ def run_pipeline(session: Session, start_date=None, end_date=None,
 
     # Stage 8: Sex allowance (no-op)
     df = apply_sex_allowance(df)
+
+    # Stage 9: Self-calibration (distribution matching + corrections)
+    df, cal_params = calibrate_to_uk_scale(df)
+
+    # Set final figure to calibrated output
+    df["figure_final"] = df["figure_calibrated"]
 
     # Summary stats
     has_fig = df["figure_final"].notna()
@@ -732,6 +1223,8 @@ def run_pipeline(session: Session, start_date=None, end_date=None,
             "lpl_dict": lpl_dict,
             "ga_dict": ga_dict,
             "ga_se_dict": ga_se_dict,
+            "cal_params": cal_params,
+            "empirical_ga_priors": empirical_ga_priors,
         }
     return df
 
@@ -746,6 +1239,7 @@ FRANCE_OUTPUT_DIR = os.path.join(
 
 
 def save_artifacts(std_dict, std_df, lpl_dict, ga_dict, ga_se_dict,
+                   cal_params=None, empirical_ga_priors=None,
                    output_dir=None):
     """
     Save pipeline lookup tables as files for daily live ratings.
@@ -781,6 +1275,8 @@ def save_artifacts(std_dict, std_df, lpl_dict, ga_dict, ga_se_dict,
         "lpl_dict": lpl_dict,
         "ga_dict": ga_dict,
         "ga_se_dict": ga_se_dict,
+        "cal_params": cal_params or {},
+        "empirical_ga_priors": empirical_ga_priors or {},
     }
     pkl_path = os.path.join(output_dir, "france_artifacts.pkl")
     with open(pkl_path, "wb") as f:
@@ -798,7 +1294,8 @@ def load_artifacts(output_dir=None):
     """
     Load pipeline artifacts from disk.
 
-    Returns dict with keys: std_times, std_df, lpl_dict, ga_dict, ga_se_dict.
+    Returns dict with keys: std_times, std_df, lpl_dict, ga_dict, ga_se_dict,
+    cal_params, empirical_ga_priors.
     Tries pickle first (fast), falls back to CSVs.
     """
     output_dir = output_dir or FRANCE_OUTPUT_DIR
@@ -813,6 +1310,9 @@ def load_artifacts(output_dir=None):
                  len(artifacts.get("std_times", {})),
                  len(artifacts.get("lpl_dict", {})),
                  len(artifacts.get("ga_dict", {})))
+        # Ensure new keys exist for backward compatibility
+        artifacts.setdefault("cal_params", {})
+        artifacts.setdefault("empirical_ga_priors", {})
         return artifacts
 
     # Fallback: CSVs
@@ -844,6 +1344,8 @@ def load_artifacts(output_dir=None):
         "lpl_dict": lpl_dict,
         "ga_dict": ga_dict,
         "ga_se_dict": {},
+        "cal_params": {},
+        "empirical_ga_priors": {},
     }
 
 
