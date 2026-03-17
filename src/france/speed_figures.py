@@ -794,12 +794,14 @@ def calibrate_to_uk_scale(df):
 
     Since no Timeform timefigure exists for French racing, we use the
     known UK class distributions as calibration targets.  For each class,
-    we compute the French mean and std, then apply a linear transform:
+    we shift the French mean to match the UK mean, with only a gentle
+    scale adjustment (clamped to [0.90, 1.10]) to preserve within-race
+    spreads.
 
-        calibrated = UK_mean + (raw - FR_mean) × (UK_std / FR_std)
-
-    This ensures French Group 1 figures have the same mean/spread as UK
-    Group 1 figures, French Class 4 matches UK Class 4, etc.
+    The previous approach of ``scale = uk_std / fr_std`` crushed the
+    within-race figure gaps when fr_std > uk_std.  The new approach
+    prioritises the shift (mean alignment) while allowing only a modest
+    scale nudge, keeping the beaten-length-derived separations intact.
 
     Additionally applies:
       - Beaten-length band correction (horses beaten further systematically
@@ -807,7 +809,7 @@ def calibrate_to_uk_scale(df):
       - Per-going-group residual correction
       - Continuous GA correction
     """
-    log.info("  Calibrating to UK scale (distribution matching by class)...")
+    log.info("  Calibrating to UK scale (shift-primary, clamped scale)...")
 
     has_fig = df["figure_after_sex"].notna()
     if not has_fig.any():
@@ -817,7 +819,11 @@ def calibrate_to_uk_scale(df):
     df["figure_calibrated"] = df["figure_after_sex"].copy()
     cal_params = {}
 
-    # ── Per-class distribution matching ──
+    # Limits for the scale factor — prevent compression/expansion of
+    # within-race spreads while still allowing mild distribution shaping.
+    SCALE_MIN, SCALE_MAX = 0.90, 1.10
+
+    # ── Per-class calibration (shift-primary, clamped scale) ──
     for cls, uk_dist in UK_CLASS_DISTRIBUTION.items():
         cls_mask = (df["raceClass"] == cls) & has_fig
         if cls_mask.sum() < 30:
@@ -833,8 +839,12 @@ def calibrate_to_uk_scale(df):
         uk_mean = uk_dist["mean"]
         uk_std = uk_dist["std"]
 
-        # Linear transform: map FR distribution → UK distribution
-        scale = uk_std / fr_std
+        # Clamped scale: gently nudge distribution width without crushing
+        # the within-race beaten-length spreads.
+        raw_scale = uk_std / fr_std
+        scale = float(np.clip(raw_scale, SCALE_MIN, SCALE_MAX))
+
+        # Shift computed AFTER clamping so the class mean lands correctly
         shift = uk_mean - fr_mean * scale
 
         df.loc[cls_mask, "figure_calibrated"] = (
@@ -844,17 +854,16 @@ def calibrate_to_uk_scale(df):
         cal_params[cls] = {
             "fr_mean": fr_mean, "fr_std": fr_std,
             "uk_mean": uk_mean, "uk_std": uk_std,
-            "scale": scale, "shift": shift,
+            "raw_scale": raw_scale, "scale": scale, "shift": shift,
             "n_runners": int(cls_mask.sum()),
         }
-        log.info("    Class %s: FR(%.1f±%.1f) → UK(%.1f±%.1f)  scale=%.3f shift=%+.1f  n=%s",
-                 cls, fr_mean, fr_std, uk_mean, uk_std, scale, shift,
+        log.info("    Class %s: FR(%.1f±%.1f) → UK(%.1f±%.1f)  scale=%.3f(raw %.3f) shift=%+.1f  n=%s",
+                 cls, fr_mean, fr_std, uk_mean, uk_std, scale, raw_scale, shift,
                  f"{cls_mask.sum():,}")
 
     # For classes not matched (insufficient data), apply the global transform
     unmatched = has_fig & df["figure_calibrated"].eq(df["figure_after_sex"])
     if unmatched.any() and cal_params:
-        # Use the weighted average transform across all matched classes
         total_n = sum(p["n_runners"] for p in cal_params.values())
         avg_scale = sum(p["scale"] * p["n_runners"] for p in cal_params.values()) / total_n
         avg_shift = sum(p["shift"] * p["n_runners"] for p in cal_params.values()) / total_n
@@ -1114,6 +1123,22 @@ def compute_empirical_ga_priors(df, ga_dict):
     return updated_priors
 
 
+def _log_within_race_spread(df):
+    """Log within-race spread statistics for QA validation."""
+    race_stats = df.groupby("race_id")["figure_final"].agg(["max", "min", "count", "std"])
+    multi_runner = race_stats[race_stats["count"] >= 3]
+    if multi_runner.empty:
+        return
+    spreads = multi_runner["max"] - multi_runner["min"]
+    log.info("  Within-race spread (races with 3+ runners):")
+    log.info("    Median winner-to-last gap: %.1f lbs", spreads.median())
+    log.info("    Mean winner-to-last gap:   %.1f lbs", spreads.mean())
+    log.info("    Mean within-race std:      %.1f lbs", multi_runner["std"].mean())
+    log.info("    Races with <5 lbs spread:  %d / %d (%.0f%%)",
+             (spreads < 5).sum(), len(spreads),
+             100 * (spreads < 5).sum() / len(spreads) if len(spreads) > 0 else 0)
+
+
 # ═════════════════════════════════════════════════════════════════════
 # ORCHESTRATOR — FULL PIPELINE
 # ═════════════════════════════════════════════════════════════════════
@@ -1213,6 +1238,11 @@ def run_pipeline(session: Session, start_date=None, end_date=None,
                  df.loc[has_fig, "figure_final"].max())
         log.info("  Figure mean:  %.1f", df.loc[has_fig, "figure_final"].mean())
         log.info("  Figure std:   %.1f", df.loc[has_fig, "figure_final"].std())
+
+        # Within-race spread validation: report median and mean gap between
+        # winner and last-placed horse per race (QA for beaten-length spread).
+        _log_within_race_spread(df[has_fig])
+
     log.info("=" * 70)
 
     if return_artifacts:

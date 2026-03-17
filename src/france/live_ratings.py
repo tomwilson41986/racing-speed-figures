@@ -210,7 +210,8 @@ class FranceLiveRatingEngine:
                     ga_coeff * df.loc[has_wfa, "going_allowance"].fillna(0)
                 )
         else:
-            # No pre-computed params — apply live distribution matching
+            # No pre-computed params — apply live shift-primary calibration
+            # Clamp scale to [0.90, 1.10] to preserve within-race spreads
             for cls, uk_dist in UK_CLASS_DISTRIBUTION.items():
                 cls_mask = (df["raceClass"] == cls) & has_wfa
                 if cls_mask.sum() < 5:
@@ -220,7 +221,8 @@ class FranceLiveRatingEngine:
                 fr_std = fr_vals.std()
                 if fr_std == 0 or pd.isna(fr_std):
                     continue
-                scale = uk_dist["std"] / fr_std
+                raw_scale = uk_dist["std"] / fr_std
+                scale = float(np.clip(raw_scale, 0.90, 1.10))
                 shift = uk_dist["mean"] - fr_mean * scale
                 df.loc[cls_mask, "figure_calibrated"] = (
                     df.loc[cls_mask, "figure_after_wfa"] * scale + shift
