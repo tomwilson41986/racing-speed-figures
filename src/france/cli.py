@@ -294,12 +294,51 @@ def build_artifacts(ctx, s3_bucket, s3_key, output_dir, skip_download, min_races
             click.echo("Download failed.", err=True)
             sys.exit(1)
         click.echo("Download complete.")
+        # The S3 download replaced the DB file on disk, but the engine's
+        # connection pool still holds open handles to the old (empty) file
+        # created by init_db().  Re-create the engine so new sessions
+        # connect to the freshly-downloaded database.
+        engine.dispose()
+        engine = get_engine(db_url)
+        ctx.obj["engine"] = engine
 
     if min_races is not None:
         C.MIN_RACES_STANDARD_TIME = min_races
         click.echo(f"(Using --min-races={min_races})")
 
     session = get_session(engine)
+
+    # ── Diagnostic: inspect the downloaded database ──
+    from sqlalchemy import text
+    click.echo("--- DB Diagnostics ---")
+    db_path_abs = os.path.abspath(
+        str(engine.url).replace("sqlite:///", "") if "sqlite:///" in str(engine.url) else "france.db"
+    )
+    click.echo(f"Engine URL: {engine.url}")
+    click.echo(f"DB file: {db_path_abs}  size={os.path.getsize(db_path_abs)/(1024*1024):.1f} MB")
+    for tbl in ("meetings", "races", "runners"):
+        try:
+            cnt = session.execute(text(f"SELECT COUNT(*) FROM {tbl}")).scalar()
+            click.echo(f"  {tbl}: {cnt:,} rows")
+        except Exception as e:
+            click.echo(f"  {tbl}: ERROR {e}")
+    try:
+        disc_rows = session.execute(
+            text("SELECT discipline, COUNT(*) AS n FROM races GROUP BY discipline ORDER BY n DESC LIMIT 10")
+        ).fetchall()
+        click.echo(f"  Discipline values: {disc_rows}")
+    except Exception as e:
+        click.echo(f"  Discipline query error: {e}")
+    # Also check sqlite_master for table names
+    try:
+        tables = session.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        ).fetchall()
+        click.echo(f"  Tables in DB: {[t[0] for t in tables]}")
+    except Exception as e:
+        click.echo(f"  sqlite_master error: {e}")
+    click.echo("--- End Diagnostics ---")
+
     try:
         click.echo("Running full pipeline to compute artifacts...")
         result = run_pipeline(session, return_artifacts=True)
