@@ -33,7 +33,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install pandas numpy scikit-learn requests beautifulsoup4
+        run: pip install pandas numpy scikit-learn requests beautifulsoup4 openpyxl
 
       - name: Extract data archives
         run: |
@@ -122,3 +122,19 @@ jobs:
           name: ratings-${{ github.run_id }}
           path: data/live/
           retention-days: 90
+
+      - name: Commit daily ratings xlsx
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/daily_ratings/*.xlsx
+          if git diff --cached --quiet; then
+            echo "No new xlsx files to commit"
+          else
+            DATE_ARG="${{ github.event.inputs.date }}"
+            if [ -z "$DATE_ARG" ]; then
+              DATE_ARG=$(date -u +%Y-%m-%d)
+            fi
+            git commit -m "Add daily ratings for ${DATE_ARG}"
+            git push
+          fi

@@ -1937,6 +1937,26 @@ def run_once(target_date=None, send_email_flag=True):
     df.to_csv(out_path, index=False)
     log.info(f"Saved: {out_path}")
 
+    # 3b. Save xlsx archive (committed to repo)
+    xlsx_dir = ROOT_DIR / "output" / "daily_ratings"
+    xlsx_dir.mkdir(parents=True, exist_ok=True)
+    xlsx_path = xlsx_dir / f"ratings_{target_date}.xlsx"
+
+    XLSX_COLS = [
+        "raceDate", "courseName", "raceNumber", "raceName",
+        "distance", "going", "raceSurfaceName", "raceClass",
+        "positionOfficial", "horseName", "horseAge", "jockeyName",
+        "trainerName", "weightCarried", "officialRating",
+        "distanceCumulative", "finishingTime", "figure_calibrated",
+    ]
+    export_cols = [c for c in XLSX_COLS if c in df.columns]
+    export_df = df[export_cols].copy()
+    export_df = export_df.sort_values(
+        ["courseName", "raceNumber", "positionOfficial"]
+    )
+    export_df.to_excel(xlsx_path, index=False, sheet_name="Ratings")
+    log.info(f"XLSX saved: {xlsx_path}")
+
     # 4. Format and send email
     html = format_email_html(df, target_date, run_time)
 
