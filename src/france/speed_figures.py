@@ -21,6 +21,8 @@ on the 100-point scale (100 = standard time on good ground at 9st 0lb).
 """
 
 import logging
+import os
+import pickle
 
 import numpy as np
 import pandas as pd
@@ -655,7 +657,7 @@ def apply_sex_allowance(df):
 # ═════════════════════════════════════════════════════════════════════
 
 def run_pipeline(session: Session, start_date=None, end_date=None,
-                 n_iterations: int = 2) -> pd.DataFrame:
+                 n_iterations: int = 2, return_artifacts: bool = False):
     """
     Execute the full French speed-figure pipeline (stages 0-8).
 
@@ -665,10 +667,15 @@ def run_pipeline(session: Session, start_date=None, end_date=None,
     start_date, end_date : optional date bounds
     n_iterations : number of standard-time / GA iterations (default 2,
                    same as UK pipeline converges in 2-3 iterations)
+    return_artifacts : if True, return a dict with intermediate lookup
+        tables alongside the DataFrame (for artifact persistence).
+        If False, return just the DataFrame (backward compatible).
 
     Returns
     -------
-    pd.DataFrame with ``figure_final`` column for every runner.
+    pd.DataFrame (if return_artifacts=False)
+    dict with keys 'df', 'std_dict', 'std_df', 'lpl_dict', 'ga_dict',
+        'ga_se_dict' (if return_artifacts=True)
     """
     log.info("=" * 70)
     log.info("FRENCH SPEED FIGURES PIPELINE")
@@ -736,11 +743,131 @@ def run_pipeline(session: Session, start_date=None, end_date=None,
         log.info("  Figure std:   %.1f", df.loc[has_fig, "figure_final"].std())
     log.info("=" * 70)
 
+    if return_artifacts:
+        return {
+            "df": df,
+            "std_dict": std_dict,
+            "std_df": std_df,
+            "lpl_dict": lpl_dict,
+            "ga_dict": ga_dict,
+            "ga_se_dict": ga_se_dict,
+        }
     return df
 
 
 # ═════════════════════════════════════════════════════════════════════
-# PERSISTENCE
+# ARTIFACT PERSISTENCE (for daily live ratings)
+# ═════════════════════════════════════════════════════════════════════
+
+FRANCE_OUTPUT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "output", "france"
+)
+
+
+def save_artifacts(std_dict, std_df, lpl_dict, ga_dict, ga_se_dict,
+                   output_dir=None):
+    """
+    Save pipeline lookup tables as files for daily live ratings.
+
+    Produces:
+      - standard_times.csv  (std_key, median_time, course_lpl, ...)
+      - going_allowances.csv (meeting_id, going_allowance_spf)
+      - france_artifacts.pkl (all dicts for fast loading)
+    """
+    output_dir = output_dir or FRANCE_OUTPUT_DIR
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 1. Standard times CSV (with course_lpl column)
+    std_out = std_df.copy()
+    std_out["course_lpl"] = std_out["std_key"].map(lpl_dict)
+    std_path = os.path.join(output_dir, "standard_times.csv")
+    std_out.to_csv(std_path, index=False)
+    log.info("  Saved standard times: %s (%d entries)", std_path, len(std_out))
+
+    # 2. Going allowances CSV
+    ga_df = pd.DataFrame(
+        list(ga_dict.items()),
+        columns=["meeting_id", "going_allowance_spf"],
+    )
+    ga_path = os.path.join(output_dir, "going_allowances.csv")
+    ga_df.to_csv(ga_path, index=False)
+    log.info("  Saved going allowances: %s (%d meetings)", ga_path, len(ga_df))
+
+    # 3. Pickle with all dicts for fast loading
+    artifacts = {
+        "std_times": std_dict,
+        "std_df": std_df,
+        "lpl_dict": lpl_dict,
+        "ga_dict": ga_dict,
+        "ga_se_dict": ga_se_dict,
+    }
+    pkl_path = os.path.join(output_dir, "france_artifacts.pkl")
+    with open(pkl_path, "wb") as f:
+        pickle.dump(artifacts, f)
+    log.info("  Saved artifacts pickle: %s", pkl_path)
+
+    return {
+        "standard_times_path": std_path,
+        "going_allowances_path": ga_path,
+        "pickle_path": pkl_path,
+    }
+
+
+def load_artifacts(output_dir=None):
+    """
+    Load pipeline artifacts from disk.
+
+    Returns dict with keys: std_times, std_df, lpl_dict, ga_dict, ga_se_dict.
+    Tries pickle first (fast), falls back to CSVs.
+    """
+    output_dir = output_dir or FRANCE_OUTPUT_DIR
+
+    # Fast path: pickle
+    pkl_path = os.path.join(output_dir, "france_artifacts.pkl")
+    if os.path.exists(pkl_path):
+        log.info("  Loading artifacts from pickle: %s", pkl_path)
+        with open(pkl_path, "rb") as f:
+            artifacts = pickle.load(f)
+        log.info("  Loaded: %d std_times, %d lpl, %d ga",
+                 len(artifacts.get("std_times", {})),
+                 len(artifacts.get("lpl_dict", {})),
+                 len(artifacts.get("ga_dict", {})))
+        return artifacts
+
+    # Fallback: CSVs
+    log.info("  No pickle found, loading from CSVs...")
+    std_path = os.path.join(output_dir, "standard_times.csv")
+    ga_path = os.path.join(output_dir, "going_allowances.csv")
+
+    if not os.path.exists(std_path):
+        raise FileNotFoundError(
+            f"Standard times not found at {std_path}. "
+            "Run 'build-artifacts' first."
+        )
+
+    std_df = pd.read_csv(std_path)
+    std_times = dict(zip(std_df["std_key"], std_df["median_time"]))
+    lpl_dict = dict(zip(std_df["std_key"], std_df["course_lpl"])) if "course_lpl" in std_df.columns else {}
+
+    ga_dict = {}
+    if os.path.exists(ga_path):
+        ga_df = pd.read_csv(ga_path)
+        ga_dict = dict(zip(ga_df["meeting_id"], ga_df["going_allowance_spf"]))
+
+    log.info("  Loaded from CSV: %d std_times, %d lpl, %d ga",
+             len(std_times), len(lpl_dict), len(ga_dict))
+
+    return {
+        "std_times": std_times,
+        "std_df": std_df,
+        "lpl_dict": lpl_dict,
+        "ga_dict": ga_dict,
+        "ga_se_dict": {},
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════
+# PERSISTENCE (database)
 # ═════════════════════════════════════════════════════════════════════
 
 def persist_figures(session: Session, df: pd.DataFrame) -> int:

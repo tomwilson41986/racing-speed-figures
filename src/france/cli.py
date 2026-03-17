@@ -257,6 +257,85 @@ def status(ctx):
         session.close()
 
 
+@cli.command("build-artifacts")
+@click.option("--s3-bucket", default=lambda: os.environ.get("S3_BUCKET"),
+              help="S3 bucket name (default: $S3_BUCKET).")
+@click.option("--s3-key", default=lambda: os.environ.get("S3_KEY", "france.db"),
+              help="S3 object key (default: $S3_KEY or france.db).")
+@click.option("--output-dir", default=None,
+              help="Output directory for artifacts (default: output/france).")
+@click.option("--skip-download", is_flag=True,
+              help="Skip S3 download (use existing local DB).")
+@click.option("--min-races", type=int, default=None,
+              help="Override minimum races for standard times.")
+@click.pass_context
+def build_artifacts(ctx, s3_bucket, s3_key, output_dir, skip_download, min_races):
+    """Build artifact files (standard times, going allowances, LPL) from the database.
+
+    Downloads france.db from S3 (unless --skip-download), runs the full pipeline,
+    and saves lookup tables to output/france/ for use by live daily ratings.
+    """
+    from .speed_figures import run_pipeline, save_artifacts
+    from . import constants as C
+
+    engine = ctx.obj["engine"]
+
+    # Download DB from S3 if requested
+    if not skip_download:
+        if not s3_bucket:
+            click.echo("Error: --s3-bucket or S3_BUCKET env var required "
+                        "(or use --skip-download).", err=True)
+            sys.exit(1)
+        db_url = str(engine.url)
+        db_path = db_url.replace("sqlite:///", "") if "sqlite:///" in db_url else "france.db"
+        sync = S3Sync(bucket=s3_bucket, key=s3_key, db_path=db_path)
+        click.echo(f"Downloading s3://{s3_bucket}/{s3_key} ...")
+        if not sync.download():
+            click.echo("Download failed.", err=True)
+            sys.exit(1)
+        click.echo("Download complete.")
+
+    if min_races is not None:
+        C.MIN_RACES_STANDARD_TIME = min_races
+        click.echo(f"(Using --min-races={min_races})")
+
+    session = get_session(engine)
+    try:
+        click.echo("Running full pipeline to compute artifacts...")
+        result = run_pipeline(session, return_artifacts=True)
+
+        if isinstance(result, dict):
+            df = result["df"]
+        else:
+            click.echo("Error: pipeline returned no artifacts (empty data?).", err=True)
+            sys.exit(1)
+
+        if df.empty:
+            click.echo("No data — cannot build artifacts.", err=True)
+            sys.exit(1)
+
+        paths = save_artifacts(
+            std_dict=result["std_dict"],
+            std_df=result["std_df"],
+            lpl_dict=result["lpl_dict"],
+            ga_dict=result["ga_dict"],
+            ga_se_dict=result["ga_se_dict"],
+            output_dir=output_dir,
+        )
+
+        click.echo()
+        click.echo("=== Artifacts Built ===")
+        click.echo(f"  Standard times:   {len(result['std_dict']):,} combos")
+        click.echo(f"  LPL entries:      {len(result['lpl_dict']):,} combos")
+        click.echo(f"  Going allowances: {len(result['ga_dict']):,} meetings")
+        click.echo()
+        for label, path in paths.items():
+            click.echo(f"  {label}: {path}")
+
+    finally:
+        session.close()
+
+
 @cli.command("compute-figures")
 @click.option("--date", "single_date", type=click.DateTime(formats=["%Y-%m-%d"]),
               default=None, help="Compute figures for a single date only.")
@@ -391,6 +470,71 @@ def figures_status(ctx):
         for year, total, with_fig in yearly:
             pct = 100.0 * with_fig / total if total > 0 else 0
             click.echo(f"  {year}  {with_fig:>7,} / {total:>7,}  ({pct:.0f}%)")
+
+    finally:
+        session.close()
+
+
+@cli.command("rate-today")
+@click.option("--date", "target_date", type=click.DateTime(formats=["%Y-%m-%d"]),
+              default=None, help="Date to rate (default: today).")
+@click.option("--artifact-dir", default=None,
+              help="Artifact directory (default: output/france).")
+@click.option("--output-csv", default=None,
+              help="Output CSV path.")
+@click.pass_context
+def rate_today(ctx, target_date, artifact_dir, output_csv):
+    """Compute live daily ratings using pre-built artifacts.
+
+    Loads standard times, LPL, and going allowances from output/france/,
+    then rates all runners for the target date.
+    """
+    from .live_ratings import FranceLiveRatingEngine, LIVE_DIR
+
+    engine = ctx.obj["engine"]
+    session = get_session(engine)
+    d = target_date.date() if target_date else datetime.date.today()
+
+    try:
+        rating_engine = FranceLiveRatingEngine(artifact_dir=artifact_dir)
+        rating_engine.load()
+
+        df = rating_engine.rate_day(session, d)
+
+        if df.empty:
+            click.echo(f"No results for {d}.")
+            return
+
+        has_fig = df["figure_final"].notna()
+        click.echo(f"\n=== France Live Ratings: {d} ===")
+        click.echo(f"Runners rated: {has_fig.sum()} / {len(df)}")
+
+        if has_fig.any():
+            click.echo(f"Figure range: {df.loc[has_fig, 'figure_final'].min():.0f} "
+                        f"to {df.loc[has_fig, 'figure_final'].max():.0f}")
+
+            top = df[has_fig].nlargest(10, "figure_final")
+            click.echo("\nTop 10:")
+            for _, r in top.iterrows():
+                pos = int(r["positionOfficial"]) if r["positionOfficial"] else 0
+                click.echo(
+                    f"  {r.get('horseName', '?'):25s}  "
+                    f"{r.get('courseName', '?'):20s}  "
+                    f"Pos {pos}  Fig {r['figure_final']:.0f}"
+                )
+
+        # Save CSV
+        os.makedirs(LIVE_DIR, exist_ok=True)
+        csv_path = output_csv or str(LIVE_DIR / f"ratings_{d.isoformat()}.csv")
+        out_cols = [c for c in [
+            "meetingDate", "courseName", "raceNumber", "race_id",
+            "horseName", "positionOfficial", "distance", "going",
+            "raceSurfaceName", "raceClass", "horseAge", "weightCarried",
+            "finishingTime", "distanceCumulative",
+            "raw_figure", "weight_adj", "wfa_adj", "figure_final",
+        ] if c in df.columns]
+        df[out_cols].to_csv(csv_path, index=False)
+        click.echo(f"\nSaved: {csv_path}")
 
     finally:
         session.close()
