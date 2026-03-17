@@ -155,22 +155,25 @@ jobs:
           retention-days: 90
 
       - name: Send ratings email
-        if: always()
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          secure: true
-          username: ${{ secrets.SMTP_USER }}
-          password: ${{ secrets.SMTP_PASS }}
-          subject: "France Ratings - ${{ steps.summary.outputs.date }}"
-          to: racingsquared@gmail.com
-          from: Racing Speed Figures <${{ secrets.SMTP_USER }}>
-          body: |
-            France Daily Ratings for ${{ steps.summary.outputs.date }}
+        if: steps.summary.outputs.has_csv == 'true'
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+        run: |
+          DATE_ARG="${{ steps.summary.outputs.date }}"
+          python3 -c "
+          import pandas as pd, datetime, os, sys
+          sys.path.insert(0, '.')
+          from src.france.live_ratings import format_email_html, send_email
 
-            ${{ steps.summary.outputs.summary }}
+          csv_path = 'data/france_live/ratings_${DATE_ARG}.csv'
+          df = pd.read_csv(csv_path)
+          target_date = '${DATE_ARG}'
+          run_time = datetime.datetime.utcnow().strftime('%H:%M')
 
-            ---
-            Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          attachments: ${{ steps.summary.outputs.has_csv == 'true' && steps.summary.outputs.csv || '' }}
+          html = format_email_html(df, target_date, run_time)
+          ok = send_email(html, target_date, run_time)
+          if not ok:
+              print('WARNING: Email sending failed', file=sys.stderr)
+              sys.exit(1)
+          "

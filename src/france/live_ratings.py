@@ -20,7 +20,10 @@ import argparse
 import datetime
 import logging
 import os
+import smtplib
 import sys
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +49,15 @@ log = logging.getLogger(__name__)
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 LIVE_DIR = ROOT_DIR / "data" / "france_live"
+
+# ─── Email configuration ────────────────────────────────────────────
+RECIPIENTS = [
+    "racingsquared@gmail.com",
+]
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
 
 
 class FranceLiveRatingEngine:
@@ -203,6 +215,231 @@ class FranceLiveRatingEngine:
             return df
 
         return self.compute_figures(df)
+
+
+def _fig_class(fig):
+    """CSS class name for a figure value."""
+    if pd.isna(fig):
+        return ""
+    if fig >= 110:
+        return "high"
+    if fig >= 85:
+        return "good"
+    return "avg"
+
+
+def format_email_html(df, target_date, run_time):
+    """Format the France ratings as a styled HTML email."""
+    df = df.copy()
+    df["_sort_pos"] = df["positionOfficial"].where(
+        df["positionOfficial"].notna() & (df["positionOfficial"] > 0), other=9999
+    )
+    df = df.sort_values(["courseName", "raceNumber", "_sort_pos"])
+    df = df.drop(columns=["_sort_pos"])
+
+    css = """
+    <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; color: #333;
+               max-width: 800px; margin: 0 auto; padding: 10px; }
+        h1 { color: #1a3a5c; border-bottom: 3px solid #c8102e;
+             padding-bottom: 10px; }
+        h2 { color: #1a3a5c; margin-top: 30px; }
+        h3 { color: #555; margin-top: 20px;
+             border-left: 4px solid #c8102e; padding-left: 10px; }
+        table { border-collapse: collapse; width: 100%;
+                margin: 10px 0; font-size: 14px; }
+        th { background: #1a3a5c; color: white;
+             padding: 8px 12px; text-align: left; }
+        td { padding: 6px 12px; border-bottom: 1px solid #ddd; }
+        tr:nth-child(even) { background: #f8f9fa; }
+        .high { color: #c8102e; font-weight: bold; }
+        .good { color: #1a5c3a; font-weight: bold; }
+        .avg  { color: #555; }
+        .box  { background: #f0f4f8; border: 1px solid #d0d8e0;
+                border-radius: 8px; padding: 15px; margin: 15px 0; }
+        .meta { color: #666; font-size: 13px; margin-bottom: 5px; }
+        .note { color: #888; font-size: 12px; font-style: italic; }
+        .foot { color: #888; font-size: 12px; margin-top: 30px;
+                border-top: 1px solid #ddd; padding-top: 10px; }
+    </style>
+    """
+
+    html = f"""<html><head>{css}</head><body>
+    <h1>France Speed Figures &mdash; {target_date}</h1>
+    <p>Generated at {run_time} GMT</p>
+    """
+
+    # ── Top performers ──
+    rated = df[df["figure_final"].notna() & (df["figure_final"] >= 0)]
+    top = rated.nlargest(10, "figure_final")
+    if len(top) > 0:
+        html += '<div class="box"><h2>Top Performers</h2><table>'
+        html += (
+            "<tr><th>#</th><th>Horse</th><th>Course</th>"
+            "<th>Race</th><th>Pos</th><th>Figure</th></tr>"
+        )
+        for i, (_, r) in enumerate(top.iterrows(), 1):
+            fig = r["figure_final"]
+            cls = _fig_class(fig)
+            html += (
+                f'<tr><td>{i}</td><td><b>{r.get("horseName", "?")}</b></td>'
+                f'<td>{r.get("courseName", "")}</td>'
+                f'<td>R{int(r.get("raceNumber", 0))}</td>'
+                f'<td>{int(r.get("positionOfficial", 0))}</td>'
+                f'<td class="{cls}">{fig:.0f}</td></tr>'
+            )
+        html += "</table></div>"
+
+    # ── Race-by-race breakdown ──
+    html += "<h2>Full Results</h2>"
+
+    for (course, race_num), race_df in df.groupby(
+        ["courseName", "raceNumber"], sort=True
+    ):
+        first = race_df.iloc[0]
+        dist = first.get("distance", "?")
+        going = first.get("going", "?")
+        surface = first.get("raceSurfaceName", "?")
+        rc = first.get("raceClass", "?")
+        ga = first.get("going_allowance", 0)
+
+        # Format distance in furlongs
+        if pd.notna(dist):
+            dist_str = f"{dist:.1f}f"
+        else:
+            dist_str = "?"
+
+        html += f"<h3>{course} &mdash; Race {int(race_num)}</h3>"
+        html += (
+            f'<p class="meta">{dist_str} &middot; {going} &middot; '
+            f'{surface} &middot; Class {rc}</p>'
+        )
+        if pd.notna(ga):
+            html += f'<p class="note">Going allowance: {ga:+.3f} s/f</p>'
+
+        html += (
+            "<table><tr><th>Pos</th><th>Horse</th><th>Age</th>"
+            "<th>Wgt</th><th>Beaten</th><th>Time</th>"
+            "<th>Figure</th></tr>"
+        )
+
+        for _, r in race_df.iterrows():
+            pos = (
+                int(r["positionOfficial"])
+                if pd.notna(r.get("positionOfficial"))
+                and r["positionOfficial"] > 0
+                else "-"
+            )
+            horse = r.get("horseName", "?")
+            age = (
+                int(r["horseAge"])
+                if pd.notna(r.get("horseAge"))
+                else "?"
+            )
+            wgt = (
+                f'{int(r["weightCarried"])}'
+                if pd.notna(r.get("weightCarried"))
+                else "-"
+            )
+            beaten = (
+                f'{r["distanceCumulative"]:.2f}'
+                if pd.notna(r.get("distanceCumulative"))
+                and r.get("distanceCumulative", 0) > 0
+                else "-"
+            )
+            fin_time = (
+                f'{r["finishingTime"]:.2f}'
+                if pd.notna(r.get("finishingTime"))
+                else "-"
+            )
+            fig = r.get("figure_final")
+            if pd.notna(fig) and fig >= 0:
+                fig_str = f"{fig:.0f}"
+                cls = _fig_class(fig)
+            else:
+                fig_str = "-"
+                cls = ""
+
+            html += (
+                f"<tr><td>{pos}</td><td><b>{horse}</b></td>"
+                f"<td>{age}</td><td>{wgt}</td>"
+                f"<td>{beaten}</td>"
+                f"<td>{fin_time}</td>"
+                f'<td class="{cls}">{fig_str}</td></tr>'
+            )
+
+        html += "</table>"
+
+    # ── Footer ──
+    total = rated.shape[0]
+    races = df["race_id"].nunique() if "race_id" in df.columns else "?"
+    n_courses = len(rated["courseName"].unique()) if len(rated) > 0 else 0
+    html += f"""
+    <div class="foot">
+        <p>{total} runners rated across {races} races</p>
+        <p>Figures calibrated to Timeform scale using {n_courses}
+           course standard times from French racing dataset.</p>
+        <p>Racing Speed Figures &mdash; France Ratings Engine</p>
+    </div></body></html>
+    """
+    return html
+
+
+def send_email(html, target_date, run_time, recipients=None):
+    """Send the France ratings email via SMTP."""
+    if recipients is None:
+        recipients = RECIPIENTS
+
+    log.info(
+        "Email config: SMTP_USER=%s, SMTP_PASS=%s, host=%s:%s, recipients=%s",
+        "set" if SMTP_USER else "EMPTY",
+        "set" if SMTP_PASS else "EMPTY",
+        SMTP_HOST, SMTP_PORT, recipients,
+    )
+
+    if not SMTP_USER or not SMTP_PASS:
+        log.error(
+            "Email not configured. Set SMTP_USER and SMTP_PASS env vars. "
+            "For Gmail, use an App Password "
+            "(Google Account > Security > 2FA > App Passwords)."
+        )
+        return False
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = (
+        f"France Speed Figures — {target_date} ({run_time} GMT)"
+    )
+    msg["From"] = SMTP_USER
+    msg["To"] = ", ".join(recipients)
+
+    text = (
+        f"France Speed Figures for {target_date}. "
+        "View this email in HTML format for full results."
+    )
+    msg.attach(MIMEText(text, "plain"))
+    msg.attach(MIMEText(html, "html"))
+
+    try:
+        log.info("Connecting to %s:%s...", SMTP_HOST, SMTP_PORT)
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            log.info("Authenticating as %s...", SMTP_USER)
+            server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(SMTP_USER, recipients, msg.as_string())
+        log.info("Email sent successfully to %s", recipients)
+        return True
+    except smtplib.SMTPAuthenticationError as e:
+        log.error(
+            "SMTP authentication failed: %s. "
+            "Check that SMTP_USER is a valid Gmail address and "
+            "SMTP_PASS is a 16-character Gmail App Password.", e,
+        )
+        return False
+    except Exception as e:
+        log.error("Failed to send email: %s", e, exc_info=True)
+        return False
 
 
 def main():
