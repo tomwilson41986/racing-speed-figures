@@ -295,10 +295,12 @@ def build_artifacts(ctx, s3_bucket, s3_key, output_dir, skip_download, min_races
             sys.exit(1)
         click.echo("Download complete.")
         # The S3 download replaced the DB file on disk, but the engine's
-        # connection pool still holds open handles to the old (empty) file.
-        # Dispose all pooled connections so the next session opens the
-        # freshly-downloaded database.
+        # connection pool still holds open handles to the old (empty) file
+        # created by init_db().  Re-create the engine so new sessions
+        # connect to the freshly-downloaded database.
         engine.dispose()
+        engine = get_engine(db_url)
+        ctx.obj["engine"] = engine
 
     if min_races is not None:
         C.MIN_RACES_STANDARD_TIME = min_races
