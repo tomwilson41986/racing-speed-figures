@@ -507,7 +507,7 @@ def main():
             "meetingDate", "courseName", "raceNumber", "race_id",
             "horseName", "positionOfficial", "distance", "going",
             "raceSurfaceName", "raceClass", "horseAge", "weightCarried",
-            "finishingTime", "distanceCumulative",
+            "finishingTime", "distanceCumulative", "going_allowance",
             "raw_figure", "weight_adj", "wfa_adj", "figure_final",
         ] if c in df.columns]
         df[out_cols].to_csv(csv_path, index=False)
