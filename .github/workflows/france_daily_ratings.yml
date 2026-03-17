@@ -1,0 +1,139 @@
+name: France Daily Ratings
+
+on:
+  schedule:
+    # 7pm UTC daily (after French racing finishes)
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Target date (YYYY-MM-DD), leave empty for today'
+        required: false
+        default: ''
+      min_races:
+        description: 'Minimum races for standard times (default 20)'
+        required: false
+        default: ''
+
+jobs:
+  france-daily-ratings:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pandas numpy
+
+      - name: Download france.db from S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          S3_BUCKET: frenchspeedfigures
+          S3_KEY: france.db
+        run: |
+          python -m src.france.cli s3-download \
+            --s3-bucket "$S3_BUCKET" --s3-key "$S3_KEY"
+
+      - name: Ingest day results from PMU
+        run: |
+          DATE_ARG="${{ github.event.inputs.date }}"
+          if [ -n "$DATE_ARG" ]; then
+            python -m src.france.cli backfill \
+              --start "$DATE_ARG" --end "$DATE_ARG" --no-resume
+          else
+            python -m src.france.cli ingest-today
+          fi
+
+      - name: Upload updated DB to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          S3_BUCKET: frenchspeedfigures
+          S3_KEY: france.db
+        run: |
+          python -m src.france.cli s3-upload \
+            --s3-bucket "$S3_BUCKET" --s3-key "$S3_KEY"
+
+      - name: Build artifacts from full DB
+        run: |
+          MIN_RACES="${{ github.event.inputs.min_races }}"
+          CMD="python -m src.france.cli build-artifacts --skip-download"
+          if [ -n "$MIN_RACES" ]; then
+            CMD="$CMD --min-races $MIN_RACES"
+          fi
+          $CMD
+
+      - name: Compute daily ratings
+        run: |
+          DATE_ARG="${{ github.event.inputs.date }}"
+          if [ -n "$DATE_ARG" ]; then
+            python -m src.france.cli rate-today --date "$DATE_ARG"
+          else
+            python -m src.france.cli rate-today --date "$(date -u +%Y-%m-%d)"
+          fi
+
+      - name: Show results summary
+        run: |
+          DATE_ARG="${{ github.event.inputs.date }}"
+          if [ -z "$DATE_ARG" ]; then
+            DATE_ARG=$(date -u +%Y-%m-%d)
+          fi
+          CSV="data/france_live/ratings_${DATE_ARG}.csv"
+          if [ -f "$CSV" ]; then
+            echo "=== France Ratings Summary ==="
+            python3 -c "
+          import pandas as pd
+          df = pd.read_csv('${CSV}')
+          rated = df[df['figure_final'].notna()]
+          print(f'Runners rated: {len(rated)}/{len(df)}')
+          if 'raceNumber' in df.columns:
+              print(f'Races: {df[\"raceNumber\"].nunique()}')
+          if 'courseName' in df.columns:
+              print(f'Courses: {\", \".join(df[\"courseName\"].unique())}')
+          print()
+          if len(rated) > 0:
+              print('Top 10:')
+              top = rated.nlargest(10, 'figure_final')
+              for _, r in top.iterrows():
+                  pos = int(r['positionOfficial']) if pd.notna(r.get('positionOfficial')) else 0
+                  print(f'  {r.get(\"horseName\", \"?\"):25s}  {r.get(\"courseName\", \"?\"):20s}  '
+                        f'Pos {pos}  Fig {r[\"figure_final\"]:.0f}')
+          "
+          else
+            echo "No ratings CSV generated for ${DATE_ARG}"
+          fi
+
+      - name: Commit artifacts and ratings
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/france/ data/france_live/
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            DATE_ARG="${{ github.event.inputs.date }}"
+            if [ -z "$DATE_ARG" ]; then
+              DATE_ARG=$(date -u +%Y-%m-%d)
+            fi
+            git commit -m "France daily ratings for ${DATE_ARG}"
+            git push
+          fi
+
+      - name: Upload ratings artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: france-ratings-${{ github.run_id }}
+          path: |
+            data/france_live/
+            output/france/
+          retention-days: 90
