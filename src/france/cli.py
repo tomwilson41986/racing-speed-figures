@@ -548,6 +548,23 @@ def rate_today(ctx, target_date, artifact_dir, output_csv):
         df[out_cols].to_csv(csv_path, index=False)
         click.echo(f"\nSaved: {csv_path}")
 
+        # Save detailed audit CSV with all intermediate columns
+        audit_dir = LIVE_DIR.parent.parent / "output" / "france_audit"
+        os.makedirs(audit_dir, exist_ok=True)
+        audit_path = audit_dir / f"audit_{d.isoformat()}.csv"
+        audit_cols = [c for c in [
+            "meetingDate", "courseName", "raceNumber", "race_id",
+            "horseName", "positionOfficial", "distance", "going",
+            "raceSurfaceName", "raceClass", "horseAge", "weightCarried",
+            "finishingTime", "distanceCumulative",
+            "standard_time", "lpl", "going_allowance",
+            "raw_figure", "weight_adj", "figure_after_weight",
+            "wfa_adj", "figure_after_wfa",
+            "figure_calibrated", "figure_final",
+        ] if c in df.columns]
+        df[audit_cols].to_csv(str(audit_path), index=False)
+        click.echo(f"Audit CSV: {audit_path}")
+
     finally:
         session.close()
 
