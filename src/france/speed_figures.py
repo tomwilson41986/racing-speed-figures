@@ -69,6 +69,29 @@ UK_CLASS_DISTRIBUTION = {
     "7": {"mean": 60.0,  "std": 10.5},  # Lowest class
 }
 
+# ── Default calibration parameters ──
+# Derived from theoretical class speed differentials at 8f (2.77 lpl):
+#   Pre-cal class means: C1≈152, C2≈135, C3≈119, C4≈102, C5≈86, C6≈70, C7≈53
+# Scale 0.70 contracts the over-wide French distribution; shift brings
+# the mean to the UK target.  Used when batch cal_params are unavailable
+# (e.g., no france.db to rebuild artifacts).
+DEFAULT_CAL_PARAMS = {
+    "1": {"scale": 0.700, "shift":  1.7, "fr_mean": 152.0, "fr_std": 18.0,
+          "uk_mean": 108.0, "uk_std": 11.0, "n_runners": 0},
+    "2": {"scale": 0.700, "shift":  4.3, "fr_mean": 135.0, "fr_std": 16.0,
+          "uk_mean":  99.0, "uk_std": 10.5, "n_runners": 0},
+    "3": {"scale": 0.700, "shift":  8.0, "fr_mean": 119.0, "fr_std": 15.0,
+          "uk_mean":  91.0, "uk_std": 10.0, "n_runners": 0},
+    "4": {"scale": 0.700, "shift": 11.6, "fr_mean": 102.0, "fr_std": 14.0,
+          "uk_mean":  83.0, "uk_std": 10.0, "n_runners": 0},
+    "5": {"scale": 0.700, "shift": 15.2, "fr_mean":  86.0, "fr_std": 13.0,
+          "uk_mean":  75.0, "uk_std": 10.0, "n_runners": 0},
+    "6": {"scale": 0.700, "shift": 19.9, "fr_mean":  70.0, "fr_std": 12.0,
+          "uk_mean":  68.0, "uk_std": 10.0, "n_runners": 0},
+    "7": {"scale": 0.700, "shift": 23.5, "fr_mean":  53.0, "fr_std": 12.0,
+          "uk_mean":  60.0, "uk_std": 10.5, "n_runners": 0},
+}
+
 
 # ═════════════════════════════════════════════════════════════════════
 # STAGE 1 — STANDARD TIMES  (per track / distance / surface)
@@ -794,14 +817,11 @@ def calibrate_to_uk_scale(df):
 
     Since no Timeform timefigure exists for French racing, we use the
     known UK class distributions as calibration targets.  For each class,
-    we shift the French mean to match the UK mean, with only a gentle
-    scale adjustment (clamped to [0.90, 1.10]) to preserve within-race
-    spreads.
+    we scale and shift the French figures to match the UK mean and std.
 
-    The previous approach of ``scale = uk_std / fr_std`` crushed the
-    within-race figure gaps when fr_std > uk_std.  The new approach
-    prioritises the shift (mean alignment) while allowing only a modest
-    scale nudge, keeping the beaten-length-derived separations intact.
+    Scale is clamped to [0.70, 1.15] — wide enough to bring the over-wide
+    French distribution (std ≈ 12-18) close to UK targets (std ≈ 10-11)
+    without crushing within-race beaten-length gaps.
 
     Additionally applies:
       - Beaten-length band correction (horses beaten further systematically
@@ -822,9 +842,12 @@ def calibrate_to_uk_scale(df):
     # Ensure raceClass is string for comparison with string-keyed dicts
     df["raceClass"] = df["raceClass"].astype(str)
 
-    # Limits for the scale factor — prevent compression/expansion of
-    # within-race spreads while still allowing mild distribution shaping.
-    SCALE_MIN, SCALE_MAX = 0.90, 1.10
+    # Limits for the scale factor — allow meaningful distribution shaping
+    # while preventing extreme compression.  The French pre-cal std is
+    # typically 12-18 vs UK 10-11, so raw_scale ≈ 0.55-0.85.  A floor of
+    # 0.70 preserves within-race beaten-length gaps while bringing the
+    # distribution width close to UK targets.
+    SCALE_MIN, SCALE_MAX = 0.70, 1.15
 
     # ── Per-class calibration (shift-primary, clamped scale) ──
     for cls, uk_dist in UK_CLASS_DISTRIBUTION.items():

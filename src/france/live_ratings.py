@@ -39,6 +39,7 @@ from .constants import (
     SECONDS_PER_LENGTH,
 )
 from .speed_figures import (
+    DEFAULT_CAL_PARAMS,
     UK_CLASS_DISTRIBUTION,
     generic_lbs_per_length,
     load_artifacts,
@@ -218,35 +219,34 @@ class FranceLiveRatingEngine:
                 )
             log.info("  Calibration (batch params): %d runners calibrated", n_calibrated)
         else:
-            # No pre-computed params — apply live shift-primary calibration
-            # Clamp scale to [0.90, 1.10] to preserve within-race spreads
-            log.info("  No batch cal_params — using live fallback calibration")
+            # No batch cal_params — use DEFAULT scale (0.70) to contract
+            # the over-wide French distribution, but compute shift
+            # dynamically from the day's actual class means so the
+            # absolute level is correct regardless of standard time drift.
+            log.info("  No batch cal_params — using default scale + dynamic shift")
             for cls, uk_dist in UK_CLASS_DISTRIBUTION.items():
                 cls_mask = (df["raceClass"] == str(cls)) & has_wfa
-                if cls_mask.sum() < 5:
+                if cls_mask.sum() < 3:
                     continue
-                fr_vals = df.loc[cls_mask, "figure_after_wfa"]
-                fr_mean = fr_vals.mean()
-                fr_std = fr_vals.std()
-                if fr_std == 0 or pd.isna(fr_std):
-                    continue
-                raw_scale = uk_dist["std"] / fr_std
-                scale = float(np.clip(raw_scale, 0.90, 1.10))
-                shift = uk_dist["mean"] - fr_mean * scale
+                default_scale = DEFAULT_CAL_PARAMS.get(
+                    cls, {"scale": 0.70}
+                )["scale"]
+                fr_mean = df.loc[cls_mask, "figure_after_wfa"].mean()
+                shift = uk_dist["mean"] - fr_mean * default_scale
                 df.loc[cls_mask, "figure_calibrated"] = (
-                    df.loc[cls_mask, "figure_after_wfa"] * scale + shift
+                    df.loc[cls_mask, "figure_after_wfa"] * default_scale
+                    + shift
                 )
                 n_calibrated += cls_mask.sum()
-                log.info("    Live cal class %s: FR(%.1f±%.1f) → UK(%.1f±%.1f) scale=%.3f shift=%+.1f n=%d",
-                         cls, fr_mean, fr_std, uk_dist["mean"], uk_dist["std"],
-                         scale, shift, cls_mask.sum())
+                log.info("    Live cal class %s: FR_mean=%.1f scale=%.3f shift=%+.1f → UK(%.1f)  n=%d",
+                         cls, fr_mean, default_scale, shift,
+                         uk_dist["mean"], cls_mask.sum())
             log.info("  Live calibration: %d runners calibrated", n_calibrated)
 
-        # For classes not calibrated (insufficient data), apply global transform
-        # using the weighted average across all calibrated classes
+        # For classes not calibrated (< 3 runners), apply global shift
+        # derived from all calibrated runners
         unmatched = has_wfa & df["figure_calibrated"].eq(df["figure_after_wfa"])
         if unmatched.any() and n_calibrated > 0:
-            # Compute global shift from all calibrated runners
             cal_mask = has_wfa & ~df["figure_calibrated"].eq(df["figure_after_wfa"])
             if cal_mask.any():
                 global_shift = (
