@@ -110,14 +110,11 @@ def compute_standard_times(df):
     log.info("    Winners total: %s", f"{len(winners):,}")
     log.info("    Winners on good going: %s", f"{len(winners_good):,}")
 
-    # Class-adjust and compute median for good-going winners
-    winners_good["class_adj"] = winners_good.apply(
-        lambda r: compute_class_adjustment(r["raceClass"], r["distance"]),
-        axis=1,
-    )
-    winners_good["adj_time"] = (
-        winners_good["finishingTime"] - winners_good["class_adj"]
-    )
+    # No class adjustment for France — the adjustment uses a fixed class
+    # ("4") producing a constant offset that inflates figures by ~100 pts
+    # because no Timeform calibration step exists to absorb the bias.
+    # Standard times are raw median winning times.
+    winners_good["adj_time"] = winners_good["finishingTime"]
 
     std_times = (
         winners_good.groupby("std_key")
@@ -143,13 +140,7 @@ def compute_standard_times(df):
 
     if needs_fallback:
         winners_all = winners.copy()
-        winners_all["class_adj"] = winners_all.apply(
-            lambda r: compute_class_adjustment(r["raceClass"], r["distance"]),
-            axis=1,
-        )
-        winners_all["adj_time"] = (
-            winners_all["finishingTime"] - winners_all["class_adj"]
-        )
+        winners_all["adj_time"] = winners_all["finishingTime"]
         fallback = (
             winners_all[winners_all["std_key"].isin(needs_fallback)]
             .groupby("std_key")
@@ -196,12 +187,8 @@ def compute_standard_times_iterative(df, going_allowances):
         winners["finishingTime"] - (winners["ga"] * winners["distance"])
     )
 
-    # Class adjustment on corrected times
-    winners["class_adj"] = winners.apply(
-        lambda r: compute_class_adjustment(r["raceClass"], r["distance"]),
-        axis=1,
-    )
-    winners["adj_time"] = winners["corrected_time"] - winners["class_adj"]
+    # No class adjustment for France (see compute_standard_times comment)
+    winners["adj_time"] = winners["corrected_time"]
 
     std_rows = []
     for key, grp in winners.groupby("std_key"):
@@ -318,15 +305,9 @@ def compute_going_allowances(df, std_times):
     winners = winners[winners["std_key"].isin(std_times)].copy()
     winners["standard_time"] = winners["std_key"].map(std_times)
 
-    # Class-adjust actual time
-    winners["class_adj"] = winners.apply(
-        lambda r: compute_class_adjustment(r["raceClass"], r["distance"]),
-        axis=1,
-    )
-    winners["adj_time"] = winners["finishingTime"] - winners["class_adj"]
-
+    # No class adjustment for France (consistent with standard times)
     # Per-furlong deviation from standard
-    winners["deviation"] = winners["adj_time"] - winners["standard_time"]
+    winners["deviation"] = winners["finishingTime"] - winners["standard_time"]
     winners["dev_per_furlong"] = winners["deviation"] / winners["distance"]
 
     # ── Per-meeting outlier removal ──

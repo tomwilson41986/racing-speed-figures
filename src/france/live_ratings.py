@@ -39,7 +39,6 @@ from .constants import (
     SECONDS_PER_LENGTH,
 )
 from .speed_figures import (
-    compute_class_adjustment,
     generic_lbs_per_length,
     load_artifacts,
     FRANCE_OUTPUT_DIR,
