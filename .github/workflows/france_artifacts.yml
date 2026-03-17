@@ -1,0 +1,74 @@
+name: France Artifact Refresh
+
+on:
+  schedule:
+    # 6am UTC every Monday
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      min_races:
+        description: 'Minimum races for standard times (default 20)'
+        required: false
+        default: ''
+
+jobs:
+  build-artifacts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pandas numpy sqlalchemy boto3 requests python-dotenv
+
+      - name: Build France artifacts
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          S3_BUCKET: frenchspeedfigures
+          S3_KEY: france.db
+        run: |
+          MIN_RACES="${{ github.event.inputs.min_races }}"
+          CMD="python -m src.france.cli build-artifacts --s3-bucket $S3_BUCKET --s3-key $S3_KEY"
+          if [ -n "$MIN_RACES" ]; then
+            CMD="$CMD --min-races $MIN_RACES"
+          fi
+          $CMD
+
+      - name: Show artifact summary
+        run: |
+          echo "=== Artifact Files ==="
+          ls -la output/france/
+          echo ""
+          echo "=== Standard Times (head) ==="
+          head -5 output/france/standard_times.csv
+          echo ""
+          echo "=== Going Allowances (count) ==="
+          wc -l output/france/going_allowances.csv
+
+      - name: Commit and push artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/france/
+          if git diff --staged --quiet; then
+            echo "No changes to artifacts."
+          else
+            git commit -m "chore: refresh France artifacts ($(date -u +%Y-%m-%d))"
+            git push
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: france-artifacts-${{ github.run_id }}
+          path: output/france/
+          retention-days: 90

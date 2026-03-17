@@ -110,11 +110,15 @@ def load_france_dataframe(
     # ── Filter to valid data ──
     df = _filter_valid(df)
 
+    if df.empty:
+        log.warning("No valid rows after filtering.")
+        return df
+
+    # ── Build derived columns (race_id needed by BL parser) ──
+    df = _build_derived_columns(df)
+
     # ── Compute cumulative beaten lengths ──
     df = compute_cumulative_bl(df)
-
-    # ── Build derived columns ──
-    df = _build_derived_columns(df)
 
     log.info("  Final pipeline DataFrame: %s rows, %s races",
              f"{len(df):,}", f"{df['race_id'].nunique():,}")
@@ -136,11 +140,12 @@ def _map_fields(df: pd.DataFrame) -> pd.DataFrame:
     out["raceNumber"] = out["course_num"]
     out["raceType"] = "Flat"
 
-    # Surface detection
+    # Surface detection (uses going description too — PMU marks PSF in going)
     out["raceSurfaceName"] = out.apply(
         lambda r: detect_surface(
             str(r.get("hippodrome_code", "")),
             str(r.get("parcours", "")),
+            str(r.get("going", "")),
         ),
         axis=1,
     )
@@ -167,7 +172,16 @@ def _map_fields(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Runner fields ──
     out["positionOfficial"] = pd.to_numeric(out["finish_position"], errors="coerce")
-    out["finishingTime"] = pd.to_numeric(out["time_seconds"], errors="coerce")
+
+    # PMU does not provide individual runner times — only the race winner
+    # time via RaceRow.winner_time_s.  For winners (position == 1), use
+    # winner_time_s directly.  Other runners' times will be derived later
+    # from winner_time + cumulative beaten lengths × seconds_per_length.
+    out["finishingTime"] = pd.to_numeric(out["winner_time_s"], errors="coerce")
+    # Only winners get the exact race time; non-winners get NaN here
+    # (their figures come from beaten-length extension, not finishing time)
+    out.loc[out["positionOfficial"] != 1, "finishingTime"] = np.nan
+
     out["beaten_lengths_raw"] = out["beaten_lengths"]  # raw text for BL parser
     out["horseName"] = out["horse_name"]
     out["horseAge"] = pd.to_numeric(out["age"], errors="coerce")
@@ -190,10 +204,16 @@ def _map_fields(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _filter_valid(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter to rows with valid finishing times, positions, and distances."""
+    """Filter to rows with valid race data.
+
+    Requires: valid distance, valid position, and the race must have a
+    winner time (winner_time_s).  Individual runner times are not required
+    because PMU only provides the winner's time — other runners get their
+    figures via beaten-length extension.
+    """
+    winner_time = pd.to_numeric(df["winner_time_s"], errors="coerce")
     mask = (
-        df["finishingTime"].notna()
-        & (df["finishingTime"] > 0)
+        (winner_time.notna() & (winner_time > 0))
         & df["distance"].notna()
         & (df["distance"] > 0)
         & df["positionOfficial"].notna()
