@@ -1456,6 +1456,7 @@ class LiteRatingEngine:
             "figure_calibrated", "figure_final", "raceClass",
             "distance", "horseAge", "positionOfficial",
             "weightCarried", "ga_value", "going_num", "course_freq",
+            "numberOfRunners", "draw",
         ]
 
         # Temporary feature columns
@@ -1476,6 +1477,9 @@ class LiteRatingEngine:
                 if col not in sub.columns:
                     sub[col] = 0
                 sub[col] = pd.to_numeric(sub[col], errors="coerce").fillna(0)
+
+            # Cap age at 4 to match training
+            sub["horseAge"] = sub["horseAge"].clip(upper=4)
 
             preds = gbr.predict(sub.values)
             df.loc[mask, "figure_calibrated"] = preds
