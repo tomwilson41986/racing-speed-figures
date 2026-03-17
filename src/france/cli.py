@@ -294,6 +294,11 @@ def build_artifacts(ctx, s3_bucket, s3_key, output_dir, skip_download, min_races
             click.echo("Download failed.", err=True)
             sys.exit(1)
         click.echo("Download complete.")
+        # The S3 download replaced the DB file on disk, but the engine's
+        # connection pool still holds open handles to the old (empty) file.
+        # Dispose all pooled connections so the next session opens the
+        # freshly-downloaded database.
+        engine.dispose()
 
     if min_races is not None:
         C.MIN_RACES_STANDARD_TIME = min_races
