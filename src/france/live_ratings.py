@@ -184,35 +184,46 @@ class FranceLiveRatingEngine:
         )
         df["figure_after_wfa"] = df["figure_after_weight"] + df["wfa_adj"]
 
-        # --- Global calibration: single scale+shift across all runners ---
-        # French class mapping (prize-money based) is unreliable, so we skip
-        # per-class calibration and apply a single global transform to contract
-        # the over-wide French distribution to UK scale.
+        # --- Per-class calibration using batch-derived parameters ---
+        # Use cal_params from artifacts (fitted on full S3 database).
+        # Falls back to DEFAULT_CAL_PARAMS if artifacts unavailable.
+        from .speed_figures import DEFAULT_CAL_PARAMS
         df["figure_calibrated"] = df["figure_after_wfa"].copy()
         has_wfa = df["figure_after_wfa"].notna()
 
-        # Ensure raceClass is string for audit output
+        # Ensure raceClass is string for comparison
         df["raceClass"] = df["raceClass"].astype(str)
 
-        # Target: UK all-runner mean ≈ 80, std ≈ 12
-        GLOBAL_TARGET_MEAN = 80.0
-        GLOBAL_TARGET_STD = 12.0
+        cal = self.cal_params if self.cal_params else DEFAULT_CAL_PARAMS
+        calibrated_mask = pd.Series(False, index=df.index)
 
-        if has_wfa.sum() >= 3:
-            fr_mean = df.loc[has_wfa, "figure_after_wfa"].mean()
-            fr_std = df.loc[has_wfa, "figure_after_wfa"].std()
-            if fr_std > 0:
-                scale = GLOBAL_TARGET_STD / fr_std
-            else:
-                scale = 1.0
-            shift = GLOBAL_TARGET_MEAN - fr_mean * scale
-            df.loc[has_wfa, "figure_calibrated"] = (
-                df.loc[has_wfa, "figure_after_wfa"] * scale + shift
+        for cls, params in cal.items():
+            cls_mask = (df["raceClass"] == str(cls)) & has_wfa
+            if not cls_mask.any():
+                continue
+            scale = params["scale"]
+            shift = params["shift"]
+            df.loc[cls_mask, "figure_calibrated"] = (
+                df.loc[cls_mask, "figure_after_wfa"] * scale + shift
             )
-            log.info("  Global calibration: FR_mean=%.1f FR_std=%.1f → "
-                     "scale=%.3f shift=%+.1f → target_mean=%.1f  n=%d",
-                     fr_mean, fr_std, scale, shift,
-                     GLOBAL_TARGET_MEAN, has_wfa.sum())
+            calibrated_mask |= cls_mask
+            n = cls_mask.sum()
+            log.info("  Class %s: scale=%.3f shift=%+.1f  n=%d",
+                     cls, scale, shift, n)
+
+        # Fallback for unmatched classes: weighted-average transform
+        unmatched = has_wfa & ~calibrated_mask
+        if unmatched.any() and cal:
+            total_n = sum(max(p.get("n_runners", 1), 1) for p in cal.values())
+            avg_scale = sum(p["scale"] * max(p.get("n_runners", 1), 1)
+                           for p in cal.values()) / total_n
+            avg_shift = sum(p["shift"] * max(p.get("n_runners", 1), 1)
+                           for p in cal.values()) / total_n
+            df.loc[unmatched, "figure_calibrated"] = (
+                df.loc[unmatched, "figure_after_wfa"] * avg_scale + avg_shift
+            )
+            log.info("  Unmatched: scale=%.3f shift=%+.1f  n=%d",
+                     avg_scale, avg_shift, unmatched.sum())
 
         # Exclude runners beaten > 20 lengths
         beaten_far = (

@@ -55,41 +55,43 @@ from .field_mapping import load_france_dataframe
 log = logging.getLogger(__name__)
 
 
-# ── UK reference distributions for self-calibration (by class) ──
-# Mean and std of Timeform timefigures per class from UK data (2015-2025).
-# Used as the target distribution for French self-calibration.
-# Derived from the UK pipeline's calibrated output.
-UK_CLASS_DISTRIBUTION = {
-    "1": {"mean": 108.0, "std": 11.0},  # Group races
-    "2": {"mean": 99.0,  "std": 10.5},  # Listed / Premier
-    "3": {"mean": 91.0,  "std": 10.0},
-    "4": {"mean": 83.0,  "std": 10.0},
-    "5": {"mean": 75.0,  "std": 10.0},
-    "6": {"mean": 68.0,  "std": 10.0},
-    "7": {"mean": 60.0,  "std": 10.5},  # Lowest class
+# ── French calibration targets (derived from Timeform performance ratings) ──
+# All-runner mean Timeform performance ratings for French flat racing,
+# grouped by prize-money class (2022-2025, ~70k rated runners).
+# These replace the previous UK class distributions which were
+# systematically too high (+10-15 pts at Class 4-5).
+FRENCH_CLASS_DISTRIBUTION = {
+    "1": {"mean": 96.0,  "std": 11.0},  # Group/Listed (100k+ EUR)
+    "2": {"mean": 89.0,  "std": 10.0},  # Premier (50-100k)
+    "3": {"mean": 84.0,  "std": 11.0},  # 30-50k
+    "4": {"mean": 68.0,  "std": 11.0},  # 20-30k
+    "5": {"mean": 64.0,  "std": 11.0},  # 10-20k
+    "6": {"mean": 55.0,  "std": 11.0},  # <10k / claiming
+    "7": {"mean": 50.0,  "std": 11.0},  # Lowest
 }
 
+# Backward-compat alias used by calibrate_to_uk_scale()
+UK_CLASS_DISTRIBUTION = FRENCH_CLASS_DISTRIBUTION
+
 # ── Default calibration parameters ──
-# Derived from theoretical class speed differentials at 8f (2.77 lpl):
-#   Pre-cal class means: C1≈152, C2≈135, C3≈119, C4≈102, C5≈86, C6≈70, C7≈53
-# Scale 0.70 contracts the over-wide French distribution; shift brings
-# the mean to the UK target.  Used when batch cal_params are unavailable
-# (e.g., no france.db to rebuild artifacts).
+# Derived from typical French pre-cal class means with scale=0.70
+# and Timeform-validated targets.  Used when batch cal_params are
+# unavailable (e.g., no france.db to rebuild artifacts).
 DEFAULT_CAL_PARAMS = {
-    "1": {"scale": 0.700, "shift":  1.7, "fr_mean": 152.0, "fr_std": 18.0,
-          "uk_mean": 108.0, "uk_std": 11.0, "n_runners": 0},
-    "2": {"scale": 0.700, "shift":  4.3, "fr_mean": 135.0, "fr_std": 16.0,
-          "uk_mean":  99.0, "uk_std": 10.5, "n_runners": 0},
-    "3": {"scale": 0.700, "shift":  8.0, "fr_mean": 119.0, "fr_std": 15.0,
-          "uk_mean":  91.0, "uk_std": 10.0, "n_runners": 0},
-    "4": {"scale": 0.700, "shift": 11.6, "fr_mean": 102.0, "fr_std": 14.0,
-          "uk_mean":  83.0, "uk_std": 10.0, "n_runners": 0},
-    "5": {"scale": 0.700, "shift": 15.2, "fr_mean":  86.0, "fr_std": 13.0,
-          "uk_mean":  75.0, "uk_std": 10.0, "n_runners": 0},
-    "6": {"scale": 0.700, "shift": 19.9, "fr_mean":  70.0, "fr_std": 12.0,
-          "uk_mean":  68.0, "uk_std": 10.0, "n_runners": 0},
-    "7": {"scale": 0.700, "shift": 23.5, "fr_mean":  53.0, "fr_std": 12.0,
-          "uk_mean":  60.0, "uk_std": 10.5, "n_runners": 0},
+    "1": {"scale": 0.700, "shift": -10.4, "fr_mean": 152.0, "fr_std": 18.0,
+          "uk_mean": 96.0, "uk_std": 11.0, "n_runners": 0},
+    "2": {"scale": 0.700, "shift": -5.5, "fr_mean": 135.0, "fr_std": 16.0,
+          "uk_mean": 89.0, "uk_std": 10.0, "n_runners": 0},
+    "3": {"scale": 0.700, "shift":  0.7, "fr_mean": 119.0, "fr_std": 15.0,
+          "uk_mean": 84.0, "uk_std": 11.0, "n_runners": 0},
+    "4": {"scale": 0.700, "shift": -3.4, "fr_mean": 102.0, "fr_std": 14.0,
+          "uk_mean": 68.0, "uk_std": 11.0, "n_runners": 0},
+    "5": {"scale": 0.700, "shift":  3.8, "fr_mean":  86.0, "fr_std": 13.0,
+          "uk_mean": 64.0, "uk_std": 11.0, "n_runners": 0},
+    "6": {"scale": 0.700, "shift":  6.0, "fr_mean":  70.0, "fr_std": 12.0,
+          "uk_mean": 55.0, "uk_std": 11.0, "n_runners": 0},
+    "7": {"scale": 0.700, "shift": 12.9, "fr_mean":  53.0, "fr_std": 12.0,
+          "uk_mean": 50.0, "uk_std": 11.0, "n_runners": 0},
 }
 
 
