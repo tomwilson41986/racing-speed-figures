@@ -2,8 +2,8 @@ name: France Daily Ratings
 
 on:
   schedule:
-    # 7pm UTC daily (after French racing finishes)
-    - cron: '0 19 * * *'
+    # 10pm French time (CET); during CEST this fires at 11pm local
+    - cron: '0 21 * * *'
   workflow_dispatch:
     inputs:
       date:
@@ -84,34 +84,47 @@ jobs:
             python -m src.france.cli rate-today --date "$(date -u +%Y-%m-%d)"
           fi
 
-      - name: Show results summary
+      - name: Generate results summary
+        id: summary
         run: |
           DATE_ARG="${{ github.event.inputs.date }}"
           if [ -z "$DATE_ARG" ]; then
             DATE_ARG=$(date -u +%Y-%m-%d)
           fi
           CSV="data/france_live/ratings_${DATE_ARG}.csv"
+          echo "date=$DATE_ARG" >> "$GITHUB_OUTPUT"
+          echo "csv=$CSV" >> "$GITHUB_OUTPUT"
           if [ -f "$CSV" ]; then
-            echo "=== France Ratings Summary ==="
-            python3 -c "
+            echo "has_csv=true" >> "$GITHUB_OUTPUT"
+            SUMMARY=$(python3 -c "
           import pandas as pd
           df = pd.read_csv('${CSV}')
           rated = df[df['figure_final'].notna()]
-          print(f'Runners rated: {len(rated)}/{len(df)}')
+          lines = []
+          lines.append(f'Runners rated: {len(rated)}/{len(df)}')
           if 'raceNumber' in df.columns:
-              print(f'Races: {df[\"raceNumber\"].nunique()}')
+              lines.append(f'Races: {df[\"raceNumber\"].nunique()}')
           if 'courseName' in df.columns:
-              print(f'Courses: {\", \".join(df[\"courseName\"].unique())}')
-          print()
+              lines.append(f'Courses: {\", \".join(df[\"courseName\"].unique())}')
+          lines.append('')
           if len(rated) > 0:
-              print('Top 10:')
+              lines.append('Top 10:')
               top = rated.nlargest(10, 'figure_final')
               for _, r in top.iterrows():
                   pos = int(r['positionOfficial']) if pd.notna(r.get('positionOfficial')) else 0
-                  print(f'  {r.get(\"horseName\", \"?\"):25s}  {r.get(\"courseName\", \"?\"):20s}  '
-                        f'Pos {pos}  Fig {r[\"figure_final\"]:.0f}')
-          "
+                  lines.append(f'  {r.get(\"horseName\", \"?\"):25s}  {r.get(\"courseName\", \"?\"):20s}  Pos {pos}  Fig {r[\"figure_final\"]:.0f}')
+          print('\n'.join(lines))
+          ")
+            echo "=== France Ratings Summary ==="
+            echo "$SUMMARY"
+            {
+              echo "summary<<EOFSUM"
+              echo "$SUMMARY"
+              echo "EOFSUM"
+            } >> "$GITHUB_OUTPUT"
           else
+            echo "has_csv=false" >> "$GITHUB_OUTPUT"
+            echo "summary=No ratings CSV generated for ${DATE_ARG}" >> "$GITHUB_OUTPUT"
             echo "No ratings CSV generated for ${DATE_ARG}"
           fi
 
@@ -140,3 +153,24 @@ jobs:
             data/france_live/
             output/france/
           retention-days: 90
+
+      - name: Send ratings email
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "France Ratings - ${{ steps.summary.outputs.date }}"
+          to: racingsquared@gmail.com
+          from: Racing Speed Figures <${{ secrets.MAIL_USERNAME }}>
+          body: |
+            France Daily Ratings for ${{ steps.summary.outputs.date }}
+
+            ${{ steps.summary.outputs.summary }}
+
+            ---
+            Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          attachments: ${{ steps.summary.outputs.has_csv == 'true' && steps.summary.outputs.csv || '' }}
