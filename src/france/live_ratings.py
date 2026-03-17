@@ -39,6 +39,7 @@ from .constants import (
     SECONDS_PER_LENGTH,
 )
 from .speed_figures import (
+    UK_CLASS_DISTRIBUTION,
     generic_lbs_per_length,
     load_artifacts,
     FRANCE_OUTPUT_DIR,
@@ -68,6 +69,7 @@ class FranceLiveRatingEngine:
         self.lpl_dict = {}
         self.ga_dict = {}
         self.ga_se_dict = {}
+        self.cal_params = {}
         self._loaded = False
 
     def load(self):
@@ -78,9 +80,11 @@ class FranceLiveRatingEngine:
         self.lpl_dict = artifacts["lpl_dict"]
         self.ga_dict = artifacts["ga_dict"]
         self.ga_se_dict = artifacts.get("ga_se_dict", {})
+        self.cal_params = artifacts.get("cal_params", {})
         self._loaded = True
-        log.info("  Loaded: %d std_times, %d lpl, %d ga",
-                 len(self.std_times), len(self.lpl_dict), len(self.ga_dict))
+        log.info("  Loaded: %d std_times, %d lpl, %d ga, cal_params=%s",
+                 len(self.std_times), len(self.lpl_dict), len(self.ga_dict),
+                 "yes" if self.cal_params else "no")
 
     def estimate_going_allowance(self, going_desc):
         """Estimate GA from going description when no computed GA exists."""
@@ -181,7 +185,56 @@ class FranceLiveRatingEngine:
             axis=1,
         )
         df["figure_after_wfa"] = df["figure_after_weight"] + df["wfa_adj"]
-        df["figure_final"] = df["figure_after_wfa"]
+
+        # --- Self-calibration: apply class-based distribution matching ---
+        df["figure_calibrated"] = df["figure_after_wfa"].copy()
+        has_wfa = df["figure_after_wfa"].notna()
+
+        if self.cal_params:
+            # Use pre-computed calibration params from batch pipeline
+            for cls, params in self.cal_params.items():
+                if cls == "ga_coeff":
+                    continue
+                if not isinstance(params, dict) or "scale" not in params:
+                    continue
+                cls_mask = (df["raceClass"] == cls) & has_wfa
+                if cls_mask.any():
+                    df.loc[cls_mask, "figure_calibrated"] = (
+                        df.loc[cls_mask, "figure_after_wfa"] * params["scale"]
+                        + params["shift"]
+                    )
+            # Apply GA correction if available
+            ga_coeff = self.cal_params.get("ga_coeff", 0)
+            if ga_coeff and "going_allowance" in df.columns:
+                df.loc[has_wfa, "figure_calibrated"] += (
+                    ga_coeff * df.loc[has_wfa, "going_allowance"].fillna(0)
+                )
+        else:
+            # No pre-computed params — apply live distribution matching
+            for cls, uk_dist in UK_CLASS_DISTRIBUTION.items():
+                cls_mask = (df["raceClass"] == cls) & has_wfa
+                if cls_mask.sum() < 5:
+                    continue
+                fr_vals = df.loc[cls_mask, "figure_after_wfa"]
+                fr_mean = fr_vals.mean()
+                fr_std = fr_vals.std()
+                if fr_std == 0 or pd.isna(fr_std):
+                    continue
+                scale = uk_dist["std"] / fr_std
+                shift = uk_dist["mean"] - fr_mean * scale
+                df.loc[cls_mask, "figure_calibrated"] = (
+                    df.loc[cls_mask, "figure_after_wfa"] * scale + shift
+                )
+
+        # Exclude runners beaten > 20 lengths
+        beaten_far = (
+            df["distanceCumulative"].notna()
+            & (df["distanceCumulative"] > 20)
+            & (df["positionOfficial"] != 1)
+        )
+        df.loc[beaten_far, "figure_calibrated"] = np.nan
+
+        df["figure_final"] = df["figure_calibrated"]
 
         has_fig = df["figure_final"].notna()
         log.info("  Runners with figures: %d / %d", has_fig.sum(), len(df))

@@ -39,6 +39,10 @@ GA_SHRINKAGE_K = 3.0
 GA_NONLINEAR_THRESHOLD = 0.30
 GA_NONLINEAR_BETA = 0.25
 GA_CONVERGENCE_TOL = 0.005
+INTERPOLATED_GA_WEIGHT = 0.7   # Discount weight for interpolated standard times in GA
+
+# Recency weighting for iterative standard times (same as UK)
+RECENCY_HALF_LIFE_YEARS = 4.0
 
 # Class adjustments — constant baseline (same finding as UK: varying
 # class adjustments hurt accuracy).

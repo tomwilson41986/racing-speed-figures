@@ -327,6 +327,8 @@ def build_artifacts(ctx, s3_bucket, s3_key, output_dir, skip_download, min_races
             lpl_dict=result["lpl_dict"],
             ga_dict=result["ga_dict"],
             ga_se_dict=result["ga_se_dict"],
+            cal_params=result.get("cal_params"),
+            empirical_ga_priors=result.get("empirical_ga_priors"),
             output_dir=output_dir,
         )
 
@@ -335,6 +337,9 @@ def build_artifacts(ctx, s3_bucket, s3_key, output_dir, skip_download, min_races
         click.echo(f"  Standard times:   {len(result['std_dict']):,} combos")
         click.echo(f"  LPL entries:      {len(result['lpl_dict']):,} combos")
         click.echo(f"  Going allowances: {len(result['ga_dict']):,} meetings")
+        cal_p = result.get("cal_params", {})
+        if cal_p:
+            click.echo(f"  Calibration:      {len([k for k in cal_p if k != 'ga_coeff']):,} class params")
         click.echo()
         for label, path in paths.items():
             click.echo(f"  {label}: {path}")
