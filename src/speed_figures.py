@@ -896,23 +896,6 @@ def compute_going_allowances(df, std_times):
         m1, m2 = first_half.mean(), second_half.mean()
         s1, s2 = first_half.std(), second_half.std()
 
-    # Weighted winsorized mean within each meeting.
-    # Interpolated deviations get lower weight (INTERPOLATED_GA_WEIGHT).
-    def _weighted_winsorized_mean(group):
-        sorted_g = group.sort_values("dev_per_furlong")
-        devs = sorted_g["dev_per_furlong"].values.copy()
-        weights = sorted_g["ga_weight"].values.copy()
-        n = len(devs)
-        if n <= 2:
-            return np.average(devs, weights=weights)
-        # Winsorize: clamp extremes to adjacent values
-        devs[0] = devs[1]
-        devs[-1] = devs[-2]
-        return np.average(devs, weights=weights)
-
-    ga_series = (
-        winners.groupby("meeting_id")[["dev_per_furlong", "ga_weight"]]
-        .apply(_weighted_winsorized_mean)
         if s1 == 0 and s2 == 0:
             continue
         se = np.sqrt(s1**2 / n1 + s2**2 / n2)
@@ -930,22 +913,23 @@ def compute_going_allowances(df, std_times):
     if split_meetings:
         print(f"    Split-card going detected: {len(split_meetings)} meetings split")
 
-    # ── Winsorized median within each meeting ──
-    # Uses median (not mean) for consistency with standard time computation
-    # and greater robustness to skewed distributions on extreme going.
-    def _winsorized_median(group):
-        vals = group.sort_values().values.copy()
-        n = len(vals)
+    # ── Weighted winsorized mean within each meeting ──
+    # Interpolated deviations get lower weight (INTERPOLATED_GA_WEIGHT).
+    def _weighted_winsorized_mean(group):
+        sorted_g = group.sort_values("dev_per_furlong")
+        devs = sorted_g["dev_per_furlong"].values.copy()
+        weights = sorted_g["ga_weight"].values.copy()
+        n = len(devs)
         if n <= 2:
-            return np.median(vals)
+            return np.average(devs, weights=weights)
         # Winsorize: clamp extremes to adjacent values
-        vals[0] = vals[1]
-        vals[-1] = vals[-2]
-        return np.median(vals)
+        devs[0] = devs[1]
+        devs[-1] = devs[-2]
+        return np.average(devs, weights=weights)
 
     ga_series = (
-        winners.groupby("meeting_id")["dev_per_furlong"]
-        .apply(_winsorized_median)
+        winners.groupby("meeting_id")[["dev_per_furlong", "ga_weight"]]
+        .apply(_weighted_winsorized_mean)
     )
     ga_count = (
         winners.groupby("meeting_id")["dev_per_furlong"].count()
