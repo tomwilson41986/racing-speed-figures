@@ -190,6 +190,10 @@ class FranceLiveRatingEngine:
         df["figure_calibrated"] = df["figure_after_wfa"].copy()
         has_wfa = df["figure_after_wfa"].notna()
 
+        # Ensure raceClass is string for comparison with string-keyed dicts
+        df["raceClass"] = df["raceClass"].astype(str)
+
+        n_calibrated = 0
         if self.cal_params:
             # Use pre-computed calibration params from batch pipeline
             for cls, params in self.cal_params.items():
@@ -197,23 +201,28 @@ class FranceLiveRatingEngine:
                     continue
                 if not isinstance(params, dict) or "scale" not in params:
                     continue
-                cls_mask = (df["raceClass"] == cls) & has_wfa
+                cls_mask = (df["raceClass"] == str(cls)) & has_wfa
                 if cls_mask.any():
                     df.loc[cls_mask, "figure_calibrated"] = (
                         df.loc[cls_mask, "figure_after_wfa"] * params["scale"]
                         + params["shift"]
                     )
+                    n_calibrated += cls_mask.sum()
+                    log.info("    Cal class %s: scale=%.3f shift=%+.1f  n=%d",
+                             cls, params["scale"], params["shift"], cls_mask.sum())
             # Apply GA correction if available
             ga_coeff = self.cal_params.get("ga_coeff", 0)
             if ga_coeff and "going_allowance" in df.columns:
                 df.loc[has_wfa, "figure_calibrated"] += (
                     ga_coeff * df.loc[has_wfa, "going_allowance"].fillna(0)
                 )
+            log.info("  Calibration (batch params): %d runners calibrated", n_calibrated)
         else:
             # No pre-computed params — apply live shift-primary calibration
             # Clamp scale to [0.90, 1.10] to preserve within-race spreads
+            log.info("  No batch cal_params — using live fallback calibration")
             for cls, uk_dist in UK_CLASS_DISTRIBUTION.items():
-                cls_mask = (df["raceClass"] == cls) & has_wfa
+                cls_mask = (df["raceClass"] == str(cls)) & has_wfa
                 if cls_mask.sum() < 5:
                     continue
                 fr_vals = df.loc[cls_mask, "figure_after_wfa"]
@@ -227,6 +236,28 @@ class FranceLiveRatingEngine:
                 df.loc[cls_mask, "figure_calibrated"] = (
                     df.loc[cls_mask, "figure_after_wfa"] * scale + shift
                 )
+                n_calibrated += cls_mask.sum()
+                log.info("    Live cal class %s: FR(%.1f±%.1f) → UK(%.1f±%.1f) scale=%.3f shift=%+.1f n=%d",
+                         cls, fr_mean, fr_std, uk_dist["mean"], uk_dist["std"],
+                         scale, shift, cls_mask.sum())
+            log.info("  Live calibration: %d runners calibrated", n_calibrated)
+
+        # For classes not calibrated (insufficient data), apply global transform
+        # using the weighted average across all calibrated classes
+        unmatched = has_wfa & df["figure_calibrated"].eq(df["figure_after_wfa"])
+        if unmatched.any() and n_calibrated > 0:
+            # Compute global shift from all calibrated runners
+            cal_mask = has_wfa & ~df["figure_calibrated"].eq(df["figure_after_wfa"])
+            if cal_mask.any():
+                global_shift = (
+                    df.loc[cal_mask, "figure_calibrated"].mean()
+                    - df.loc[cal_mask, "figure_after_wfa"].mean()
+                )
+                df.loc[unmatched, "figure_calibrated"] = (
+                    df.loc[unmatched, "figure_after_wfa"] + global_shift
+                )
+                log.info("  Unmatched classes: applied global shift=%+.1f to %d runners",
+                         global_shift, unmatched.sum())
 
         # Exclude runners beaten > 20 lengths
         beaten_far = (
@@ -563,7 +594,7 @@ def main():
             "horseName", "positionOfficial", "distance", "going",
             "raceSurfaceName", "raceClass", "horseAge", "weightCarried",
             "finishingTime", "distanceCumulative", "going_allowance",
-            "raw_figure", "weight_adj", "wfa_adj", "figure_final",
+            "raw_figure", "weight_adj", "wfa_adj", "figure_calibrated", "figure_final",
         ] if c in df.columns]
         df[out_cols].to_csv(csv_path, index=False)
         print(f"\nSaved: {csv_path}")

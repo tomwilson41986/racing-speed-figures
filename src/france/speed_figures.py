@@ -819,13 +819,16 @@ def calibrate_to_uk_scale(df):
     df["figure_calibrated"] = df["figure_after_sex"].copy()
     cal_params = {}
 
+    # Ensure raceClass is string for comparison with string-keyed dicts
+    df["raceClass"] = df["raceClass"].astype(str)
+
     # Limits for the scale factor — prevent compression/expansion of
     # within-race spreads while still allowing mild distribution shaping.
     SCALE_MIN, SCALE_MAX = 0.90, 1.10
 
     # ── Per-class calibration (shift-primary, clamped scale) ──
     for cls, uk_dist in UK_CLASS_DISTRIBUTION.items():
-        cls_mask = (df["raceClass"] == cls) & has_fig
+        cls_mask = (df["raceClass"] == str(cls)) & has_fig
         if cls_mask.sum() < 30:
             continue
 
