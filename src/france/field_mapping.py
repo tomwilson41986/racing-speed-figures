@@ -21,7 +21,6 @@ from .constants import (
     FRANCE_SEX_MAP,
     KG_TO_LBS,
     METERS_PER_FURLONG,
-    classify_french_race,
     detect_surface,
     is_maiden_race,
 )
@@ -147,12 +146,6 @@ def _map_fields(df: pd.DataFrame) -> pd.DataFrame:
             str(r.get("parcours", "")),
             str(r.get("going", "")),
         ),
-        axis=1,
-    )
-
-    # Class mapping
-    out["raceClass"] = out.apply(
-        lambda r: classify_french_race(r.get("race_name"), r.get("prize_money")),
         axis=1,
     )
 

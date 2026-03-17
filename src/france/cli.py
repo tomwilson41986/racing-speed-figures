@@ -339,7 +339,7 @@ def build_artifacts(ctx, s3_bucket, s3_key, output_dir, skip_download, min_races
         click.echo(f"  Going allowances: {len(result['ga_dict']):,} meetings")
         cal_p = result.get("cal_params", {})
         if cal_p:
-            click.echo(f"  Calibration:      {len([k for k in cal_p if k != 'ga_coeff']):,} class params")
+            click.echo(f"  Calibration:      global params")
         click.echo()
         for label, path in paths.items():
             click.echo(f"  {label}: {path}")
@@ -541,7 +541,7 @@ def rate_today(ctx, target_date, artifact_dir, output_csv):
         out_cols = [c for c in [
             "meetingDate", "courseName", "raceNumber", "race_id",
             "horseName", "positionOfficial", "distance", "going",
-            "raceSurfaceName", "raceClass", "horseAge", "weightCarried",
+            "raceSurfaceName", "horseAge", "weightCarried",
             "finishingTime", "distanceCumulative", "going_allowance",
             "raw_figure", "weight_adj", "wfa_adj", "figure_final",
         ] if c in df.columns]
@@ -555,7 +555,7 @@ def rate_today(ctx, target_date, artifact_dir, output_csv):
         audit_cols = [c for c in [
             "meetingDate", "courseName", "raceNumber", "race_id",
             "horseName", "positionOfficial", "distance", "going",
-            "raceSurfaceName", "raceClass", "horseAge", "weightCarried",
+            "raceSurfaceName", "horseAge", "weightCarried",
             "finishingTime", "distanceCumulative",
             "standard_time", "lpl", "going_allowance",
             "raw_figure", "weight_adj", "figure_after_weight",

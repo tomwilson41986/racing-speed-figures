@@ -2,11 +2,9 @@
 French racing constants for the speed-figures pipeline.
 
 Mirrors the constant structure of ``src/speed_figures.py`` but with
-France-specific values for going descriptions, class mappings, courses,
-and beaten-length codes.
+France-specific values for going descriptions, courses, and
+beaten-length codes.
 """
-
-import re
 
 # ─────────────────────────────────────────────────────────────────────
 # CORE PIPELINE CONSTANTS  (shared with UK — imported or duplicated
@@ -43,18 +41,6 @@ INTERPOLATED_GA_WEIGHT = 0.7   # Discount weight for interpolated standard times
 
 # Recency weighting for iterative standard times (same as UK)
 RECENCY_HALF_LIFE_YEARS = 4.0
-
-# Class adjustments — constant baseline (same finding as UK: varying
-# class adjustments hurt accuracy).
-CLASS_ADJUSTMENT_PER_MILE = {
-    "1": -3.6,
-    "2": -4.8,
-    "3": -6.0,
-    "4": -7.2,
-    "5": -8.4,
-    "6": -9.6,
-    "7": -10.8,
-}
 
 # Sex allowance (not applied — same finding as UK)
 SEX_ALLOWANCE_SUMMER = 3   # lbs, May–September
@@ -126,55 +112,6 @@ FRANCE_GOING_ORDINAL = {
     "Lourd": 7,
     "Standard": 3,
 }
-
-# ─────────────────────────────────────────────────────────────────────
-# FRENCH CLASS MAPPING  (race name + prize money → class 1-7)
-# ─────────────────────────────────────────────────────────────────────
-
-# Regex patterns for Group/Listed detection (applied to race_name)
-_GROUP1_RE = re.compile(r"GROUP?E?\s*I(?:\b|$)|GR\.?\s*I(?:\b|$)", re.I)
-_GROUP2_RE = re.compile(r"GROUP?E?\s*II(?:\b|$)|GR\.?\s*II(?:\b|$)", re.I)
-_GROUP3_RE = re.compile(r"GROUP?E?\s*III(?:\b|$)|GR\.?\s*III(?:\b|$)", re.I)
-_LISTED_RE = re.compile(r"LIST[ÉEe]{1,2}", re.I)
-_CLAIMING_RE = re.compile(r"R[ÉEe]CLAM|CLAIMING", re.I)
-
-# Prize money thresholds for non-pattern races (EUR)
-FRANCE_CLASS_FROM_PRIZE = [
-    (500_000, "1"),   # Group-level prize money
-    (200_000, "1"),
-    (100_000, "2"),
-    (50_000,  "3"),
-    (25_000,  "4"),
-    (15_000,  "5"),
-    (8_000,   "6"),
-    (0,       "7"),
-]
-
-
-def classify_french_race(race_name: str, prize_money) -> str:
-    """Map a French race to class 1-7 using name patterns + prize money."""
-    name = str(race_name or "")
-    if _GROUP1_RE.search(name):
-        return "1"
-    if _GROUP2_RE.search(name):
-        return "1"
-    if _GROUP3_RE.search(name):
-        return "2"
-    if _LISTED_RE.search(name):
-        return "2"
-    if _CLAIMING_RE.search(name):
-        return "6"
-
-    try:
-        pm = float(prize_money or 0)
-    except (TypeError, ValueError):
-        pm = 0.0
-
-    for threshold, cls in FRANCE_CLASS_FROM_PRIZE:
-        if pm >= threshold:
-            return cls
-    return "7"
-
 
 # ─────────────────────────────────────────────────────────────────────
 # PSF (ALL-WEATHER) TRACK IDENTIFICATION
