@@ -184,87 +184,56 @@ class FranceLiveRatingEngine:
         )
         df["figure_after_wfa"] = df["figure_after_weight"] + df["wfa_adj"]
 
-        # --- Per-class calibration using batch-derived parameters ---
-        # Use cal_params from artifacts (fitted on full S3 database).
+        # --- Global calibration using batch-derived parameters ---
+        # Single scale+shift for all runners (class-independent).
         # Falls back to DEFAULT_CAL_PARAMS if artifacts unavailable.
         from .speed_figures import DEFAULT_CAL_PARAMS
         df["figure_calibrated"] = df["figure_after_wfa"].copy()
         has_wfa = df["figure_after_wfa"].notna()
 
-        # Ensure raceClass is string for comparison
-        df["raceClass"] = df["raceClass"].astype(str)
-
         cal = self.cal_params if self.cal_params else DEFAULT_CAL_PARAMS
-        calibrated_mask = pd.Series(False, index=df.index)
 
-        # Separate ga_coeff from per-class params (ga_coeff is a float,
-        # not a dict with scale/shift, and was silently skipped before).
+        # Extract ga_coeff (float, separate from global params)
         ga_coeff = cal.get("ga_coeff", None) if isinstance(cal, dict) else None
-        class_cal = {k: v for k, v in cal.items() if isinstance(v, dict)}
 
-        # Distance bands for distance-aware calibration (matches batch pipeline)
-        _DIST_BANDS = [
-            ("sprint",  0.0, 6.5),
-            ("mile",    6.5, 9.0),
-            ("middle",  9.0, 12.0),
-            ("staying", 12.0, 999),
-        ]
-
-        for cls, params in class_cal.items():
-            cls_mask = (df["raceClass"] == str(cls)) & has_wfa
-            if not cls_mask.any():
-                continue
-
-            # Use distance-band params if available (from batch calibration)
-            band_params = params.get("band_params")
-            if band_params and "distance" in df.columns:
-                for band_name, lo, hi in _DIST_BANDS:
-                    if band_name not in band_params:
-                        continue
-                    bp = band_params[band_name]
-                    band_mask = cls_mask & (df["distance"] >= lo) & (df["distance"] < hi)
-                    if not band_mask.any():
-                        continue
-                    df.loc[band_mask, "figure_calibrated"] = (
-                        df.loc[band_mask, "figure_after_wfa"] * bp["scale"] + bp["shift"]
-                    )
-                    calibrated_mask |= band_mask
-                    log.info("  Class %s/%s: scale=%.3f shift=%+.1f  n=%d",
-                             cls, band_name, bp["scale"], bp["shift"], band_mask.sum())
-
-                # Runners in this class not covered by any band: use aggregate
-                cls_uncovered = cls_mask & ~calibrated_mask
-                if cls_uncovered.any():
-                    df.loc[cls_uncovered, "figure_calibrated"] = (
-                        df.loc[cls_uncovered, "figure_after_wfa"] * params["scale"] + params["shift"]
-                    )
-                    calibrated_mask |= cls_uncovered
-                    log.info("  Class %s/other: scale=%.3f shift=%+.1f  n=%d",
-                             cls, params["scale"], params["shift"], cls_uncovered.sum())
-            else:
-                # No band params: use class-level aggregate
-                scale = params["scale"]
-                shift = params["shift"]
+        # Apply global scale+shift
+        global_params = cal.get("global")
+        if global_params and isinstance(global_params, dict):
+            scale = global_params["scale"]
+            shift = global_params["shift"]
+            df.loc[has_wfa, "figure_calibrated"] = (
+                df.loc[has_wfa, "figure_after_wfa"] * scale + shift
+            )
+            log.info("  Global calibration: scale=%.4f shift=%+.1f  n=%d",
+                     scale, shift, has_wfa.sum())
+        else:
+            # Legacy per-class cal_params fallback (pre-migration artifacts)
+            class_cal = {k: v for k, v in cal.items()
+                         if isinstance(v, dict) and "scale" in v}
+            calibrated_mask = pd.Series(False, index=df.index)
+            df["raceClass"] = df["raceClass"].astype(str)
+            for cls, params in class_cal.items():
+                cls_mask = (df["raceClass"] == str(cls)) & has_wfa
+                if not cls_mask.any():
+                    continue
                 df.loc[cls_mask, "figure_calibrated"] = (
-                    df.loc[cls_mask, "figure_after_wfa"] * scale + shift
+                    df.loc[cls_mask, "figure_after_wfa"] * params["scale"]
+                    + params["shift"]
                 )
                 calibrated_mask |= cls_mask
-                log.info("  Class %s: scale=%.3f shift=%+.1f  n=%d",
-                         cls, scale, shift, cls_mask.sum())
-
-        # Fallback for unmatched classes: weighted-average transform
-        unmatched = has_wfa & ~calibrated_mask
-        if unmatched.any() and class_cal:
-            total_n = sum(max(p.get("n_runners", 1), 1) for p in class_cal.values())
-            avg_scale = sum(p["scale"] * max(p.get("n_runners", 1), 1)
-                           for p in class_cal.values()) / total_n
-            avg_shift = sum(p["shift"] * max(p.get("n_runners", 1), 1)
-                           for p in class_cal.values()) / total_n
-            df.loc[unmatched, "figure_calibrated"] = (
-                df.loc[unmatched, "figure_after_wfa"] * avg_scale + avg_shift
-            )
-            log.info("  Unmatched: scale=%.3f shift=%+.1f  n=%d",
-                     avg_scale, avg_shift, unmatched.sum())
+            # Fallback for unmatched classes
+            unmatched = has_wfa & ~calibrated_mask
+            if unmatched.any() and class_cal:
+                total_n = sum(max(p.get("n_runners", 1), 1)
+                              for p in class_cal.values())
+                avg_scale = sum(p["scale"] * max(p.get("n_runners", 1), 1)
+                                for p in class_cal.values()) / total_n
+                avg_shift = sum(p["shift"] * max(p.get("n_runners", 1), 1)
+                                for p in class_cal.values()) / total_n
+                df.loc[unmatched, "figure_calibrated"] = (
+                    df.loc[unmatched, "figure_after_wfa"] * avg_scale + avg_shift
+                )
+            log.info("  Legacy per-class calibration applied")
 
         # Apply continuous GA correction from batch calibration.
         # ga_coeff captures residual going bias not removed by the
