@@ -197,7 +197,12 @@ class FranceLiveRatingEngine:
         cal = self.cal_params if self.cal_params else DEFAULT_CAL_PARAMS
         calibrated_mask = pd.Series(False, index=df.index)
 
-        for cls, params in cal.items():
+        # Separate ga_coeff from per-class params (ga_coeff is a float,
+        # not a dict with scale/shift, and was silently skipped before).
+        ga_coeff = cal.get("ga_coeff", None) if isinstance(cal, dict) else None
+        class_cal = {k: v for k, v in cal.items() if isinstance(v, dict)}
+
+        for cls, params in class_cal.items():
             cls_mask = (df["raceClass"] == str(cls)) & has_wfa
             if not cls_mask.any():
                 continue
@@ -213,17 +218,27 @@ class FranceLiveRatingEngine:
 
         # Fallback for unmatched classes: weighted-average transform
         unmatched = has_wfa & ~calibrated_mask
-        if unmatched.any() and cal:
-            total_n = sum(max(p.get("n_runners", 1), 1) for p in cal.values())
+        if unmatched.any() and class_cal:
+            total_n = sum(max(p.get("n_runners", 1), 1) for p in class_cal.values())
             avg_scale = sum(p["scale"] * max(p.get("n_runners", 1), 1)
-                           for p in cal.values()) / total_n
+                           for p in class_cal.values()) / total_n
             avg_shift = sum(p["shift"] * max(p.get("n_runners", 1), 1)
-                           for p in cal.values()) / total_n
+                           for p in class_cal.values()) / total_n
             df.loc[unmatched, "figure_calibrated"] = (
                 df.loc[unmatched, "figure_after_wfa"] * avg_scale + avg_shift
             )
             log.info("  Unmatched: scale=%.3f shift=%+.1f  n=%d",
                      avg_scale, avg_shift, unmatched.sum())
+
+        # Apply continuous GA correction from batch calibration.
+        # ga_coeff captures residual going bias not removed by the
+        # per-meeting going allowance (e.g. -6.76 lbs per s/f).
+        if ga_coeff is not None and abs(ga_coeff) > 0.01:
+            ga_vals = df["going_allowance"].fillna(0)
+            ga_adj = ga_coeff * ga_vals
+            has_cal = df["figure_calibrated"].notna()
+            df.loc[has_cal, "figure_calibrated"] += ga_adj[has_cal]
+            log.info("  GA coeff correction: %+.2f lbs/s/f applied", ga_coeff)
 
         # Exclude runners beaten > 20 lengths
         beaten_far = (
