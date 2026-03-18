@@ -558,7 +558,10 @@ def compute_going_allowances(df, std_times):
 
     ga_dict = shrunk_dict
 
-    # ── Non-linear correction for extreme going ──
+    # ── Non-linear dampening for extreme going ──
+    # On extreme going, time distortion is less predictable; dampen
+    # the GA toward the threshold to avoid over-correction.
+    # Bug fix: was `ga + sign * correction` which AMPLIFIED extremes.
     corrected_dict = {}
     for mid, ga in ga_dict.items():
         abs_ga = abs(ga)
@@ -566,7 +569,7 @@ def compute_going_allowances(df, std_times):
             sign = 1.0 if ga > 0 else -1.0
             excess = abs_ga - GA_NONLINEAR_THRESHOLD
             correction = GA_NONLINEAR_BETA * excess ** 2
-            corrected_dict[mid] = ga + sign * correction
+            corrected_dict[mid] = ga - sign * correction
         else:
             corrected_dict[mid] = ga
 
