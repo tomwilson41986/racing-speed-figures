@@ -79,34 +79,36 @@ FRANCE_GOOD_GOING = {
     "PSF STANDARD", "PSF RAPIDE",
 }
 
-# Going-description GA priors for Bayesian shrinkage (seeds — to be
-# refined empirically after initial backfill, same methodology as UK
-# GOING_GA_PRIOR derived from 10,625 meetings).
+# Going-description GA priors for Bayesian shrinkage.
+# Updated from empirical means computed over ~12,000 meetings.
+# Original seeds had Souple at 0.51 (actual: 0.32), inflating GAs
+# for soft going and producing over-corrected figures.
 FRANCE_GOING_GA_PRIOR = {
-    # Turf going descriptions (actual values from PMU data)
+    # Turf going descriptions — empirical values from French data
     "Très Sec":      -0.25,
     "Tres Sec":      -0.25,
-    "Très leger":    -0.09,
+    "Très leger":     0.05,   # empirical ~0.05 (was -0.09)
     "Tres leger":    -0.09,
     "Sec":           -0.21,
     "Bon Léger":     -0.09,
     "Bon Leger":     -0.09,
-    "Bon léger":     -0.09,
-    "Léger":         -0.09,
-    "Bon":            0.05,
+    "Bon léger":      0.02,   # empirical 0.02 (was -0.09)
+    "Léger":          0.05,   # empirical ~0.05 (was -0.09)
+    "Bon":            0.04,   # empirical 0.037 (was 0.05)
     "Bon Souple":     0.25,
-    "Bon souple":     0.25,
-    "Souple":         0.51,
-    "Très Souple":    0.65,
+    "Bon souple":     0.14,   # empirical 0.14 (was 0.25)
+    "Souple":         0.32,   # empirical 0.32 (was 0.51 — 58% too high)
+    "Très Souple":    0.52,   # empirical 0.52 (was 0.65)
     "Tres Souple":    0.65,
-    "Très souple":    0.65,
-    "Collant":        0.82,
-    "Lourd":          0.82,
-    # PSF (artificial surface) — actual descriptions from data
+    "Très souple":    0.52,   # empirical 0.52 (was 0.65)
+    "Collant":        0.81,   # empirical 0.81 (was 0.82)
+    "Lourd":          0.68,   # empirical 0.68 (was 0.82 — 21% too high)
+    "Très lourd":     0.90,   # empirical 0.90
+    # PSF (artificial surface) — empirical values
     "PSF STANDARD":   0.04,
-    "PSF RAPIDE":    -0.03,
-    "PSF LENTE":      0.06,
-    "PSF":            0.04,
+    "PSF RAPIDE":    -0.01,   # empirical -0.013 (was -0.03)
+    "PSF LENTE":      0.08,   # empirical 0.077 (was 0.06)
+    "PSF":            0.01,   # empirical 0.008 (was 0.04)
     "Standard":       0.04,
     # Unknown/empty
     "Inconnu":        0.05,
