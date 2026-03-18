@@ -244,6 +244,32 @@ class FranceLiveRatingEngine:
                 )
             log.info("  Legacy per-class calibration applied")
 
+        # Apply beaten-length band corrections from batch calibration.
+        # Compensates for systematic over/under-rating at different BL bands.
+        bl_corrections = cal.get("bl_corrections") if isinstance(cal, dict) else None
+        if bl_corrections:
+            has_cal = df["figure_calibrated"].notna()
+            cum_bl = df["distanceCumulative"].fillna(0).clip(lower=0)
+            bl_band = pd.cut(
+                cum_bl, bins=[0, 1, 3, 5, 10, 15, 20, 999],
+                labels=["0-1", "1-3", "3-5", "5-10", "10-15", "15-20", "20+"],
+                include_lowest=True,
+            ).astype(str).fillna("0-1")
+            bl_band = bl_band.where(df["positionOfficial"] != 1, "winner")
+            bl_adj = bl_band.map(bl_corrections).fillna(0)
+            df.loc[has_cal, "figure_calibrated"] += bl_adj[has_cal]
+            log.info("  BL band corrections applied (%d bands)", len(bl_corrections))
+
+        # Apply per-going-group corrections from batch calibration.
+        going_corrections = cal.get("going_corrections") if isinstance(cal, dict) else None
+        going_group_map = cal.get("going_group_map") if isinstance(cal, dict) else None
+        if going_corrections and going_group_map:
+            has_cal = df["figure_calibrated"].notna()
+            df_going_grp = df["going"].map(going_group_map).fillna("Bon")
+            going_adj = df_going_grp.map(going_corrections).fillna(0)
+            df.loc[has_cal, "figure_calibrated"] += going_adj[has_cal]
+            log.info("  Going group corrections applied (%d groups)", len(going_corrections))
+
         # Apply continuous GA correction from batch calibration.
         # ga_coeff captures residual going bias not removed by the
         # per-meeting going allowance (e.g. -6.76 lbs per s/f).

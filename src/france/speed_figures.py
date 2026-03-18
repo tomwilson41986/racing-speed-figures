@@ -636,6 +636,14 @@ def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
     w["deviation_lbs"] = w["deviation_lengths"] * w["lpl"]
     w["raw_figure"] = BASE_RATING - w["deviation_lbs"]
 
+    # Cap extreme outlier figures to prevent nonsensical values
+    # (e.g. bad standard times or timing errors producing -10000 or +1400).
+    # Reasonable flat racing figures range from roughly -50 to 250.
+    n_outliers = ((w["raw_figure"] < -50) | (w["raw_figure"] > 250)).sum()
+    if n_outliers > 0:
+        log.info("    Capping %s extreme winner figures to [-50, 250]", f"{n_outliers:,}")
+    w["raw_figure"] = w["raw_figure"].clip(lower=-50, upper=250)
+
     log.info("    Winner figures computed: %s", f"{len(w):,}")
     if len(w) > 0:
         log.info("    Range: %.0f to %.0f", w["raw_figure"].min(), w["raw_figure"].max())
@@ -879,6 +887,7 @@ def calibrate_to_uk_scale(df):
         bl_adj = bl_band.map(bl_corrections).fillna(0)
         df.loc[has_fig, "figure_calibrated"] += bl_adj[has_fig]
 
+        cal_params["bl_corrections"] = bl_corrections
         bl_str = ", ".join(f"{k}:{v:+.1f}" for k, v in sorted(bl_corrections.items()))
         log.info("    BL band corrections: %s", bl_str)
 
@@ -890,6 +899,8 @@ def calibrate_to_uk_scale(df):
         going_adj = df_going_grp.map(going_corrections).fillna(0)
         df.loc[has_fig, "figure_calibrated"] += going_adj[has_fig]
 
+        cal_params["going_corrections"] = going_corrections
+        cal_params["going_group_map"] = _french_going_group_map()
         going_str = ", ".join(f"{k}:{v:+.1f}" for k, v in sorted(going_corrections.items()))
         log.info("    Going corrections: %s", going_str)
 
