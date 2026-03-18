@@ -55,44 +55,19 @@ from .field_mapping import load_france_dataframe
 log = logging.getLogger(__name__)
 
 
-# ── French calibration targets (derived from Timeform performance ratings) ──
-# All-runner mean Timeform performance ratings for French flat racing,
-# grouped by prize-money class (2022-2025, ~70k rated runners).
-# These replace the previous UK class distributions which were
-# systematically too high (+10-15 pts at Class 4-5).
-FRENCH_CLASS_DISTRIBUTION = {
-    "1": {"mean": 96.0,  "std": 11.0},  # Group/Listed (100k+ EUR)
-    "2": {"mean": 89.0,  "std": 10.0},  # Premier (50-100k)
-    "3": {"mean": 84.0,  "std": 11.0},  # 30-50k
-    "4": {"mean": 68.0,  "std": 11.0},  # 20-30k
-    "5": {"mean": 64.0,  "std": 11.0},  # 10-20k
-    "6": {"mean": 55.0,  "std": 11.0},  # <10k / claiming
-    "7": {"mean": 50.0,  "std": 11.0},  # Lowest
-}
-
-# Backward-compat alias used by calibrate_to_uk_scale()
-UK_CLASS_DISTRIBUTION = FRENCH_CLASS_DISTRIBUTION
 
 # ── Default calibration parameters ──
-# Derived from typical French pre-cal class distributions with unclamped
-# scale and Timeform-validated targets.  Used when batch cal_params are
-# unavailable (e.g., no france.db to rebuild artifacts).
-# Scale = uk_std / fr_std; shift = uk_mean - fr_mean * scale.
+# Global scale+shift mapping French raw figures onto the UK Timeform
+# scale.  Class-independent: a single transform for all runners.
+# Used when batch cal_params are unavailable (e.g., no france.db).
+# Scale = target_std / fr_std; shift = target_mean - fr_mean * scale.
 DEFAULT_CAL_PARAMS = {
-    "1": {"scale": 0.213, "shift": 63.6, "fr_mean": 152.0, "fr_std": 51.6,
-          "uk_mean": 96.0, "uk_std": 11.0, "n_runners": 0},
-    "2": {"scale": 0.204, "shift": 61.5, "fr_mean": 135.0, "fr_std": 49.0,
-          "uk_mean": 89.0, "uk_std": 10.0, "n_runners": 0},
-    "3": {"scale": 0.192, "shift": 61.2, "fr_mean": 119.0, "fr_std": 57.3,
-          "uk_mean": 84.0, "uk_std": 11.0, "n_runners": 0},
-    "4": {"scale": 0.200, "shift": 47.6, "fr_mean": 102.0, "fr_std": 55.0,
-          "uk_mean": 68.0, "uk_std": 11.0, "n_runners": 0},
-    "5": {"scale": 0.145, "shift": 51.5, "fr_mean":  86.0, "fr_std": 75.8,
-          "uk_mean": 64.0, "uk_std": 11.0, "n_runners": 0},
-    "6": {"scale": 0.157, "shift": 44.0, "fr_mean":  70.0, "fr_std": 70.0,
-          "uk_mean": 55.0, "uk_std": 11.0, "n_runners": 0},
-    "7": {"scale": 0.167, "shift": 41.2, "fr_mean":  53.0, "fr_std": 66.0,
-          "uk_mean": 50.0, "uk_std": 11.0, "n_runners": 0},
+    "global": {
+        "scale": 0.300, "shift": 42.0,
+        "fr_mean": 100.0, "fr_std": 60.0,
+        "target_mean": 72.0, "target_std": 18.0,
+        "n_runners": 0,
+    },
 }
 
 
@@ -808,29 +783,34 @@ def apply_sex_allowance(df):
 
 
 # ═════════════════════════════════════════════════════════════════════
-# STAGE 9 — SELF-CALIBRATION (distribution matching by class)
+# STAGE 9 — SELF-CALIBRATION (global scale to Timeform-equivalent)
 # ═════════════════════════════════════════════════════════════════════
+
+# Global calibration target — the overall UK Timeform distribution for
+# all flat runners (all classes combined).  Speed figures should be
+# class-independent: a single global scale+shift maps French raw figures
+# onto the Timeform scale without artificially anchoring each class to
+# its expected mean.
+GLOBAL_TARGET_MEAN = 72.0   # overall UK flat Timeform mean (all classes)
+GLOBAL_TARGET_STD  = 18.0   # overall UK flat Timeform std  (all classes)
+
 
 def calibrate_to_uk_scale(df):
     """
-    Self-calibration: align French figure distribution to UK reference
-    distribution by class.
+    Global calibration: align French figure distribution to the UK
+    Timeform scale using a single scale+shift applied to ALL runners
+    regardless of class.
 
-    Since no Timeform timefigure exists for French racing, we use the
-    known UK class distributions as calibration targets.  For each class,
-    we scale and shift the French figures to match the UK mean and std.
-
-    Scale is clamped to [0.15, 1.15] — wide enough to bring the over-wide
-    French distribution (std ≈ 12-75) close to UK targets (std ≈ 10-11)
-    without collapsing to zero.
+    This preserves class-independence — a Class 5 horse that genuinely
+    runs fast will get a high figure, not one anchored to a Class 5
+    target mean.
 
     Additionally applies:
-      - Beaten-length band correction (horses beaten further systematically
-        over-rated due to margin estimation noise)
+      - Beaten-length band correction
       - Per-going-group residual correction
       - Continuous GA correction
     """
-    log.info("  Calibrating to UK scale (shift-primary, clamped scale)...")
+    log.info("  Calibrating to Timeform scale (global scale+shift)...")
 
     has_fig = df["figure_after_sex"].notna()
     if not has_fig.any():
@@ -840,138 +820,30 @@ def calibrate_to_uk_scale(df):
     df["figure_calibrated"] = df["figure_after_sex"].copy()
     cal_params = {}
 
-    # Ensure raceClass is string for comparison with string-keyed dicts
-    df["raceClass"] = df["raceClass"].astype(str)
+    # ── Global calibration: single scale+shift for all runners ──
+    fr_vals = df.loc[has_fig, "figure_after_sex"]
+    fr_mean = fr_vals.mean()
+    fr_std = fr_vals.std()
 
-    # Limits for the scale factor — allow meaningful distribution shaping
-    # while preventing extreme compression.  The French pre-cal std can
-    # range from 50-75 (far wider than UK 10-11), requiring raw_scale as
-    # low as 0.14.  A floor of 0.15 allows proper compression while
-    # preventing near-zero collapse.  Within-race beaten-length gaps are
-    # preserved because scale applies uniformly to all runners in a race.
-    SCALE_MIN, SCALE_MAX = 0.15, 1.15
+    if fr_std > 0 and not pd.isna(fr_std):
+        scale = GLOBAL_TARGET_STD / fr_std
+        # Clamp to prevent collapse (shouldn't be needed with global std)
+        scale = float(np.clip(scale, 0.05, 2.0))
+        shift = GLOBAL_TARGET_MEAN - fr_mean * scale
 
-    # ── Distance bands for distance-aware calibration ──
-    # Different distances have systematically different standard-time biases
-    # (e.g. sprints inflate more than middle distances).  Calibrating per
-    # (class, distance-band) removes this distance-dependent inflation.
-    DIST_BANDS = [
-        ("sprint",  0.0, 6.5),   # up to ~6f
-        ("mile",    6.5, 9.0),   # ~7f to ~1m
-        ("middle",  9.0, 12.0),  # ~9f to ~1m4f
-        ("staying", 12.0, 999),  # ~1m4f+
-    ]
-    MIN_BAND_RUNNERS = 30  # minimum per (class, distance-band)
+        df.loc[has_fig, "figure_calibrated"] = (
+            df.loc[has_fig, "figure_after_sex"] * scale + shift
+        )
 
-    # Assign distance band to each runner
-    if "distance" in df.columns:
-        df["_dist_band"] = "all"
-        for band_name, lo, hi in DIST_BANDS:
-            band_mask = (df["distance"] >= lo) & (df["distance"] < hi)
-            df.loc[band_mask, "_dist_band"] = band_name
-    else:
-        df["_dist_band"] = "all"
-
-    # ── Per-class, per-distance-band calibration ──
-    calibrated_mask = pd.Series(False, index=df.index)
-
-    for cls, uk_dist in UK_CLASS_DISTRIBUTION.items():
-        cls_mask = (df["raceClass"] == str(cls)) & has_fig
-        if cls_mask.sum() < MIN_BAND_RUNNERS:
-            continue
-
-        uk_mean = uk_dist["mean"]
-        uk_std = uk_dist["std"]
-
-        # Try distance-band calibration first
-        cls_band_params = {}
-        for band_name, _, _ in DIST_BANDS:
-            band_mask = cls_mask & (df["_dist_band"] == band_name)
-            if band_mask.sum() < MIN_BAND_RUNNERS:
-                continue
-
-            fr_vals = df.loc[band_mask, "figure_after_sex"]
-            fr_mean = fr_vals.mean()
-            fr_std = fr_vals.std()
-            if fr_std == 0 or pd.isna(fr_std):
-                continue
-
-            raw_scale = uk_std / fr_std
-            scale = float(np.clip(raw_scale, SCALE_MIN, SCALE_MAX))
-            shift = uk_mean - fr_mean * scale
-
-            df.loc[band_mask, "figure_calibrated"] = (
-                df.loc[band_mask, "figure_after_sex"] * scale + shift
-            )
-            calibrated_mask |= band_mask
-
-            cls_band_params[band_name] = {
-                "fr_mean": fr_mean, "fr_std": fr_std,
-                "uk_mean": uk_mean, "uk_std": uk_std,
-                "raw_scale": raw_scale, "scale": scale, "shift": shift,
-                "n_runners": int(band_mask.sum()),
-            }
-            log.info("    Class %s/%s: FR(%.1f±%.1f) → UK(%.1f±%.1f)  scale=%.3f(raw %.3f) shift=%+.1f  n=%s",
-                     cls, band_name, fr_mean, fr_std, uk_mean, uk_std,
-                     scale, raw_scale, shift, f"{band_mask.sum():,}")
-
-        # Fallback: runners in this class not covered by any distance band
-        cls_uncovered = cls_mask & ~calibrated_mask
-        if cls_uncovered.sum() > 0:
-            fr_vals = df.loc[cls_uncovered, "figure_after_sex"]
-            fr_mean = fr_vals.mean()
-            fr_std = fr_vals.std()
-            if fr_std > 0 and not pd.isna(fr_std):
-                raw_scale = uk_std / fr_std
-                scale = float(np.clip(raw_scale, SCALE_MIN, SCALE_MAX))
-                shift = uk_mean - fr_mean * scale
-            elif cls_band_params:
-                # Use weighted average of band params
-                total_n = sum(p["n_runners"] for p in cls_band_params.values())
-                scale = sum(p["scale"] * p["n_runners"] for p in cls_band_params.values()) / total_n
-                shift = sum(p["shift"] * p["n_runners"] for p in cls_band_params.values()) / total_n
-            else:
-                continue
-
-            df.loc[cls_uncovered, "figure_calibrated"] = (
-                df.loc[cls_uncovered, "figure_after_sex"] * scale + shift
-            )
-            calibrated_mask |= cls_uncovered
-            log.info("    Class %s/other: scale=%.3f shift=%+.1f  n=%s",
-                     cls, scale, shift, f"{cls_uncovered.sum():,}")
-
-        # Store per-class params (aggregate of all bands for artifact persistence)
-        if cls_band_params:
-            all_cls = cls_mask & calibrated_mask
-            all_fr_vals = df.loc[all_cls, "figure_after_sex"]
-            total_n = sum(p["n_runners"] for p in cls_band_params.values())
-            avg_scale = sum(p["scale"] * p["n_runners"] for p in cls_band_params.values()) / total_n
-            avg_shift = sum(p["shift"] * p["n_runners"] for p in cls_band_params.values()) / total_n
-            cal_params[cls] = {
-                "fr_mean": float(all_fr_vals.mean()), "fr_std": float(all_fr_vals.std()),
-                "uk_mean": uk_mean, "uk_std": uk_std,
-                "raw_scale": float(uk_std / all_fr_vals.std()) if all_fr_vals.std() > 0 else avg_scale,
-                "scale": avg_scale, "shift": avg_shift,
-                "n_runners": int(all_cls.sum()),
-                "band_params": cls_band_params,
-            }
-
-    # For classes not matched (insufficient data), apply the global transform
-    unmatched = has_fig & ~calibrated_mask
-    if unmatched.any() and cal_params:
-        class_params = {k: v for k, v in cal_params.items() if isinstance(v, dict) and "scale" in v}
-        if class_params:
-            total_n = sum(p["n_runners"] for p in class_params.values())
-            avg_scale = sum(p["scale"] * p["n_runners"] for p in class_params.values()) / total_n
-            avg_shift = sum(p["shift"] * p["n_runners"] for p in class_params.values()) / total_n
-            df.loc[unmatched, "figure_calibrated"] = (
-                df.loc[unmatched, "figure_after_sex"] * avg_scale + avg_shift
-            )
-            log.info("    Unmatched classes: applied global scale=%.3f shift=%+.1f to %s runners",
-                     avg_scale, avg_shift, f"{unmatched.sum():,}")
-
-    # Clean up temporary column
-    df.drop(columns=["_dist_band"], inplace=True, errors="ignore")
+        cal_params["global"] = {
+            "fr_mean": float(fr_mean), "fr_std": float(fr_std),
+            "target_mean": GLOBAL_TARGET_MEAN, "target_std": GLOBAL_TARGET_STD,
+            "scale": float(scale), "shift": float(shift),
+            "n_runners": int(has_fig.sum()),
+        }
+        log.info("    Global: FR(%.1f±%.1f) → UK(%.1f±%.1f)  scale=%.4f shift=%+.1f  n=%s",
+                 fr_mean, fr_std, GLOBAL_TARGET_MEAN, GLOBAL_TARGET_STD,
+                 scale, shift, f"{has_fig.sum():,}")
 
     # ── Beaten-length band correction ──
     # Horses beaten further are systematically over-rated because beaten-length
@@ -1118,14 +990,9 @@ def _compute_going_corrections(df):
     going_map = _french_going_group_map()
     going_grp = df.loc[has_fig, "going"].map(going_map).fillna("Bon")
 
-    # We don't have an external target, so use the class-adjusted mean:
-    # the residual is figure_calibrated - class_expected_mean
-    class_means = {}
-    for cls, uk_dist in UK_CLASS_DISTRIBUTION.items():
-        class_means[cls] = uk_dist["mean"]
-
-    expected = df.loc[has_fig, "raceClass"].map(class_means)
-    residual = df.loc[has_fig, "figure_calibrated"] - expected
+    # Residual = figure_calibrated - global mean (class-independent)
+    global_mean = df.loc[has_fig, "figure_calibrated"].mean()
+    residual = df.loc[has_fig, "figure_calibrated"] - global_mean
     residual = residual.dropna()
 
     if residual.empty:
@@ -1153,13 +1020,9 @@ def _compute_ga_correction_coeff(df):
     if has_fig.sum() < 200:
         return 0.0
 
-    # Residual from class expected mean
-    class_means = {}
-    for cls, uk_dist in UK_CLASS_DISTRIBUTION.items():
-        class_means[cls] = uk_dist["mean"]
-
-    expected = df.loc[has_fig, "raceClass"].map(class_means)
-    residual = df.loc[has_fig, "figure_calibrated"] - expected
+    # Residual from global mean (class-independent)
+    global_mean = df.loc[has_fig, "figure_calibrated"].mean()
+    residual = df.loc[has_fig, "figure_calibrated"] - global_mean
     ga_vals = df.loc[has_fig, "ga_value"]
 
     both_valid = residual.notna() & ga_vals.notna() & (ga_vals != 0)
