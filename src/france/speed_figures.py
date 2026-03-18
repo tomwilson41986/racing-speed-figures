@@ -63,8 +63,9 @@ log = logging.getLogger(__name__)
 # Scale = target_std / fr_std; shift = target_mean - fr_mean * scale.
 DEFAULT_CAL_PARAMS = {
     "global": {
-        "scale": 0.300, "shift": 42.0,
+        "scale": 0.700, "shift": 2.0,
         "fr_mean": 100.0, "fr_std": 60.0,
+        "fr_robust_std": 25.7, "fr_median": 100.0,
         "target_mean": 72.0, "target_std": 18.0,
         "n_runners": 0,
     },
@@ -821,15 +822,29 @@ def calibrate_to_uk_scale(df):
     cal_params = {}
 
     # ── Global calibration: single scale+shift for all runners ──
+    # Use robust statistics (IQR-based) to prevent outliers from
+    # inflating std and crushing the scale factor.  Raw std can be
+    # 80+ due to extreme outliers, yielding scale ~0.22 which makes
+    # beaten-length and weight adjustments nearly invisible.
     fr_vals = df.loc[has_fig, "figure_after_sex"]
     fr_mean = fr_vals.mean()
     fr_std = fr_vals.std()
 
-    if fr_std > 0 and not pd.isna(fr_std):
-        scale = GLOBAL_TARGET_STD / fr_std
-        # Clamp to prevent collapse (shouldn't be needed with global std)
-        scale = float(np.clip(scale, 0.05, 2.0))
-        shift = GLOBAL_TARGET_MEAN - fr_mean * scale
+    q25 = fr_vals.quantile(0.25)
+    q75 = fr_vals.quantile(0.75)
+    iqr = q75 - q25
+    robust_std = iqr / 1.349  # IQR-based std estimator for normal distribution
+    robust_center = fr_vals.median()
+
+    # Use robust std for scaling (prevents outlier-driven compression)
+    cal_std = robust_std if robust_std > 0 else fr_std
+    cal_center = robust_center
+
+    if cal_std > 0 and not pd.isna(cal_std):
+        scale = GLOBAL_TARGET_STD / cal_std
+        # Clamp to prevent collapse or explosion
+        scale = float(np.clip(scale, 0.3, 2.0))
+        shift = GLOBAL_TARGET_MEAN - cal_center * scale
 
         df.loc[has_fig, "figure_calibrated"] = (
             df.loc[has_fig, "figure_after_sex"] * scale + shift
@@ -837,12 +852,13 @@ def calibrate_to_uk_scale(df):
 
         cal_params["global"] = {
             "fr_mean": float(fr_mean), "fr_std": float(fr_std),
+            "fr_robust_std": float(robust_std), "fr_median": float(robust_center),
             "target_mean": GLOBAL_TARGET_MEAN, "target_std": GLOBAL_TARGET_STD,
             "scale": float(scale), "shift": float(shift),
             "n_runners": int(has_fig.sum()),
         }
-        log.info("    Global: FR(%.1f±%.1f) → UK(%.1f±%.1f)  scale=%.4f shift=%+.1f  n=%s",
-                 fr_mean, fr_std, GLOBAL_TARGET_MEAN, GLOBAL_TARGET_STD,
+        log.info("    Global: FR(median=%.1f, IQR_std=%.1f, raw_std=%.1f) → UK(%.1f±%.1f)  scale=%.4f shift=%+.1f  n=%s",
+                 robust_center, robust_std, fr_std, GLOBAL_TARGET_MEAN, GLOBAL_TARGET_STD,
                  scale, shift, f"{has_fig.sum():,}")
 
     # ── Beaten-length band correction ──

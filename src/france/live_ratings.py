@@ -201,6 +201,15 @@ class FranceLiveRatingEngine:
         if global_params and isinstance(global_params, dict):
             scale = global_params["scale"]
             shift = global_params["shift"]
+            # Sanity-check: scale < 0.3 means outliers inflated fr_std
+            # during calibration, crushing beaten-length/weight adjustments
+            if scale < 0.3:
+                log.warning("  Calibration scale %.4f too low (outlier-driven); "
+                            "clamping to 0.3", scale)
+                scale = 0.3
+                shift = global_params.get("target_mean", 72.0) - (
+                    global_params.get("fr_median", global_params.get("fr_mean", 100.0)) * scale
+                )
             df.loc[has_wfa, "figure_calibrated"] = (
                 df.loc[has_wfa, "figure_after_wfa"] * scale + shift
             )
