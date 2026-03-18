@@ -2,7 +2,7 @@ name: France Daily Ratings
 
 on:
   schedule:
-    # 10pm French time (CET); during CEST this fires at 11pm local
+    # 21:00 UTC = 22:00 CET / 23:00 CEST
     - cron: '0 21 * * *'
   workflow_dispatch:
     inputs:
@@ -32,7 +32,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pandas numpy
+        run: pip install -r requirements.txt pandas numpy openpyxl
 
       - name: Download france.db from S3
         env:
@@ -132,7 +132,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add output/france/ output/france_audit/ data/france_live/
+          git add output/france/ output/france_audit/ output/daily_ratings/ data/france_live/
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else

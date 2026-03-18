@@ -535,6 +535,23 @@ def rate_today(ctx, target_date, artifact_dir, output_csv):
                     f"Pos {pos}  Fig {r['figure_final']:.0f}"
                 )
 
+        # Save xlsx archive
+        from pathlib import Path
+        xlsx_dir = Path(LIVE_DIR).parent.parent / "output" / "daily_ratings"
+        os.makedirs(xlsx_dir, exist_ok=True)
+        xlsx_path = xlsx_dir / f"ratings_{d.isoformat()}.xlsx"
+        xlsx_cols = [c for c in [
+            "meetingDate", "courseName", "raceNumber", "race_id",
+            "horseName", "positionOfficial", "distance", "going",
+            "raceSurfaceName", "raceClass", "horseAge", "weightCarried",
+            "finishingTime", "distanceCumulative", "going_allowance",
+            "raw_figure", "weight_adj", "wfa_adj", "figure_calibrated", "figure_final",
+        ] if c in df.columns]
+        df[xlsx_cols].sort_values(
+            ["courseName", "raceNumber", "positionOfficial"]
+        ).to_excel(str(xlsx_path), index=False, sheet_name="Ratings")
+        click.echo(f"XLSX: {xlsx_path}")
+
         # Save CSV
         os.makedirs(LIVE_DIR, exist_ok=True)
         csv_path = output_csv or str(LIVE_DIR / f"ratings_{d.isoformat()}.csv")
@@ -543,7 +560,7 @@ def rate_today(ctx, target_date, artifact_dir, output_csv):
             "horseName", "positionOfficial", "distance", "going",
             "raceSurfaceName", "raceClass", "horseAge", "weightCarried",
             "finishingTime", "distanceCumulative", "going_allowance",
-            "raw_figure", "weight_adj", "wfa_adj", "figure_final",
+            "raw_figure", "weight_adj", "wfa_adj", "figure_calibrated", "figure_final",
         ] if c in df.columns]
         df[out_cols].to_csv(csv_path, index=False)
         click.echo(f"\nSaved: {csv_path}")
