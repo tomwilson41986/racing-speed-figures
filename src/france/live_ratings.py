@@ -244,21 +244,13 @@ class FranceLiveRatingEngine:
                 )
             log.info("  Legacy per-class calibration applied")
 
-        # Apply beaten-length band corrections from batch calibration.
-        # Compensates for systematic over/under-rating at different BL bands.
-        bl_corrections = cal.get("bl_corrections") if isinstance(cal, dict) else None
-        if bl_corrections:
-            has_cal = df["figure_calibrated"].notna()
-            cum_bl = df["distanceCumulative"].fillna(0).clip(lower=0)
-            bl_band = pd.cut(
-                cum_bl, bins=[0, 1, 3, 5, 10, 15, 20, 999],
-                labels=["0-1", "1-3", "3-5", "5-10", "10-15", "15-20", "20+"],
-                include_lowest=True,
-            ).astype(str).fillna("0-1")
-            bl_band = bl_band.where(df["positionOfficial"] != 1, "winner")
-            bl_adj = bl_band.map(bl_corrections).fillna(0)
-            df.loc[has_cal, "figure_calibrated"] += bl_adj[has_cal]
-            log.info("  BL band corrections applied (%d bands)", len(bl_corrections))
+        # NOTE: BL band corrections intentionally NOT applied.
+        # The _compute_bl_band_corrections() function measures the expected
+        # BL gap (beaten_cal - winner_cal) and treats it as a "residual" to
+        # correct.  This undoes the beaten-length penalty, producing absurd
+        # results (horses finishing 10th rated higher than the winner).
+        # With the robust IQR-based calibration scale, the BL extension
+        # works correctly and no band correction is needed.
 
         # Apply per-going-group corrections from batch calibration.
         going_corrections = cal.get("going_corrections") if isinstance(cal, dict) else None
