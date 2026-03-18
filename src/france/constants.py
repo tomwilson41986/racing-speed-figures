@@ -84,33 +84,42 @@ FRANCE_GOOD_GOING = {
 # Original seeds had Souple at 0.51 (actual: 0.32), inflating GAs
 # for soft going and producing over-corrected figures.
 FRANCE_GOING_GA_PRIOR = {
-    # Turf going descriptions — empirical values from French data
+    # Turf going descriptions — empirical values from ~12,000 French meetings.
+    # All casing variants map to the same empirical value.
     "Très Sec":      -0.25,
     "Tres Sec":      -0.25,
-    "Très leger":     0.05,   # empirical ~0.05 (was -0.09)
-    "Tres leger":    -0.09,
     "Sec":           -0.21,
-    "Bon Léger":     -0.09,
-    "Bon Leger":     -0.09,
-    "Bon léger":      0.02,   # empirical 0.02 (was -0.09)
-    "Léger":          0.05,   # empirical ~0.05 (was -0.09)
-    "Bon":            0.04,   # empirical 0.037 (was 0.05)
-    "Bon Souple":     0.25,
-    "Bon souple":     0.14,   # empirical 0.14 (was 0.25)
-    "Souple":         0.32,   # empirical 0.32 (was 0.51 — 58% too high)
-    "Très Souple":    0.52,   # empirical 0.52 (was 0.65)
-    "Tres Souple":    0.65,
-    "Très souple":    0.52,   # empirical 0.52 (was 0.65)
-    "Collant":        0.81,   # empirical 0.81 (was 0.82)
-    "Lourd":          0.68,   # empirical 0.68 (was 0.82 — 21% too high)
+    "Très leger":     0.05,   # empirical ~0.05
+    "Tres leger":     0.05,
+    "Très Leger":     0.05,
+    "Tres Leger":     0.05,
+    "Bon Léger":      0.02,   # empirical 0.02
+    "Bon Leger":      0.02,
+    "Bon léger":      0.02,
+    "Bon leger":      0.02,
+    "Léger":          0.05,   # empirical ~0.05
+    "Leger":          0.05,
+    "Bon":            0.04,   # empirical 0.037
+    "Bon Souple":     0.14,   # empirical 0.14
+    "Bon souple":     0.14,
+    "Souple":         0.32,   # empirical 0.32
+    "Très Souple":    0.52,   # empirical 0.52
+    "Tres Souple":    0.52,
+    "Très souple":    0.52,
+    "Tres souple":    0.52,
+    "Collant":        0.81,   # empirical 0.81
+    "Lourd":          0.68,   # empirical 0.68
     "Très lourd":     0.90,   # empirical 0.90
+    "Tres lourd":     0.90,
+    "Très Lourd":     0.90,
+    "Tres Lourd":     0.90,
     # PSF (artificial surface) — empirical values
     "PSF STANDARD":   0.04,
-    "PSF RAPIDE":    -0.01,   # empirical -0.013 (was -0.03)
-    "PSF LENTE":      0.08,   # empirical 0.077 (was 0.06)
-    "PSF":            0.01,   # empirical 0.008 (was 0.04)
+    "PSF RAPIDE":    -0.01,   # empirical -0.013
+    "PSF LENTE":      0.08,   # empirical 0.077
+    "PSF":            0.01,   # empirical 0.008
     "Standard":       0.04,
-    # Unknown/empty
+    # Unknown/empty — fall back to near-Bon (0.05)
     "Inconnu":        0.05,
     "":               0.05,
 }

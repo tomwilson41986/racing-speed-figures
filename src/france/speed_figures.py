@@ -404,6 +404,20 @@ def _temporal_neighbor_ga(undersized_meetings, ga_dict):
     return recovered
 
 
+def _apply_split_meetings(df, split_map):
+    """Propagate split-card meeting IDs to the main DataFrame.
+
+    ``split_map`` is ``{original_meeting_id: first_race_number_of_late_half}``.
+    Rows with ``raceNumber < split_race`` get ``_early``; the rest get ``_late``.
+    """
+    for mid, split_race in split_map.items():
+        mask = df["meeting_id"] == mid
+        early = mask & (df["raceNumber"] < split_race)
+        late = mask & (df["raceNumber"] >= split_race)
+        df.loc[early, "meeting_id"] = mid + "_early"
+        df.loc[late, "meeting_id"] = mid + "_late"
+
+
 def compute_going_allowances(df, std_times):
     """
     Going allowance per meeting in seconds-per-furlong (s/f).
@@ -450,7 +464,9 @@ def compute_going_allowances(df, std_times):
     winners.drop(columns=["_meeting_med", "_meeting_std"], inplace=True)
 
     # ── Split-card going detection ──
-    split_meetings = set()
+    # Record {original_meeting_id: split_race_number} so the caller can
+    # propagate splits to the main DataFrame.
+    split_meetings = {}  # mid → raceNumber of first race in second half
     for mid, group in winners.groupby("meeting_id"):
         if len(group) < 6:
             continue
@@ -476,7 +492,8 @@ def compute_going_allowances(df, std_times):
         if t_stat > 2.5 and abs(m1 - m2) > 0.10:
             winners.loc[ordered.index[:half], "meeting_id"] = mid + "_early"
             winners.loc[ordered.index[half:], "meeting_id"] = mid + "_late"
-            split_meetings.add(mid)
+            split_race = int(ordered.iloc[half]["raceNumber"])
+            split_meetings[mid] = split_race
 
     if split_meetings:
         log.info("    Split-card going detected: %d meetings split",
@@ -550,7 +567,7 @@ def compute_going_allowances(df, std_times):
         going_desc = meeting_going.get(
             mid.replace("_early", "").replace("_late", ""), "Bon"
         )
-        prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.0)
+        prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05)
 
         k = GA_SHRINKAGE_K
         shrunk_ga = (n * raw_ga + k * prior_ga) / (n + k)
@@ -558,10 +575,10 @@ def compute_going_allowances(df, std_times):
 
     ga_dict = shrunk_dict
 
-    # ── Non-linear dampening for extreme going ──
-    # On extreme going, time distortion is less predictable; dampen
-    # the GA toward the threshold to avoid over-correction.
-    # Bug fix: was `ga + sign * correction` which AMPLIFIED extremes.
+    # ── Non-linear correction for extreme going ──
+    # On extreme going (|GA| > threshold), the linear s/f model
+    # underestimates the true effect.  Apply a quadratic boost.
+    # Matches UK pipeline: ga + sign * correction.
     corrected_dict = {}
     for mid, ga in ga_dict.items():
         abs_ga = abs(ga)
@@ -569,11 +586,16 @@ def compute_going_allowances(df, std_times):
             sign = 1.0 if ga > 0 else -1.0
             excess = abs_ga - GA_NONLINEAR_THRESHOLD
             correction = GA_NONLINEAR_BETA * excess ** 2
-            corrected_dict[mid] = ga - sign * correction
+            corrected_dict[mid] = ga + sign * correction
         else:
             corrected_dict[mid] = ga
 
     ga_dict = corrected_dict
+
+    # ── Cap GA to a sane range ──
+    # Prevents clearly erroneous values (bad timing data) from propagating.
+    GA_MIN, GA_MAX = -1.5, 2.5
+    ga_dict = {mid: max(GA_MIN, min(GA_MAX, v)) for mid, v in ga_dict.items()}
 
     log.info("    Meetings with going allowance: %s", f"{len(ga_dict):,}")
     if ga_dict:
@@ -581,7 +603,7 @@ def compute_going_allowances(df, std_times):
                  min(ga_dict.values()), max(ga_dict.values()))
         log.info("    GA mean:  %.3f s/f", np.mean(list(ga_dict.values())))
 
-    return ga_dict, ga_se_dict
+    return ga_dict, ga_se_dict, split_meetings
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1168,14 +1190,19 @@ def run_pipeline(session: Session, start_date=None, end_date=None,
     lpl_dict = compute_course_lpl(std_df)
 
     # Stage 3: Going allowances
-    ga_dict, ga_se_dict = compute_going_allowances(df, std_dict)
+    ga_dict, ga_se_dict, split_map = compute_going_allowances(df, std_dict)
+
+    # Propagate split-card meeting IDs to the main DataFrame so that
+    # downstream stages (winner figures, calibration) use the correct GA.
+    _apply_split_meetings(df, split_map)
 
     # Iterate: recompute standard times with going-corrected data
     for i in range(1, n_iterations):
         log.info("  --- Iteration %d ---", i + 1)
         std_dict, std_df = compute_standard_times_iterative(df, ga_dict)
         lpl_dict = compute_course_lpl(std_df)
-        ga_dict, ga_se_dict = compute_going_allowances(df, std_dict)
+        ga_dict, ga_se_dict, split_map = compute_going_allowances(df, std_dict)
+        _apply_split_meetings(df, split_map)
 
     # Stage 9c: Compute empirical GA priors (for future use / artifact persistence)
     empirical_ga_priors = compute_empirical_ga_priors(df, ga_dict)
