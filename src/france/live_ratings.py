@@ -194,55 +194,38 @@ class FranceLiveRatingEngine:
         cal = self.cal_params if self.cal_params else DEFAULT_CAL_PARAMS
 
         # Extract ga_coeff (float, separate from global params)
+        # Cap to ±3 lbs/s/f — old artifacts may have uncapped values (e.g. -6.76)
+        MAX_GA_COEFF = 3.0
         ga_coeff = cal.get("ga_coeff", None) if isinstance(cal, dict) else None
+        if ga_coeff is not None:
+            ga_coeff = float(np.clip(ga_coeff, -MAX_GA_COEFF, MAX_GA_COEFF))
 
         # Apply global scale+shift
         global_params = cal.get("global")
-        if global_params and isinstance(global_params, dict):
-            scale = global_params["scale"]
-            shift = global_params["shift"]
-            # Sanity-check: scale < 0.3 means outliers inflated fr_std
-            # during calibration, crushing beaten-length/weight adjustments
-            if scale < 0.3:
-                log.warning("  Calibration scale %.4f too low (outlier-driven); "
-                            "clamping to 0.3", scale)
-                scale = 0.3
-                shift = global_params.get("target_mean", 72.0) - (
-                    global_params.get("fr_median", global_params.get("fr_mean", 100.0)) * scale
-                )
-            df.loc[has_wfa, "figure_calibrated"] = (
-                df.loc[has_wfa, "figure_after_wfa"] * scale + shift
+        if not (global_params and isinstance(global_params, dict)):
+            # Artifacts pre-date global migration (class-based keys only).
+            # Class-based calibration is fundamentally wrong for speed figures:
+            # it adds +30 lbs shift for Group races, making every Group winner
+            # rate ~100 regardless of actual speed.  Fall back to defaults.
+            log.warning("  Artifacts missing 'global' key — using DEFAULT_CAL_PARAMS")
+            global_params = DEFAULT_CAL_PARAMS["global"]
+
+        scale = global_params["scale"]
+        shift = global_params["shift"]
+        # Sanity-check: scale < 0.3 means outliers inflated fr_std
+        # during calibration, crushing beaten-length/weight adjustments
+        if scale < 0.3:
+            log.warning("  Calibration scale %.4f too low (outlier-driven); "
+                        "clamping to 0.3", scale)
+            scale = 0.3
+            shift = global_params.get("target_mean", 72.0) - (
+                global_params.get("fr_median", global_params.get("fr_mean", 100.0)) * scale
             )
-            log.info("  Global calibration: scale=%.4f shift=%+.1f  n=%d",
-                     scale, shift, has_wfa.sum())
-        else:
-            # Legacy per-class cal_params fallback (pre-migration artifacts)
-            class_cal = {k: v for k, v in cal.items()
-                         if isinstance(v, dict) and "scale" in v}
-            calibrated_mask = pd.Series(False, index=df.index)
-            df["raceClass"] = df["raceClass"].astype(str)
-            for cls, params in class_cal.items():
-                cls_mask = (df["raceClass"] == str(cls)) & has_wfa
-                if not cls_mask.any():
-                    continue
-                df.loc[cls_mask, "figure_calibrated"] = (
-                    df.loc[cls_mask, "figure_after_wfa"] * params["scale"]
-                    + params["shift"]
-                )
-                calibrated_mask |= cls_mask
-            # Fallback for unmatched classes
-            unmatched = has_wfa & ~calibrated_mask
-            if unmatched.any() and class_cal:
-                total_n = sum(max(p.get("n_runners", 1), 1)
-                              for p in class_cal.values())
-                avg_scale = sum(p["scale"] * max(p.get("n_runners", 1), 1)
-                                for p in class_cal.values()) / total_n
-                avg_shift = sum(p["shift"] * max(p.get("n_runners", 1), 1)
-                                for p in class_cal.values()) / total_n
-                df.loc[unmatched, "figure_calibrated"] = (
-                    df.loc[unmatched, "figure_after_wfa"] * avg_scale + avg_shift
-                )
-            log.info("  Legacy per-class calibration applied")
+        df.loc[has_wfa, "figure_calibrated"] = (
+            df.loc[has_wfa, "figure_after_wfa"] * scale + shift
+        )
+        log.info("  Global calibration: scale=%.4f shift=%+.1f  n=%d",
+                 scale, shift, has_wfa.sum())
 
         # NOTE: BL band corrections intentionally NOT applied.
         # The _compute_bl_band_corrections() function measures the expected
