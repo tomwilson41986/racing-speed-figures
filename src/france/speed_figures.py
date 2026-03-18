@@ -892,8 +892,12 @@ def calibrate_to_uk_scale(df):
         log.info("    Going corrections: %s", going_str)
 
     # ── Continuous GA correction ──
+    # Cap to ±3 lbs/s/f — UK Turf is -2.46; uncapped France was -4.79
+    # which combined with going corrections creates excessive going swing.
+    MAX_GA_COEFF = 3.0
     if "ga_value" in df.columns:
         ga_coeff = _compute_ga_correction_coeff(df)
+        ga_coeff = float(np.clip(ga_coeff, -MAX_GA_COEFF, MAX_GA_COEFF))
         if abs(ga_coeff) > 0.01:
             ga_adj = ga_coeff * df["ga_value"].fillna(0)
             df.loc[has_fig, "figure_calibrated"] += ga_adj[has_fig]
@@ -1018,12 +1022,22 @@ def _compute_going_corrections(df):
     grp_means = grp_groups.mean()
     grp_counts = grp_groups.count()
 
+    # Cap per-group corrections: France going corrections are computed from
+    # global residuals (figure_calibrated - global_mean) which capture
+    # confounded class/track/distance effects — unlike UK which computes
+    # going offsets after class+course+distance corrections.  UK going
+    # offsets are ±2 lbs; uncapped France corrections reach ±10 lbs.
+    # Cap at ±3 lbs to prevent over-correction while still adjusting
+    # for genuine going bias.
+    MAX_GOING_CORRECTION = 3.0
+
     corrections = {}
     for grp in grp_means.index:
         n = grp_counts[grp]
         raw = grp_means[grp]
         # Negative correction: if going group is over-rated, subtract
-        corrections[grp] = -(raw * n / (n + SHRINKAGE_K))
+        shrunk = -(raw * n / (n + SHRINKAGE_K))
+        corrections[grp] = float(np.clip(shrunk, -MAX_GOING_CORRECTION, MAX_GOING_CORRECTION))
 
     return corrections
 
