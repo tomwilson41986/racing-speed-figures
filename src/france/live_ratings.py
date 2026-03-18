@@ -202,19 +202,55 @@ class FranceLiveRatingEngine:
         ga_coeff = cal.get("ga_coeff", None) if isinstance(cal, dict) else None
         class_cal = {k: v for k, v in cal.items() if isinstance(v, dict)}
 
+        # Distance bands for distance-aware calibration (matches batch pipeline)
+        _DIST_BANDS = [
+            ("sprint",  0.0, 6.5),
+            ("mile",    6.5, 9.0),
+            ("middle",  9.0, 12.0),
+            ("staying", 12.0, 999),
+        ]
+
         for cls, params in class_cal.items():
             cls_mask = (df["raceClass"] == str(cls)) & has_wfa
             if not cls_mask.any():
                 continue
-            scale = params["scale"]
-            shift = params["shift"]
-            df.loc[cls_mask, "figure_calibrated"] = (
-                df.loc[cls_mask, "figure_after_wfa"] * scale + shift
-            )
-            calibrated_mask |= cls_mask
-            n = cls_mask.sum()
-            log.info("  Class %s: scale=%.3f shift=%+.1f  n=%d",
-                     cls, scale, shift, n)
+
+            # Use distance-band params if available (from batch calibration)
+            band_params = params.get("band_params")
+            if band_params and "distance" in df.columns:
+                for band_name, lo, hi in _DIST_BANDS:
+                    if band_name not in band_params:
+                        continue
+                    bp = band_params[band_name]
+                    band_mask = cls_mask & (df["distance"] >= lo) & (df["distance"] < hi)
+                    if not band_mask.any():
+                        continue
+                    df.loc[band_mask, "figure_calibrated"] = (
+                        df.loc[band_mask, "figure_after_wfa"] * bp["scale"] + bp["shift"]
+                    )
+                    calibrated_mask |= band_mask
+                    log.info("  Class %s/%s: scale=%.3f shift=%+.1f  n=%d",
+                             cls, band_name, bp["scale"], bp["shift"], band_mask.sum())
+
+                # Runners in this class not covered by any band: use aggregate
+                cls_uncovered = cls_mask & ~calibrated_mask
+                if cls_uncovered.any():
+                    df.loc[cls_uncovered, "figure_calibrated"] = (
+                        df.loc[cls_uncovered, "figure_after_wfa"] * params["scale"] + params["shift"]
+                    )
+                    calibrated_mask |= cls_uncovered
+                    log.info("  Class %s/other: scale=%.3f shift=%+.1f  n=%d",
+                             cls, params["scale"], params["shift"], cls_uncovered.sum())
+            else:
+                # No band params: use class-level aggregate
+                scale = params["scale"]
+                shift = params["shift"]
+                df.loc[cls_mask, "figure_calibrated"] = (
+                    df.loc[cls_mask, "figure_after_wfa"] * scale + shift
+                )
+                calibrated_mask |= cls_mask
+                log.info("  Class %s: scale=%.3f shift=%+.1f  n=%d",
+                         cls, scale, shift, cls_mask.sum())
 
         # Fallback for unmatched classes: weighted-average transform
         unmatched = has_wfa & ~calibrated_mask
