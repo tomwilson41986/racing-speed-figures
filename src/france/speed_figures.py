@@ -869,27 +869,14 @@ def calibrate_to_uk_scale(df):
                  robust_center, robust_std, fr_std, GLOBAL_TARGET_MEAN, GLOBAL_TARGET_STD,
                  scale, shift, f"{has_fig.sum():,}")
 
-    # ── Beaten-length band correction ──
-    # Horses beaten further are systematically over-rated because beaten-length
-    # estimates compress at larger margins.  Compute mean figure by BL band
-    # for winners vs beaten horses and apply correction.
-    bl_corrections = _compute_bl_band_corrections(df)
-    if bl_corrections:
-        cum_bl = df["distanceCumulative"].fillna(0).clip(lower=0)
-        bl_band = pd.cut(
-            cum_bl, bins=[0, 1, 3, 5, 10, 15, 20, 999],
-            labels=["0-1", "1-3", "3-5", "5-10", "10-15", "15-20", "20+"],
-            include_lowest=True,
-        ).astype(str).fillna("0-1")
-        # Winners get their own band
-        bl_band = bl_band.where(df["positionOfficial"] != 1, "winner")
-
-        bl_adj = bl_band.map(bl_corrections).fillna(0)
-        df.loc[has_fig, "figure_calibrated"] += bl_adj[has_fig]
-
-        cal_params["bl_corrections"] = bl_corrections
-        bl_str = ", ".join(f"{k}:{v:+.1f}" for k, v in sorted(bl_corrections.items()))
-        log.info("    BL band corrections: %s", bl_str)
+    # ── NOTE: BL band corrections REMOVED ──
+    # The _compute_bl_band_corrections() function measures the gap between
+    # beaten horses and the winner (residual = beaten_cal - winner_cal).
+    # This residual is almost entirely the BL penalty itself, so the
+    # "correction" just undoes beaten lengths — producing absurd results
+    # where horses finishing 10th rate higher than the winner.
+    # With the robust IQR-based scale, the BL extension works correctly
+    # and no band correction is needed.
 
     # ── Per-going-group residual correction ──
     going_corrections = _compute_going_corrections(df)
