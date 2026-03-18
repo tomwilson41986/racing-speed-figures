@@ -35,7 +35,7 @@ from .constants import (
     BENCHMARK_FURLONGS,
     BL_ATTENUATION_FACTOR,
     BL_ATTENUATION_THRESHOLD,
-    CLASS_ADJUSTMENT_PER_MILE,
+
     FRANCE_GOING_GA_PRIOR,
     FRANCE_GOOD_GOING,
     GA_NONLINEAR_BETA,
@@ -75,17 +75,6 @@ DEFAULT_CAL_PARAMS = {
 # ═════════════════════════════════════════════════════════════════════
 # STAGE 1 — STANDARD TIMES  (per track / distance / surface)
 # ═════════════════════════════════════════════════════════════════════
-
-def compute_class_adjustment(race_class, distance_furlongs):
-    """
-    Class adjustment in seconds for a given class and distance.
-
-    Same finding as UK: varying class adjustments hurt accuracy.
-    Returns a constant baseline (class 4) so the subtraction is
-    effectively a no-op absorbed by calibration.
-    """
-    adj_per_mile = CLASS_ADJUSTMENT_PER_MILE["4"]
-    return (adj_per_mile * distance_furlongs) / 8.0
 
 
 def _filter_std_time_winners(winners):
