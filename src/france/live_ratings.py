@@ -35,6 +35,10 @@ from .constants import (
     BL_ATTENUATION_FACTOR,
     BL_ATTENUATION_THRESHOLD,
     FRANCE_GOING_GA_PRIOR,
+    GA_NONLINEAR_BETA,
+    GA_NONLINEAR_THRESHOLD,
+    GA_OUTLIER_ZSCORE,
+    GA_SHRINKAGE_K,
     LPL_SURFACE_MULTIPLIER,
     SECONDS_PER_LENGTH,
 )
@@ -90,6 +94,94 @@ class FranceLiveRatingEngine:
         """Estimate GA from going description when no computed GA exists."""
         return FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05)
 
+    def _compute_realtime_ga(self, df):
+        """Compute going allowances from same-day results for meetings
+        not covered by pre-computed artifacts.
+
+        Mirrors the UK live_ratings approach:
+          1. For each meeting with >=3 winners that have standard times,
+             compute per-furlong deviations (no class adjustment — France).
+          2. Per-meeting z-score outlier removal.
+          3. Winsorized median.
+          4. Bayesian shrinkage toward going-description prior.
+          5. Non-linear correction for extreme going.
+
+        Returns dict of meeting_id → GA for newly computed meetings.
+        """
+        winners = df[df["positionOfficial"] == 1].copy()
+        winners["_std_time"] = interpolate_lookup(winners, self.std_times)
+        winners = winners[
+            winners["finishingTime"].notna()
+            & (winners["finishingTime"] > 0)
+            & winners["_std_time"].notna()
+        ].copy()
+
+        if len(winners) == 0:
+            return {}
+
+        # No class adjustment for France — deviation = raw finish - standard
+        winners["dev_per_furlong"] = (
+            (winners["finishingTime"] - winners["_std_time"])
+            / winners["distance"]
+        )
+
+        meetings = df.groupby("meeting_id").first()[
+            ["going", "courseName", "raceSurfaceName"]
+        ]
+        ga_dict = {}
+
+        for mid, group in winners.groupby("meeting_id"):
+            if len(group) < 3:
+                continue
+            vals = group["dev_per_furlong"].sort_values().values.copy()
+            n = len(vals)
+
+            # Per-meeting z-score outlier removal
+            if n > 2:
+                med = np.median(vals)
+                std = np.std(vals, ddof=1)
+                if std > 0:
+                    z = np.abs((vals - med) / std)
+                    vals = vals[z <= GA_OUTLIER_ZSCORE]
+                    n = len(vals)
+
+            if n < 3:
+                continue
+
+            # Winsorized median
+            if n > 2:
+                vals = np.sort(vals)
+                vals[0] = vals[1]
+                vals[-1] = vals[-2]
+            raw_ga = float(np.median(vals))
+
+            # Bayesian shrinkage toward going-description prior
+            going_desc = (
+                meetings.loc[mid, "going"]
+                if mid in meetings.index
+                else "Bon"
+            )
+            if pd.isna(going_desc):
+                going_desc = "Bon"
+            prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05)
+            ga = (n * raw_ga + GA_SHRINKAGE_K * prior_ga) / (n + GA_SHRINKAGE_K)
+
+            # Non-linear correction for extreme going
+            abs_ga = abs(ga)
+            if abs_ga > GA_NONLINEAR_THRESHOLD:
+                sign = 1.0 if ga > 0 else -1.0
+                excess = abs_ga - GA_NONLINEAR_THRESHOLD
+                ga += sign * GA_NONLINEAR_BETA * excess ** 2
+
+            ga_dict[mid] = ga
+            log.info(
+                "  %s: computed GA = %+.3f s/f "
+                "(%d winners, raw=%+.3f)",
+                mid, ga, len(group), raw_ga,
+            )
+
+        return ga_dict
+
     def compute_figures(self, df):
         """
         Compute speed figures for a DataFrame of runners.
@@ -141,13 +233,29 @@ class FranceLiveRatingEngine:
             log.info("  Velocity-weighted LPL applied to %d runners", has_both.sum())
         df.drop(columns=["winner_time"], inplace=True, errors="ignore")
 
-        # Going allowance: use pre-computed if available, else estimate
+        # Going allowance: use pre-computed if available, then try
+        # real-time computation from same-day results, then estimate
         df["going_allowance"] = df["meeting_id"].map(self.ga_dict)
         missing_ga = df["going_allowance"].isna()
         if missing_ga.any():
-            df.loc[missing_ga, "going_allowance"] = df.loc[missing_ga, "going"].map(
-                lambda g: self.estimate_going_allowance(g)
+            # Try to compute GA from today's results
+            realtime_ga = self._compute_realtime_ga(
+                df[df["meeting_id"].isin(
+                    df.loc[missing_ga, "meeting_id"].unique()
+                )]
             )
+            if realtime_ga:
+                log.info("  Real-time GA computed for %d meetings", len(realtime_ga))
+                rt_mapped = df["meeting_id"].map(realtime_ga)
+                still_missing = df["going_allowance"].isna()
+                df.loc[still_missing, "going_allowance"] = rt_mapped[still_missing]
+
+            # Final fallback: going description estimate
+            still_missing = df["going_allowance"].isna()
+            if still_missing.any():
+                df.loc[still_missing, "going_allowance"] = df.loc[
+                    still_missing, "going"
+                ].map(lambda g: self.estimate_going_allowance(g))
 
         # ── Quality checks ──────────────────────────────────────────
         # Mark races that fail quality checks so figures are not
