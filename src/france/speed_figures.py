@@ -159,26 +159,38 @@ def compute_standard_times(df):
     """
     Standard times per track / distance / surface.
 
-    Same algorithm as UK ``compute_standard_times()``:
-      1. Collect winning times (excluding maidens + 2yo-only)
-      2. Prefer races on good going; fall back to all goings
-      3. Take the median → standard time
+    Uses ALL goings with going-description prior adjustments to calibrate
+    standards to median ground conditions (GA audit §2: reduces GA corrective
+    burden from +0.25 spf to ~+0.08 spf).
+
+    For each winner, applies a prior-based going correction using the
+    FRANCE_GOING_GA_PRIOR table before computing the median.  This ensures
+    the initial standard times approximate "average conditions" rather than
+    "good going" conditions, which previously forced the GA to do ~2 seconds
+    of corrective work on a typical 8f race.
+
+    Falls back to uncorrected good-going winners for combos without enough
+    prior-adjusted data.
     """
     log.info("  Computing standard times (per track / distance / surface)...")
 
     winners = df[df["positionOfficial"] == 1].copy()
     winners = _filter_std_time_winners(winners)
-    winners_good = winners[winners["going"].isin(FRANCE_GOOD_GOING)].copy()
 
     log.info("    Winners total: %s", f"{len(winners):,}")
-    log.info("    Winners on good going: %s", f"{len(winners_good):,}")
 
-    # No class adjustment for France — the constant offset cancels between
-    # standard-time and figure computation (audit confirmed this is correct).
-    winners_good["adj_time"] = winners_good["finishingTime"]
+    # Apply prior-based going correction to ALL winners so that standards
+    # reflect median ground conditions, not just good-going conditions.
+    # This reduces GA corrective burden (GA audit §2).
+    winners["prior_ga"] = winners["going"].map(FRANCE_GOING_GA_PRIOR).fillna(
+        FRANCE_GOING_GA_PRIOR.get("Bon", 0.04 / 201.168)
+    )
+    winners["adj_time"] = (
+        winners["finishingTime"] - (winners["prior_ga"] * winners["distance"])
+    )
 
     std_times = (
-        winners_good.groupby("std_key")
+        winners.groupby("std_key")
         .agg(
             median_time=("adj_time", "median"),
             mean_time=("adj_time", "mean"),
@@ -189,34 +201,6 @@ def compute_standard_times(df):
         )
         .reset_index()
     )
-
-    # Identify combos that need the all-going fallback
-    all_std_keys = set(winners["std_key"].unique())
-    good_keys = set(
-        std_times.loc[
-            std_times["n_races"] >= C.MIN_RACES_STANDARD_TIME, "std_key"
-        ]
-    )
-    needs_fallback = all_std_keys - good_keys
-
-    if needs_fallback:
-        winners_all = winners.copy()
-        winners_all["adj_time"] = winners_all["finishingTime"]
-        fallback = (
-            winners_all[winners_all["std_key"].isin(needs_fallback)]
-            .groupby("std_key")
-            .agg(
-                median_time=("adj_time", "median"),
-                mean_time=("adj_time", "mean"),
-                n_races=("adj_time", "count"),
-                distance=("distance", "first"),
-                courseName=("courseName", "first"),
-                surface=("raceSurfaceName", "first"),
-            )
-            .reset_index()
-        )
-        std_times = std_times[std_times["std_key"].isin(good_keys)]
-        std_times = pd.concat([std_times, fallback], ignore_index=True)
 
     # Keep only combos with enough data
     valid = std_times[std_times["n_races"] >= C.MIN_RACES_STANDARD_TIME].copy()
@@ -495,6 +479,48 @@ def _apply_split_meetings(df, split_map):
         df.loc[late, "meeting_id"] = mid + "_late"
 
 
+def _log_systematic_ga_bias(ga_dict, min_meetings=20,
+                            threshold_spm=0.30 / 201.168):
+    """Log courses where the GA is systematically extreme, suggesting
+    the standard time is miscalibrated (GA audit §7).
+
+    Parameters
+    ----------
+    ga_dict : dict
+        meeting_id → GA in s/m.
+    min_meetings : int
+        Minimum meetings at a course to report.
+    threshold_spm : float
+        Mean |GA| above which a course is flagged (default 0.30 s/f in s/m).
+    """
+    course_gas = defaultdict(list)
+    for mid, ga in ga_dict.items():
+        # Parse course from meeting_id: "date_COURSE_surface[_early|_late]"
+        parts = mid.replace("_early", "").replace("_late", "").split("_", 2)
+        if len(parts) >= 2:
+            course = parts[1]
+            course_gas[course].append(ga)
+
+    flagged = []
+    for course, gas in course_gas.items():
+        if len(gas) < min_meetings:
+            continue
+        mean_ga = np.mean(gas)
+        if abs(mean_ga) > threshold_spm:
+            direction = "fast" if mean_ga < 0 else "slow"
+            spf = mean_ga * 201.168
+            flagged.append((course, len(gas), spf, direction))
+
+    if flagged:
+        flagged.sort(key=lambda x: abs(x[2]), reverse=True)
+        log.warning("    GA bias diagnostic — courses with systematically extreme GAs "
+                    "(standard may need recalibration):")
+        for course, n, spf, direction in flagged[:10]:
+            log.warning("      %s: %d meetings, mean GA %+.3f s/f (%s standard ~%.0fs %s at 8f)",
+                        course, n, spf, "too" if abs(spf) > 0.3 else "",
+                        abs(spf) * 8, direction)
+
+
 def compute_going_allowances(df, std_times):
     """
     Going allowance per meeting in seconds-per-metre (s/m).
@@ -539,6 +565,10 @@ def compute_going_allowances(df, std_times):
     # propagate splits to the main DataFrame.
     split_meetings = {}  # mid → raceNumber of first race in second half
     for mid, group in winners.groupby("meeting_id"):
+        # Skip already-split meetings to avoid double-suffixing
+        # (GA audit §5: malformed IDs like "SIO_Turf_early_early")
+        if mid.endswith("_early") or mid.endswith("_late"):
+            continue
         if len(group) < 6:
             continue
         ordered = group.sort_values("raceNumber")
@@ -663,16 +693,37 @@ def compute_going_allowances(df, std_times):
 
     ga_dict = corrected_dict
 
-    # ── Cap GA to a sane range (in s/m) ──
-    # Prevents clearly erroneous values (bad timing data) from propagating.
-    GA_MIN, GA_MAX = -1.5 / 201.168, 2.5 / 201.168
-    ga_dict = {mid: max(GA_MIN, min(GA_MAX, v)) for mid, v in ga_dict.items()}
+    # ── Soft-cap GA using Winsorisation (GA audit §3) ──
+    # Hard clipping at −1.5/+2.5 spf masked miscalibrated standards and
+    # discarded information at extremes.  Instead, use percentile-based
+    # soft caps: values beyond the 1st/99th percentile are Winsorised
+    # (clamped to the percentile boundary), preserving more signal while
+    # still preventing clearly erroneous values from propagating.
+    if ga_dict:
+        ga_vals = np.array(list(ga_dict.values()))
+        p1, p99 = np.percentile(ga_vals, [1, 99])
+        # Ensure a minimum sane range (in s/m) — don't let thin data
+        # produce absurdly tight caps
+        GA_FLOOR = -1.5 / 201.168
+        GA_CEIL = 2.5 / 201.168
+        ga_min = min(p1, GA_FLOOR)
+        ga_max = max(p99, GA_CEIL)
+        n_clipped = sum(1 for v in ga_dict.values() if v < ga_min or v > ga_max)
+        ga_dict = {mid: max(ga_min, min(ga_max, v)) for mid, v in ga_dict.items()}
+        if n_clipped > 0:
+            log.info("    GA soft-capped %d meetings (range: %.6f to %.6f s/m)",
+                     n_clipped, ga_min, ga_max)
 
     log.info("    Meetings with going allowance: %s", f"{len(ga_dict):,}")
     if ga_dict:
+        ga_vals_list = list(ga_dict.values())
         log.info("    GA range: %.6f to %.6f s/m",
-                 min(ga_dict.values()), max(ga_dict.values()))
-        log.info("    GA mean:  %.6f s/m", np.mean(list(ga_dict.values())))
+                 min(ga_vals_list), max(ga_vals_list))
+        log.info("    GA mean:  %.6f s/m", np.mean(ga_vals_list))
+
+        # ── Diagnostic: flag courses with systematically extreme GAs ──
+        # (GA audit §7) — identifies standards that need recalibration.
+        _log_systematic_ga_bias(ga_dict)
 
     return ga_dict, ga_se_dict, split_meetings
 
