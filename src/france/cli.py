@@ -258,8 +258,8 @@ def status(ctx):
 
 
 @cli.command("build-artifacts")
-@click.option("--s3-bucket", default=lambda: os.environ.get("S3_BUCKET"),
-              help="S3 bucket name (default: $S3_BUCKET).")
+@click.option("--s3-bucket", default=lambda: os.environ.get("S3_BUCKET", "frenchspeedfigures"),
+              help="S3 bucket name (default: $S3_BUCKET or frenchspeedfigures).")
 @click.option("--s3-key", default=lambda: os.environ.get("S3_KEY", "france.db"),
               help="S3 object key (default: $S3_KEY or france.db).")
 @click.option("--output-dir", default=None,
@@ -359,9 +359,20 @@ def build_artifacts(ctx, s3_bucket, s3_key, output_dir, skip_download, min_races
               help="Compute figures but don't write to DB.")
 @click.option("--min-races", type=int, default=None,
               help="Override minimum races for standard times (default 20).")
+@click.option("--s3-bucket", default=lambda: os.environ.get("S3_BUCKET", "frenchspeedfigures"),
+              help="S3 bucket name (default: $S3_BUCKET or frenchspeedfigures).")
+@click.option("--s3-key", default=lambda: os.environ.get("S3_KEY", "france.db"),
+              help="S3 object key (default: $S3_KEY or france.db).")
+@click.option("--skip-download", is_flag=True,
+              help="Skip S3 download (use existing local DB).")
 @click.pass_context
-def compute_figures(ctx, single_date, start, end, no_persist, min_races):
+def compute_figures(ctx, single_date, start, end, no_persist, min_races,
+                    s3_bucket, s3_key, skip_download):
     """Compute speed figures for French flat races.
+
+    Downloads france.db from S3 by default to ensure standard times are
+    generated from the latest complete dataset.  Use --skip-download to
+    use an existing local DB instead.
 
     With no date options, computes figures for ALL data in the database.
     Use --date for a single day, or --start/--end for a range.
@@ -370,6 +381,26 @@ def compute_figures(ctx, single_date, start, end, no_persist, min_races):
     from . import constants as C
 
     engine = ctx.obj["engine"]
+
+    # Download DB from S3 by default
+    if not skip_download:
+        if not s3_bucket:
+            click.echo("Warning: no S3 bucket configured, using local DB. "
+                        "Set S3_BUCKET or use --s3-bucket.", err=True)
+        else:
+            db_url = str(engine.url)
+            db_path = db_url.replace("sqlite:///", "") if "sqlite:///" in db_url else "france.db"
+            sync = S3Sync(bucket=s3_bucket, key=s3_key, db_path=db_path)
+            click.echo(f"Downloading s3://{s3_bucket}/{s3_key} ...")
+            if sync.download():
+                click.echo("Download complete.")
+                # Re-create engine so sessions connect to the fresh DB
+                engine.dispose()
+                engine = get_engine(db_url)
+                ctx.obj["engine"] = engine
+            else:
+                click.echo("S3 download failed — falling back to local DB.", err=True)
+
     session = get_session(engine)
 
     # Allow overriding minimum races threshold for limited data
@@ -494,16 +525,42 @@ def figures_status(ctx):
               help="Artifact directory (default: output/france).")
 @click.option("--output-csv", default=None,
               help="Output CSV path.")
+@click.option("--s3-bucket", default=lambda: os.environ.get("S3_BUCKET", "frenchspeedfigures"),
+              help="S3 bucket name (default: $S3_BUCKET or frenchspeedfigures).")
+@click.option("--s3-key", default=lambda: os.environ.get("S3_KEY", "france.db"),
+              help="S3 object key (default: $S3_KEY or france.db).")
+@click.option("--skip-download", is_flag=True,
+              help="Skip S3 download (use existing local DB).")
 @click.pass_context
-def rate_today(ctx, target_date, artifact_dir, output_csv):
+def rate_today(ctx, target_date, artifact_dir, output_csv,
+               s3_bucket, s3_key, skip_download):
     """Compute live daily ratings using pre-built artifacts.
 
-    Loads standard times, LPL, and going allowances from output/france/,
-    then rates all runners for the target date.
+    Downloads france.db from S3 by default to ensure ratings use the
+    latest data.  Loads standard times, LPL, and going allowances from
+    output/france/, then rates all runners for the target date.
     """
     from .live_ratings import FranceLiveRatingEngine, LIVE_DIR
 
     engine = ctx.obj["engine"]
+
+    # Download DB from S3 by default
+    if not skip_download:
+        if not s3_bucket:
+            click.echo("Warning: no S3 bucket configured, using local DB.", err=True)
+        else:
+            db_url = str(engine.url)
+            db_path = db_url.replace("sqlite:///", "") if "sqlite:///" in db_url else "france.db"
+            sync = S3Sync(bucket=s3_bucket, key=s3_key, db_path=db_path)
+            click.echo(f"Downloading s3://{s3_bucket}/{s3_key} ...")
+            if sync.download():
+                click.echo("Download complete.")
+                engine.dispose()
+                engine = get_engine(db_url)
+                ctx.obj["engine"] = engine
+            else:
+                click.echo("S3 download failed — falling back to local DB.", err=True)
+
     session = get_session(engine)
     d = target_date.date() if target_date else datetime.date.today()
 
