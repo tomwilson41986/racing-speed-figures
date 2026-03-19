@@ -40,6 +40,7 @@ from .constants import (
 )
 from .speed_figures import (
     generic_lbs_per_length,
+    interpolate_lookup,
     load_artifacts,
     FRANCE_OUTPUT_DIR,
 )
@@ -109,9 +110,9 @@ class FranceLiveRatingEngine:
         df = df.copy()
         df["figure_comment"] = ""
 
-        # Map standard times and LPL
-        df["standard_time"] = df["std_key"].map(self.std_times)
-        df["lpl"] = df["std_key"].map(self.lpl_dict)
+        # Interpolate standard times and LPL to actual distances
+        df["standard_time"] = interpolate_lookup(df, self.std_times)
+        df["lpl"] = interpolate_lookup(df, self.lpl_dict)
 
         # Fallback LPL for unmapped keys
         missing_lpl = df["lpl"].isna()
