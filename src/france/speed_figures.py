@@ -42,7 +42,6 @@ from .constants import (
     GA_NONLINEAR_THRESHOLD,
     GA_OUTLIER_ZSCORE,
     GA_SHRINKAGE_K,
-    INTERPOLATED_GA_WEIGHT,
     LBS_PER_SECOND_5F,
     LPL_SURFACE_MULTIPLIER,
     MIN_RACES_GOING_ALLOWANCE,
@@ -321,59 +320,6 @@ def compute_course_lpl(std_df):
 # STAGE 3 — GOING ALLOWANCE  (per track, per day)
 # ═════════════════════════════════════════════════════════════════════
 
-def _build_interpolated_std_times(std_times):
-    """Interpolate standard times for missing distances at each course/surface.
-
-    For GA inference only — NOT used for final figure computation.
-    Ported from UK pipeline: uses linear interpolation between adjacent
-    known distances at the same course/surface.  Only interpolates WITHIN
-    the range of known distances (no extrapolation).
-
-    Returns: dict of std_key → interpolated_time (excludes keys already
-    in std_times).
-    """
-    course_surface_dists = defaultdict(dict)
-    for key, time_val in std_times.items():
-        parts = key.rsplit("_", 2)
-        if len(parts) != 3:
-            continue
-        course, dist_str, surface = parts
-        try:
-            dist = float(dist_str)
-        except ValueError:
-            continue
-        course_surface_dists[(course, surface)][dist] = time_val
-
-    interpolated = {}
-    for (course, surface), dist_time in course_surface_dists.items():
-        if len(dist_time) < 2:
-            continue
-        dists = sorted(dist_time.keys())
-        times = [dist_time[d] for d in dists]
-
-        # Generate 0.5f increments within [min, max] known distances
-        d = dists[0]
-        while d <= dists[-1]:
-            key = f"{course}_{d}_{surface}"
-            if key not in std_times:
-                # Find bracketing known distances
-                lo_idx = 0
-                for i, kd in enumerate(dists):
-                    if kd <= d:
-                        lo_idx = i
-                    else:
-                        break
-                hi_idx = min(lo_idx + 1, len(dists) - 1)
-                if lo_idx != hi_idx:
-                    lo_d, hi_d = dists[lo_idx], dists[hi_idx]
-                    lo_t, hi_t = times[lo_idx], times[hi_idx]
-                    frac = (d - lo_d) / (hi_d - lo_d)
-                    interpolated[key] = lo_t + frac * (hi_t - lo_t)
-            d = round(d + 0.5, 1)
-
-    return interpolated
-
-
 def _parse_std_keys(lookup_dict):
     """Parse a std_key → value dict into {(course, surface): sorted [(dist, val), ...]}.
 
@@ -571,7 +517,6 @@ def compute_going_allowances(df, std_times):
                  len(split_meetings))
 
     # ── Weighted winsorized mean within each meeting ──
-    # Interpolated deviations get lower weight (INTERPOLATED_GA_WEIGHT).
     def _weighted_winsorized_mean(group):
         sorted_g = group.sort_values("dev_per_furlong")
         devs = sorted_g["dev_per_furlong"].values.copy()
