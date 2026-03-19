@@ -32,7 +32,7 @@ from . import constants as C
 from .constants import (
     BASE_RATING,
     BASE_WEIGHT_LBS,
-    BENCHMARK_FURLONGS,
+    BENCHMARK_METRES,
     BL_ATTENUATION_FACTOR,
     BL_ATTENUATION_THRESHOLD,
 
@@ -42,7 +42,7 @@ from .constants import (
     GA_NONLINEAR_THRESHOLD,
     GA_OUTLIER_ZSCORE,
     GA_SHRINKAGE_K,
-    LBS_PER_SECOND_5F,
+    LBS_PER_SECOND_BENCHMARK,
     LPL_SURFACE_MULTIPLIER,
     MIN_RACES_GOING_ALLOWANCE,
     RECENCY_HALF_LIFE_YEARS,
@@ -249,11 +249,12 @@ def compute_standard_times_iterative(df, going_allowances):
     ].copy()
 
     if len(below_threshold) > 0 and len(valid) > 0:
-        dist_median = valid.groupby(valid["distance"].round(0))["median_time"].median()
+        # Group by integer metres (PMU distances are naturally integer)
+        dist_median = valid.groupby(valid["distance"].astype(int))["median_time"].median()
         for idx, row in below_threshold.iterrows():
-            d_round = round(row["distance"])
-            if d_round in dist_median.index:
-                generic_std = dist_median[d_round]
+            d_int = int(row["distance"])
+            if d_int in dist_median.index:
+                generic_std = dist_median[d_int]
                 n = row["n_races"]
                 blended = (n * row["median_time"] + SHRINKAGE_K * generic_std) / (n + SHRINKAGE_K)
                 below_threshold.loc[idx, "median_time"] = blended
@@ -271,12 +272,12 @@ def compute_standard_times_iterative(df, going_allowances):
 # STAGE 2 — COURSE-SPECIFIC LBS PER LENGTH
 # ═════════════════════════════════════════════════════════════════════
 
-def generic_lbs_per_length(distance_furlongs, surface=None):
+def generic_lbs_per_length(distance_metres, surface=None):
     """
-    Generic lbs-per-length from distance (and optionally surface).
-    Same formula as UK pipeline.
+    Generic lbs-per-length from distance in metres (and optionally surface).
+    Same formula as UK pipeline, adapted for metre distances.
     """
-    lbs_per_sec = LBS_PER_SECOND_5F * (BENCHMARK_FURLONGS / distance_furlongs)
+    lbs_per_sec = LBS_PER_SECOND_BENCHMARK * (BENCHMARK_METRES / distance_metres)
     base_lpl = SECONDS_PER_LENGTH * lbs_per_sec
     if surface is not None:
         base_lpl *= LPL_SURFACE_MULTIPLIER.get(surface, 1.0)
@@ -286,22 +287,23 @@ def generic_lbs_per_length(distance_furlongs, surface=None):
 def compute_course_lpl(std_df):
     """
     Course-specific lbs-per-length for each standard-time combo.
-    Same algorithm as UK ``compute_course_lpl()``.
+    Same algorithm as UK ``compute_course_lpl()``, using metre distances.
     """
     log.info("  Computing course-specific lbs-per-length...")
 
     std_df = std_df.copy()
-    std_df["spf"] = std_df["median_time"] / std_df["distance"]
+    std_df["spm"] = std_df["median_time"] / std_df["distance"]
 
-    # Mean spf at each (rounded) distance across all courses
-    std_df["dist_band"] = std_df["distance"].round(0)
-    mean_spf = std_df.groupby("dist_band")["spf"].mean()
-    std_df["mean_spf"] = std_df["dist_band"].map(mean_spf)
+    # Mean spm at each distance across all courses
+    # (PMU distances are integer metres so grouping is natural)
+    std_df["dist_band"] = std_df["distance"].astype(int)
+    mean_spm = std_df.groupby("dist_band")["spm"].mean()
+    std_df["mean_spm"] = std_df["dist_band"].map(mean_spm)
 
     # Course correction factor
-    std_df["correction"] = std_df["mean_spf"] / std_df["spf"]
+    std_df["correction"] = std_df["mean_spm"] / std_df["spm"]
 
-    # Generic lpl at this distance
+    # Generic lpl at this distance (metres)
     std_df["generic_lpl"] = std_df["distance"].apply(generic_lbs_per_length)
 
     # Course-specific lpl with surface multiplier
@@ -443,7 +445,7 @@ def _apply_split_meetings(df, split_map):
 
 def compute_going_allowances(df, std_times):
     """
-    Going allowance per meeting in seconds-per-furlong (s/f).
+    Going allowance per meeting in seconds-per-metre (s/m).
 
     Now includes (ported from UK pipeline):
       - Interpolated standard times for GA inference (more winners contribute)
@@ -452,7 +454,7 @@ def compute_going_allowances(df, std_times):
     """
     log.info("  Computing going allowances (per track / day)...")
 
-    # Interpolate standard times to actual distances (not rounded 0.5f buckets)
+    # Interpolate standard times to actual distances
     winners = df[df["positionOfficial"] == 1].copy()
     winners["standard_time"] = interpolate_lookup(winners, std_times)
     winners = winners[winners["standard_time"].notna()].copy()
@@ -463,18 +465,18 @@ def compute_going_allowances(df, std_times):
              f"{len(winners):,}")
 
     # No class adjustment for France (consistent with standard times)
-    # Per-furlong deviation from standard
+    # Per-metre deviation from standard
     winners["deviation"] = winners["finishingTime"] - winners["standard_time"]
-    winners["dev_per_furlong"] = winners["deviation"] / winners["distance"]
+    winners["dev_per_metre"] = winners["deviation"] / winners["distance"]
 
     # ── Per-meeting outlier removal ──
-    meeting_medians = winners.groupby("meeting_id")["dev_per_furlong"].median()
-    meeting_stds = winners.groupby("meeting_id")["dev_per_furlong"].std()
+    meeting_medians = winners.groupby("meeting_id")["dev_per_metre"].median()
+    meeting_stds = winners.groupby("meeting_id")["dev_per_metre"].std()
     winners["_meeting_med"] = winners["meeting_id"].map(meeting_medians)
     winners["_meeting_std"] = winners["meeting_id"].map(meeting_stds)
     has_std = winners["_meeting_std"].notna() & (winners["_meeting_std"] > 0)
     z_scores = (
-        (winners["dev_per_furlong"] - winners["_meeting_med"])
+        (winners["dev_per_metre"] - winners["_meeting_med"])
         / winners["_meeting_std"]
     ).abs()
     winners = winners[~has_std | (z_scores <= GA_OUTLIER_ZSCORE)].copy()
@@ -490,8 +492,8 @@ def compute_going_allowances(df, std_times):
         ordered = group.sort_values("raceNumber")
         n = len(ordered)
         half = n // 2
-        first_half = ordered.iloc[:half]["dev_per_furlong"]
-        second_half = ordered.iloc[half:]["dev_per_furlong"]
+        first_half = ordered.iloc[:half]["dev_per_metre"]
+        second_half = ordered.iloc[half:]["dev_per_metre"]
 
         n1, n2 = len(first_half), len(second_half)
         if n1 < 2 or n2 < 2:
@@ -506,7 +508,8 @@ def compute_going_allowances(df, std_times):
             continue
         t_stat = abs(m1 - m2) / se
 
-        if t_stat > 2.5 and abs(m1 - m2) > 0.10:
+        # Threshold converted to s/m (0.10 s/f ÷ 201.168)
+        if t_stat > 2.5 and abs(m1 - m2) > 0.10 / 201.168:
             winners.loc[ordered.index[:half], "meeting_id"] = mid + "_early"
             winners.loc[ordered.index[half:], "meeting_id"] = mid + "_late"
             split_race = int(ordered.iloc[half]["raceNumber"])
@@ -518,8 +521,8 @@ def compute_going_allowances(df, std_times):
 
     # ── Weighted winsorized mean within each meeting ──
     def _weighted_winsorized_mean(group):
-        sorted_g = group.sort_values("dev_per_furlong")
-        devs = sorted_g["dev_per_furlong"].values.copy()
+        sorted_g = group.sort_values("dev_per_metre")
+        devs = sorted_g["dev_per_metre"].values.copy()
         weights = sorted_g["ga_weight"].values.copy()
         n = len(devs)
         if n <= 2:
@@ -530,11 +533,11 @@ def compute_going_allowances(df, std_times):
         return np.average(devs, weights=weights)
 
     ga_series = (
-        winners.groupby("meeting_id")[["dev_per_furlong", "ga_weight"]]
+        winners.groupby("meeting_id")[["dev_per_metre", "ga_weight"]]
         .apply(_weighted_winsorized_mean)
     )
     ga_count = (
-        winners.groupby("meeting_id")["dev_per_furlong"].count()
+        winners.groupby("meeting_id")["dev_per_metre"].count()
     )
 
     # ── GA standard error per meeting ──
@@ -549,7 +552,7 @@ def compute_going_allowances(df, std_times):
         return np.std(vals, ddof=1) / np.sqrt(n)
 
     ga_se_series = (
-        winners.groupby("meeting_id")["dev_per_furlong"]
+        winners.groupby("meeting_id")["dev_per_metre"]
         .apply(_winsorized_se)
     )
 
@@ -608,16 +611,16 @@ def compute_going_allowances(df, std_times):
 
     ga_dict = corrected_dict
 
-    # ── Cap GA to a sane range ──
+    # ── Cap GA to a sane range (in s/m) ──
     # Prevents clearly erroneous values (bad timing data) from propagating.
-    GA_MIN, GA_MAX = -1.5, 2.5
+    GA_MIN, GA_MAX = -1.5 / 201.168, 2.5 / 201.168
     ga_dict = {mid: max(GA_MIN, min(GA_MAX, v)) for mid, v in ga_dict.items()}
 
     log.info("    Meetings with going allowance: %s", f"{len(ga_dict):,}")
     if ga_dict:
-        log.info("    GA range: %.3f to %.3f s/f",
+        log.info("    GA range: %.6f to %.6f s/m",
                  min(ga_dict.values()), max(ga_dict.values()))
-        log.info("    GA mean:  %.3f s/f", np.mean(list(ga_dict.values())))
+        log.info("    GA mean:  %.6f s/m", np.mean(list(ga_dict.values())))
 
     return ga_dict, ga_se_dict, split_meetings
 
@@ -641,8 +644,9 @@ def _quality_check_winners(df, std_times):
     failed = {}   # race_id → comment
     winners = df[df["positionOfficial"] == 1]
 
-    MIN_PACE_SPF = 10.0
-    MAX_PACE_SPF = 18.0
+    # Plausible pace in seconds per metre (converted from 10–18 s/f)
+    MIN_PACE_SPM = 10.0 / 201.168
+    MAX_PACE_SPM = 18.0 / 201.168
 
     # Pre-compute which course/surface combos have standard times
     cs_with_std = set()
@@ -662,11 +666,11 @@ def _quality_check_winners(df, std_times):
         ft = row.get("finishingTime")
         dist = row.get("distance")
         if pd.notna(ft) and pd.notna(dist) and dist > 0:
-            pace_spf = ft / dist
-            if pace_spf < MIN_PACE_SPF or pace_spf > MAX_PACE_SPF:
+            pace_spm = ft / dist
+            if pace_spm < MIN_PACE_SPM or pace_spm > MAX_PACE_SPM:
                 failed[rid] = "no historical data to generate figures"
-                log.warning("    QC: Race %s failed — impossible pace %.1f s/f "
-                            "(time=%.2f, dist=%.1f)", rid, pace_spf, ft, dist)
+                log.warning("    QC: Race %s failed — impossible pace %.4f s/m "
+                            "(time=%.2f, dist=%.0fm)", rid, pace_spm, ft, dist)
 
     # QC-3: Broken beaten lengths
     for rid, grp in df.groupby("race_id"):
@@ -988,16 +992,15 @@ def calibrate_to_uk_scale(df):
         log.info("    Going corrections: %s", going_str)
 
     # ── Continuous GA correction ──
-    # Cap to ±3 lbs/s/f — UK Turf is -2.46; uncapped France was -4.79
-    # which combined with going corrections creates excessive going swing.
-    MAX_GA_COEFF = 3.0
+    # Cap GA coeff — scaled for s/m units (3 lbs/(s/f) × 201.168 ≈ 604)
+    MAX_GA_COEFF = 3.0 * 201.168
     if "ga_value" in df.columns:
         ga_coeff = _compute_ga_correction_coeff(df)
         ga_coeff = float(np.clip(ga_coeff, -MAX_GA_COEFF, MAX_GA_COEFF))
         if abs(ga_coeff) > 0.01:
             ga_adj = ga_coeff * df["ga_value"].fillna(0)
             df.loc[has_fig, "figure_calibrated"] += ga_adj[has_fig]
-            log.info("    Continuous GA coeff: %+.2f lbs per s/f", ga_coeff)
+            log.info("    Continuous GA coeff: %+.2f lbs per s/m", ga_coeff)
             cal_params["ga_coeff"] = ga_coeff
 
     # ── Exclude runners beaten > 20 lengths (unreliable) ──
@@ -1377,7 +1380,7 @@ def save_artifacts(std_dict, std_df, lpl_dict, ga_dict, ga_se_dict,
 
     Produces:
       - standard_times.csv  (std_key, median_time, course_lpl, ...)
-      - going_allowances.csv (meeting_id, going_allowance_spf)
+      - going_allowances.csv (meeting_id, going_allowance_spm)
       - france_artifacts.pkl (all dicts for fast loading)
     """
     output_dir = output_dir or FRANCE_OUTPUT_DIR
@@ -1393,7 +1396,7 @@ def save_artifacts(std_dict, std_df, lpl_dict, ga_dict, ga_se_dict,
     # 2. Going allowances CSV
     ga_df = pd.DataFrame(
         list(ga_dict.items()),
-        columns=["meeting_id", "going_allowance_spf"],
+        columns=["meeting_id", "going_allowance_spm"],
     )
     ga_path = os.path.join(output_dir, "going_allowances.csv")
     ga_df.to_csv(ga_path, index=False)
@@ -1464,7 +1467,7 @@ def load_artifacts(output_dir=None):
     ga_dict = {}
     if os.path.exists(ga_path):
         ga_df = pd.read_csv(ga_path)
-        ga_dict = dict(zip(ga_df["meeting_id"], ga_df["going_allowance_spf"]))
+        ga_dict = dict(zip(ga_df["meeting_id"], ga_df["going_allowance_spm"]))
 
     log.info("  Loaded from CSV: %d std_times, %d lpl, %d ga",
              len(std_times), len(lpl_dict), len(ga_dict))
