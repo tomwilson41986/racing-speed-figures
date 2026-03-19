@@ -697,21 +697,14 @@ def compute_course_lpl(std_df):
 # STAGE 3 — GOING ALLOWANCE  (per track, per day)
 # ═════════════════════════════════════════════════════════════════════
 
-def _build_interpolated_std_times(std_times):
-    """Interpolate standard times for missing distances at each course/surface.
+def _parse_std_keys(lookup_dict):
+    """Parse a std_key → value dict into {(course, surface): sorted [(dist, val), ...]}.
 
-    For GA inference only — NOT used for final figure computation.
-    Uses linear interpolation between adjacent known distances at the
-    same course/surface.  Only interpolates WITHIN the range of known
-    distances (no extrapolation).
-
-    Returns: dict of std_key → interpolated_time (excludes keys already
-    in std_times).
+    Reusable helper for standard-time and LPL interpolation.
     """
-    # Parse std_times keys: "CourseName_Distance_Surface"
     from collections import defaultdict
-    course_surface_dists = defaultdict(dict)
-    for key, time_val in std_times.items():
+    cs_map = defaultdict(list)
+    for key, val in lookup_dict.items():
         parts = key.rsplit("_", 2)
         if len(parts) != 3:
             continue
@@ -720,37 +713,64 @@ def _build_interpolated_std_times(std_times):
             dist = float(dist_str)
         except ValueError:
             continue
-        course_surface_dists[(course, surface)][dist] = time_val
+        cs_map[(course, surface)].append((dist, val))
+    for k in cs_map:
+        cs_map[k].sort()
+    return dict(cs_map)
 
-    interpolated = {}
-    for (course, surface), dist_time in course_surface_dists.items():
-        if len(dist_time) < 2:
+
+def _interp_single(actual_dist, dist_val_pairs):
+    """Linearly interpolate a value for actual_dist given sorted (dist, val) pairs.
+
+    Clamps to nearest known value if outside the range (no extrapolation).
+    """
+    if len(dist_val_pairs) == 1:
+        return dist_val_pairs[0][1]
+    dists = [dv[0] for dv in dist_val_pairs]
+    vals = [dv[1] for dv in dist_val_pairs]
+    if actual_dist <= dists[0]:
+        return vals[0]
+    if actual_dist >= dists[-1]:
+        return vals[-1]
+    for i in range(len(dists) - 1):
+        if dists[i] <= actual_dist <= dists[i + 1]:
+            frac = (actual_dist - dists[i]) / (dists[i + 1] - dists[i])
+            return vals[i] + frac * (vals[i + 1] - vals[i])
+    return vals[-1]
+
+
+def interpolate_lookup(df, lookup_dict, course_col="courseName",
+                       surface_col="raceSurfaceName", dist_col="distance"):
+    """Interpolate values from a std_key-keyed dict using actual distances.
+
+    Instead of rounding distances to 0.5f buckets and doing an exact lookup,
+    this linearly interpolates between the two nearest known distance buckets
+    at each course/surface.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain course_col, surface_col, and dist_col columns.
+    lookup_dict : dict
+        std_key → value (e.g., std_times or lpl_dict).
+
+    Returns
+    -------
+    pd.Series aligned with df.index, with NaN where interpolation is impossible.
+    """
+    cs_map = _parse_std_keys(lookup_dict)
+    result = pd.Series(np.nan, index=df.index)
+
+    for (course, surface), dist_val_pairs in cs_map.items():
+        mask = (df[course_col] == course) & (df[surface_col] == surface)
+        if not mask.any():
             continue
-        dists = sorted(dist_time.keys())
-        times = [dist_time[d] for d in dists]
+        actual_dists = df.loc[mask, dist_col]
+        result.loc[mask] = actual_dists.apply(
+            lambda d: _interp_single(d, dist_val_pairs)
+        )
 
-        # Generate 0.5f increments within [min, max] known distances
-        d = dists[0]
-        while d <= dists[-1]:
-            key = f"{course}_{d}_{surface}"
-            if key not in std_times:
-                # Linear interpolation between surrounding known distances
-                # Find bracketing known distances
-                lo_idx = 0
-                for i, kd in enumerate(dists):
-                    if kd <= d:
-                        lo_idx = i
-                    else:
-                        break
-                hi_idx = min(lo_idx + 1, len(dists) - 1)
-                if lo_idx != hi_idx:
-                    lo_d, hi_d = dists[lo_idx], dists[hi_idx]
-                    lo_t, hi_t = times[lo_idx], times[hi_idx]
-                    frac = (d - lo_d) / (hi_d - lo_d)
-                    interpolated[key] = lo_t + frac * (hi_t - lo_t)
-            d = round(d + 0.5, 1)
-
-    return interpolated
+    return result
 
 
 def _temporal_neighbor_ga(undersized_meetings, ga_dict):
@@ -830,21 +850,14 @@ def compute_going_allowances(df, std_times):
     """
     print("\n  Computing going allowances (per track / day)...")
 
-    # Layer 1: Interpolated standard times for GA inference
-    # This lets winners at unusual distances contribute to the meeting GA
-    interp_std = _build_interpolated_std_times(std_times)
-    all_std_for_ga = {**interp_std, **std_times}  # exact takes precedence
-
+    # Interpolate standard times to actual distances (not rounded 0.5f buckets)
     winners = df[df["positionOfficial"] == 1].copy()
-    winners = winners[winners["std_key"].isin(all_std_for_ga)].copy()
-    winners["standard_time"] = winners["std_key"].map(all_std_for_ga)
-    winners["ga_weight"] = np.where(
-        winners["std_key"].isin(std_times), 1.0, INTERPOLATED_GA_WEIGHT
-    )
+    winners["standard_time"] = interpolate_lookup(winners, std_times)
+    winners = winners[winners["standard_time"].notna()].copy()
+    # All winners now use distance-interpolated standard times
+    winners["ga_weight"] = 1.0
 
-    n_exact = winners["std_key"].isin(std_times).sum()
-    n_interp = len(winners) - n_exact
-    print(f"    Winners for GA: {n_exact:,} exact + {n_interp:,} interpolated")
+    print(f"    Winners for GA: {len(winners):,} (distance-interpolated)")
 
     # Class-adjust actual time before comparing to class-adjusted standard
     winners["class_adj"] = winners.apply(
@@ -914,7 +927,6 @@ def compute_going_allowances(df, std_times):
         print(f"    Split-card going detected: {len(split_meetings)} meetings split")
 
     # ── Weighted winsorized mean within each meeting ──
-    # Interpolated deviations get lower weight (INTERPOLATED_GA_WEIGHT).
     def _weighted_winsorized_mean(group):
         sorted_g = group.sort_values("dev_per_furlong")
         devs = sorted_g["dev_per_furlong"].values.copy()
@@ -1053,12 +1065,14 @@ def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
     print("\n  Computing winner speed figures...")
 
     w = df[df["positionOfficial"] == 1].copy()
+
+    # Interpolate standard times to actual distances instead of using rounded buckets
+    w["standard_time"] = interpolate_lookup(w, std_times)
     w = w[
-        w["std_key"].isin(std_times) &
+        w["standard_time"].notna() &
         w["meeting_id"].isin(going_allowances)
     ].copy()
 
-    w["standard_time"] = w["std_key"].map(std_times)
     w["going_allowance"] = w["meeting_id"].map(going_allowances)
 
     # Going-corrected time (NO class adjustment — figure reflects raw speed)
@@ -1071,8 +1085,8 @@ def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
     w["deviation_seconds"] = w["corrected_time"] - w["standard_time"]
     w["deviation_lengths"] = w["deviation_seconds"] / SECONDS_PER_LENGTH
 
-    # Course-specific lbs-per-length (fall back to generic+surface if missing)
-    w["lpl"] = w["std_key"].map(lpl_dict)
+    # Course-specific lbs-per-length interpolated to actual distance
+    w["lpl"] = interpolate_lookup(w, lpl_dict)
     missing_lpl = w["lpl"].isna()
     if missing_lpl.any():
         w.loc[missing_lpl, "lpl"] = w.loc[missing_lpl].apply(
@@ -1122,8 +1136,8 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict, std_times=None,
     out = df[df["race_id"].isin(winner_fig_dict)].copy()
     out["winner_figure"] = out["race_id"].map(winner_fig_dict)
 
-    # Course-specific lpl, with generic+surface fallback
-    out["lpl"] = out["std_key"].map(lpl_dict)
+    # Course-specific lpl interpolated to actual distance
+    out["lpl"] = interpolate_lookup(out, lpl_dict)
     missing = out["lpl"].isna()
     if missing.any():
         out.loc[missing, "lpl"] = out.loc[missing].apply(
@@ -1141,7 +1155,7 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict, std_times=None,
         winners = winners.drop_duplicates(subset="race_id")
         out = out.merge(winners, on="race_id", how="left")
 
-        out["standard_time"] = out["std_key"].map(std_times)
+        out["standard_time"] = interpolate_lookup(out, std_times)
         has_both = out["standard_time"].notna() & out["winner_time"].notna() & (out["winner_time"] > 0)
         # Clamp ratio to [0.85, 1.15] to prevent extreme adjustments
         velocity_ratio = (out["standard_time"] / out["winner_time"]).clip(0.85, 1.15)

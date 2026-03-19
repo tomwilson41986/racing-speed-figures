@@ -55,6 +55,7 @@ from speed_figures import (
     generic_lbs_per_length,
     get_wfa_allowance,
     compute_class_adjustment,
+    interpolate_lookup,
 )
 
 # ─── Directories ─────────────────────────────────────────────────────
@@ -998,14 +999,14 @@ class LiteRatingEngine:
 
         # Try to compute real GA from today's results
         winners = df[df["positionOfficial"] == 1].copy()
+        winners["standard_time"] = interpolate_lookup(winners, self.std_times)
         winners = winners[
             winners["finishingTime"].notna()
             & (winners["finishingTime"] > 0)
-            & winners["std_key"].isin(self.std_times)
+            & winners["standard_time"].notna()
         ].copy()
 
         if len(winners) > 0:
-            winners["standard_time"] = winners["std_key"].map(self.std_times)
             winners["class_adj"] = winners.apply(
                 lambda r: compute_class_adjustment(
                     r.get("raceClass", 4), r["distance"]
@@ -1096,11 +1097,13 @@ class LiteRatingEngine:
             has_time = all_winners["finishingTime"].notna() & (
                 all_winners["finishingTime"] > 0
             )
-            has_std = all_winners["std_key"].isin(self.std_times)
+            # Check interpolation coverage instead of exact key match
+            interp_std = interpolate_lookup(all_winners, self.std_times)
+            has_std = interp_std.notna()
             log.info(
                 f"  {n_winners} winners: "
                 f"{has_time.sum()} with finishingTime, "
-                f"{has_std.sum()} with std_key match"
+                f"{has_std.sum()} with standard time (interpolated)"
             )
             if has_time.sum() == 0:
                 log.info(
@@ -1108,10 +1111,6 @@ class LiteRatingEngine:
                     f"{all_winners['finishingTime'].head().tolist()}"
                 )
             if has_std.sum() == 0:
-                log.info(
-                    "  std_keys with no match (first 5): "
-                    f"{all_winners['std_key'].head().tolist()}"
-                )
                 # Show what keys exist in std_times for these courses
                 for crs in all_winners["courseName"].unique():
                     avail = [
@@ -1126,23 +1125,25 @@ class LiteRatingEngine:
             (df["positionOfficial"] == 1)
             & df["finishingTime"].notna()
             & (df["finishingTime"] > 0)
-            & df["std_key"].isin(self.std_times)
         ].copy()
+
+        # Interpolate standard times to actual distances
+        w["standard_time"] = interpolate_lookup(w, self.std_times)
+        w = w[w["standard_time"].notna()].copy()
 
         if len(w) == 0:
             log.warning("No winners with valid data — cannot compute figures")
             self._winner_figs = {}
             return df
 
-        w["standard_time"] = w["std_key"].map(self.std_times)
         w["corrected_time"] = (
             w["finishingTime"] - (w["going_allowance"] * w["distance"])
         )
         w["deviation_seconds"] = w["corrected_time"] - w["standard_time"]
         w["deviation_lengths"] = w["deviation_seconds"] / SECONDS_PER_LENGTH
 
-        # Course-specific LPL with generic fallback
-        w["lpl"] = w["std_key"].map(self.lpl_dict)
+        # Course-specific LPL interpolated to actual distance
+        w["lpl"] = interpolate_lookup(w, self.lpl_dict)
         missing_lpl = w["lpl"].isna()
         if missing_lpl.any():
             w.loc[missing_lpl, "lpl"] = w.loc[
@@ -1176,11 +1177,11 @@ class LiteRatingEngine:
 
         df_in["winner_figure"] = df_in["race_id"].map(self._winner_figs)
 
-        # Standard time from lookup
-        df_in["standard_time"] = df_in["std_key"].map(self.std_times)
+        # Standard time interpolated to actual distance
+        df_in["standard_time"] = interpolate_lookup(df_in, self.std_times)
 
-        # LPL
-        df_in["lpl"] = df_in["std_key"].map(self.lpl_dict)
+        # LPL interpolated to actual distance
+        df_in["lpl"] = interpolate_lookup(df_in, self.lpl_dict)
         missing = df_in["lpl"].isna()
         if missing.any():
             df_in.loc[missing, "lpl"] = df_in.loc[
