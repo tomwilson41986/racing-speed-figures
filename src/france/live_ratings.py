@@ -233,22 +233,18 @@ class FranceLiveRatingEngine:
             log.info("  Velocity-weighted LPL applied to %d runners", has_both.sum())
         df.drop(columns=["winner_time"], inplace=True, errors="ignore")
 
-        # Going allowance: use pre-computed if available, then try
-        # real-time computation from same-day results, then estimate
-        df["going_allowance"] = df["meeting_id"].map(self.ga_dict)
+        # Going allowance: prefer real-time computation (uses interpolated
+        # standard times), fall back to pre-computed artifacts, then estimate
+        realtime_ga = self._compute_realtime_ga(df)
+        if realtime_ga:
+            log.info("  Real-time GA computed for %d meetings", len(realtime_ga))
+        df["going_allowance"] = df["meeting_id"].map(realtime_ga)
+
+        # Fill gaps with pre-computed artifact GA
         missing_ga = df["going_allowance"].isna()
         if missing_ga.any():
-            # Try to compute GA from today's results
-            realtime_ga = self._compute_realtime_ga(
-                df[df["meeting_id"].isin(
-                    df.loc[missing_ga, "meeting_id"].unique()
-                )]
-            )
-            if realtime_ga:
-                log.info("  Real-time GA computed for %d meetings", len(realtime_ga))
-                rt_mapped = df["meeting_id"].map(realtime_ga)
-                still_missing = df["going_allowance"].isna()
-                df.loc[still_missing, "going_allowance"] = rt_mapped[still_missing]
+            artifact_mapped = df.loc[missing_ga, "meeting_id"].map(self.ga_dict)
+            df.loc[missing_ga, "going_allowance"] = artifact_mapped
 
             # Final fallback: going description estimate
             still_missing = df["going_allowance"].isna()
