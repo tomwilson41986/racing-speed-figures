@@ -109,14 +109,33 @@ def _filter_std_time_winners(winners):
     return winners[mask].copy()
 
 
-def _flag_divergence(std_df, threshold=0.05, exclude_threshold=0.10):
+def _trimmed_median(series, trim_frac=0.05):
+    """Trimmed median: drop the fastest and slowest ``trim_frac`` of values,
+    then return the median of what remains.
+
+    Methodology §Step 4: "Trim the fastest 5% and slowest 5%".
+
+    If the group is too small for the trim to remove at least one value
+    from each tail, falls back to the plain median.
+    """
+    vals = series.dropna().values
+    n = len(vals)
+    k = int(n * trim_frac)
+    if k < 1 or n - 2 * k < 3:
+        return np.median(vals)
+    sorted_vals = np.sort(vals)
+    return np.median(sorted_vals[k: n - k])
+
+
+def _flag_divergence(std_df, threshold=0.03, exclude_threshold=0.10):
     """Flag and optionally exclude standard times with high median-mean divergence.
 
+    Methodology QA check: alert if median-mean divergence exceeds 3%.
     Audit §2 identified 25 rows with >5% divergence between median and mean,
     indicating severe outlier contamination in the underlying race-time
     distribution.  Rows above ``exclude_threshold`` (default 10%) are dropped;
-    rows between ``threshold`` and ``exclude_threshold`` are flagged as
-    provisional.
+    rows between ``threshold`` (default 3%) and ``exclude_threshold`` are
+    flagged as provisional.
 
     Parameters
     ----------
@@ -155,6 +174,108 @@ def _flag_divergence(std_df, threshold=0.05, exclude_threshold=0.10):
     return std_df
 
 
+def _flag_going_dominance(winners_df, std_df, dominance_threshold=0.70):
+    """Flag standard-time combos where a single going description dominates.
+
+    Methodology QA: "No single going type should dominate >70% of a
+    standard's sample."  If one going description accounts for more than
+    ``dominance_threshold`` of the races, the standard may not generalise
+    well across conditions despite the prior-based correction.
+
+    Adds a ``going_dominance`` column (True if flagged).
+    """
+    std_df = std_df.copy()
+    std_df["going_dominance"] = False
+
+    if "going" not in winners_df.columns or "std_key" not in winners_df.columns:
+        return std_df
+
+    flagged = []
+    for key in std_df["std_key"]:
+        grp = winners_df.loc[winners_df["std_key"] == key, "going"]
+        if grp.empty:
+            continue
+        counts = grp.value_counts(normalize=True)
+        if counts.iloc[0] > dominance_threshold:
+            flagged.append(key)
+
+    if flagged:
+        std_df.loc[std_df["std_key"].isin(flagged), "going_dominance"] = True
+        log.info("    Going dominance (>%.0f%% single going): %d combos flagged",
+                 dominance_threshold * 100, len(flagged))
+
+    return std_df
+
+
+def _validate_monotonicity(std_df):
+    """Log warnings for course/surface combos where a longer distance has a
+    faster standard time than a shorter one.
+
+    Methodology QA: "Time must increase with distance within a course."
+    """
+    violations = []
+    for (course, surface), grp in std_df.groupby(["courseName", "surface"]):
+        if len(grp) < 2:
+            continue
+        ordered = grp.sort_values("distance")
+        dists = ordered["distance"].values
+        times = ordered["median_time"].values
+        for i in range(1, len(dists)):
+            if times[i] < times[i - 1]:
+                violations.append(
+                    f"{course} {surface}: {dists[i-1]:.0f}m={times[i-1]:.1f}s > "
+                    f"{dists[i]:.0f}m={times[i]:.1f}s"
+                )
+    if violations:
+        log.warning("    Monotonicity violations (%d):", len(violations))
+        for v in violations[:10]:
+            log.warning("      %s", v)
+        if len(violations) > 10:
+            log.warning("      ... and %d more", len(violations) - 10)
+    else:
+        log.info("    Monotonicity check: OK (all courses pass)")
+
+
+def _flag_cross_course_outliers(std_df, z_threshold=2.5):
+    """Flag standards whose seconds-per-metre is >``z_threshold`` standard
+    deviations from the distance-band peer mean.
+
+    Methodology QA: "Flag any standard >2.5σ from the distance-band peer
+    mean."  Adds a ``cross_course_outlier`` column.
+    """
+    std_df = std_df.copy()
+    std_df["cross_course_outlier"] = False
+
+    std_df["spm"] = std_df["median_time"] / std_df["distance"]
+    std_df["dist_band"] = std_df["distance"].round(-2)  # 100m bands
+
+    band_stats = std_df.groupby(["dist_band", "surface"])["spm"].agg(["mean", "std"])
+    band_stats.columns = ["band_mean", "band_std"]
+
+    std_df = std_df.merge(
+        band_stats, left_on=["dist_band", "surface"], right_index=True, how="left"
+    )
+
+    outlier_mask = (
+        (std_df["band_std"] > 0)
+        & (((std_df["spm"] - std_df["band_mean"]) / std_df["band_std"]).abs() > z_threshold)
+    )
+    n_outliers = outlier_mask.sum()
+    if n_outliers > 0:
+        std_df.loc[outlier_mask, "cross_course_outlier"] = True
+        flagged = std_df.loc[outlier_mask, ["std_key", "spm", "band_mean", "band_std"]]
+        log.warning("    Cross-course outliers (>%.1fσ): %d combos", z_threshold, n_outliers)
+        for _, row in flagged.head(10).iterrows():
+            z = (row["spm"] - row["band_mean"]) / row["band_std"]
+            log.warning("      %s: spm=%.4f, band_mean=%.4f (z=%.1f)",
+                        row["std_key"], row["spm"], row["band_mean"], z)
+    else:
+        log.info("    Cross-course outlier check: OK (none flagged)")
+
+    std_df.drop(columns=["spm", "dist_band", "band_mean", "band_std"], inplace=True)
+    return std_df
+
+
 def compute_standard_times(df):
     """
     Standard times per track / distance / surface.
@@ -164,13 +285,16 @@ def compute_standard_times(df):
     burden from +0.25 spf to ~+0.08 spf).
 
     For each winner, applies a prior-based going correction using the
-    FRANCE_GOING_GA_PRIOR table before computing the median.  This ensures
-    the initial standard times approximate "average conditions" rather than
-    "good going" conditions, which previously forced the GA to do ~2 seconds
-    of corrective work on a typical 8f race.
+    FRANCE_GOING_GA_PRIOR table before computing the trimmed median (5%
+    trim each tail, per STANDARD_TIMES_METHODOLOGY.md §Step 4).  This
+    ensures the initial standard times approximate "average conditions"
+    rather than "good going" conditions.
 
-    Falls back to uncorrected good-going winners for combos without enough
-    prior-adjusted data.
+    QA checks applied (per methodology):
+      - Median-mean divergence alerting at >3%
+      - Going distribution: flag if single going >70% of sample
+      - Monotonicity: time must increase with distance per course
+      - Cross-course z-score: flag >2.5σ from distance-band peer mean
     """
     log.info("  Computing standard times (per track / distance / surface)...")
 
@@ -189,18 +313,19 @@ def compute_standard_times(df):
         winners["finishingTime"] - (winners["prior_ga"] * winners["distance"])
     )
 
-    std_times = (
-        winners.groupby("std_key")
-        .agg(
-            median_time=("adj_time", "median"),
-            mean_time=("adj_time", "mean"),
-            n_races=("adj_time", "count"),
-            distance=("distance", "first"),
-            courseName=("courseName", "first"),
-            surface=("raceSurfaceName", "first"),
-        )
-        .reset_index()
-    )
+    std_rows = []
+    for key, grp in winners.groupby("std_key"):
+        adj = grp["adj_time"]
+        std_rows.append({
+            "std_key": key,
+            "median_time": _trimmed_median(adj),
+            "mean_time": adj.mean(),
+            "n_races": len(adj),
+            "distance": grp["distance"].iloc[0],
+            "courseName": grp["courseName"].iloc[0],
+            "surface": grp["raceSurfaceName"].iloc[0],
+        })
+    std_times = pd.DataFrame(std_rows)
 
     # Keep only combos with enough data
     valid = std_times[std_times["n_races"] >= C.MIN_RACES_STANDARD_TIME].copy()
@@ -209,8 +334,18 @@ def compute_standard_times(df):
     log.info("    Dropped (insufficient data): %s",
              f"{len(std_times) - len(valid):,}")
 
-    # Flag high median-mean divergence (audit §2: outlier contamination)
+    # Flag high median-mean divergence (methodology: alert at >3%)
     valid = _flag_divergence(valid)
+
+    # QA: going distribution check — flag combos where a single going
+    # description dominates >70% of the sample (methodology §QA).
+    valid = _flag_going_dominance(winners, valid)
+
+    # QA: monotonicity — time must increase with distance per course
+    _validate_monotonicity(valid)
+
+    # QA: cross-course outliers — flag standards >2.5σ from peer mean
+    valid = _flag_cross_course_outliers(valid)
 
     std_dict = dict(zip(valid["std_key"], valid["median_time"]))
     return std_dict, valid
@@ -246,12 +381,26 @@ def compute_standard_times_iterative(df, going_allowances):
     else:
         winners["recency_weight"] = 1.0
 
-    def _weighted_median(group):
+    def _weighted_trimmed_median(group, trim_frac=0.05):
+        """Weighted median with 5% trimming on each tail.
+
+        Methodology §Step 4: trim the fastest/slowest 5% before computing
+        the weighted median.  This resists outliers even better than
+        plain median, especially when recency weights amplify recent
+        anomalous races.
+        """
         times = group["adj_time"].values
         weights = group["recency_weight"].values
         sorted_idx = np.argsort(times)
         times = times[sorted_idx]
         weights = weights[sorted_idx]
+        # Trim tails
+        n = len(times)
+        k = int(n * trim_frac)
+        if k >= 1 and n - 2 * k >= 3:
+            times = times[k: n - k]
+            weights = weights[k: n - k]
+        # Weighted median on trimmed data
         cum_w = np.cumsum(weights)
         mid = cum_w[-1] / 2.0
         idx = np.searchsorted(cum_w, mid)
@@ -261,7 +410,7 @@ def compute_standard_times_iterative(df, going_allowances):
     for key, grp in winners.groupby("std_key"):
         std_rows.append({
             "std_key": key,
-            "median_time": _weighted_median(grp),
+            "median_time": _weighted_trimmed_median(grp),
             "mean_time": np.average(grp["adj_time"], weights=grp["recency_weight"]),
             "n_races": len(grp),
             "distance": grp["distance"].iloc[0],
@@ -294,8 +443,14 @@ def compute_standard_times_iterative(df, going_allowances):
         valid = pd.concat([valid, below_threshold], ignore_index=True)
         log.info("    Shrinkage combos added: %s", f"{len(below_threshold):,}")
 
-    # Flag high median-mean divergence (audit §2)
+    # Flag high median-mean divergence (methodology: alert at >3%)
     valid = _flag_divergence(valid)
+
+    # QA: monotonicity — time must increase with distance per course
+    _validate_monotonicity(valid)
+
+    # QA: cross-course outliers — flag standards >2.5σ from peer mean
+    valid = _flag_cross_course_outliers(valid)
 
     log.info("    Standard-time combos (>= %d races): %s (using all goings, recency-weighted)",
              C.MIN_RACES_STANDARD_TIME, f"{len(valid):,}")
@@ -1368,7 +1523,7 @@ def run_pipeline(session: Session, start_date=None, end_date=None,
         log.warning("No data loaded — aborting pipeline.")
         return df
 
-    # Stage 1: Initial standard times (good going only)
+    # Stage 1: Initial standard times (all goings, prior-corrected)
     std_dict, std_df = compute_standard_times(df)
     if not std_dict:
         log.warning("No standard times computed — aborting pipeline.")
