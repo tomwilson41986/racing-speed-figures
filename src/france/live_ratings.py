@@ -237,6 +237,7 @@ class FranceLiveRatingEngine:
         T = np.clip(BL_ATTENUATION_THRESHOLD + (ga * -8), 10, 30)
         cum = np.where(cum_raw <= T, cum_raw, T + BL_ATTENUATION_FACTOR * (cum_raw - T))
 
+        df["bl_effective"] = cum  # attenuated BL for QA display
         df["lbs_behind"] = cum * df["lpl"]
         df.loc[is_winner, "lbs_behind"] = 0.0
         df["raw_figure"] = df["winner_figure"] - df["lbs_behind"]
@@ -641,7 +642,7 @@ def save_qa_output(df, race_date, run_source="manual"):
         "corrected_time", "deviation_seconds", "deviation_lengths",
         "deviation_lbs",
         # All-runner extension
-        "winner_figure", "lbs_behind", "raw_figure",
+        "winner_figure", "bl_effective", "lbs_behind", "raw_figure",
         # Adjustments
         "weight_adj", "figure_after_weight",
         "wfa_adj", "figure_after_wfa",
@@ -743,8 +744,14 @@ def save_qa_output(df, race_date, run_source="manual"):
             lb = r.get("lbs_behind")
             raw = r.get("raw_figure")
             cum = r.get("distanceCumulative")
+            bl_eff = r.get("bl_effective")
             lines.append(f"    beaten_lengths       = {_fmt(cum)}L")
-            lines.append(f"    lbs_behind           = {_fmt(cum)} * {_fmt(lpl_val)} = {_fmt(lb)}")
+            if (pd.notna(cum) and pd.notna(bl_eff)
+                    and abs(cum - bl_eff) > 0.01):
+                lines.append(f"    bl_attenuated        = {_fmt(bl_eff)}L  (threshold exceeded)")
+                lines.append(f"    lbs_behind           = {_fmt(bl_eff)} * {_fmt(lpl_val)} = {_fmt(lb)}")
+            else:
+                lines.append(f"    lbs_behind           = {_fmt(cum)} * {_fmt(lpl_val)} = {_fmt(lb)}")
             lines.append(f"    raw_figure           = {_fmt(wf)} - {_fmt(lb)} = {_fmt(raw)}")
             _append_adjustment_lines(lines, r)
             lines.append("")
