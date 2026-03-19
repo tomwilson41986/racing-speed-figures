@@ -610,6 +610,58 @@ def compute_going_allowances(df, std_times):
 # STAGE 4 — WINNER SPEED FIGURES
 # ═════════════════════════════════════════════════════════════════════
 
+def _quality_check_winners(df, std_times):
+    """
+    Identify races that fail quality checks and should not produce figures.
+
+    Returns a set of race_ids that failed, plus a dict of
+    {race_id: comment} explaining the failure.
+
+    Checks:
+      QC-1: No standard time for the winner's course/distance.
+      QC-2: Impossible winner finishing time (pace outside 10–18 s/f).
+      QC-3: Broken beaten lengths (all non-winners share identical BL).
+    """
+    failed = {}   # race_id → comment
+    winners = df[df["positionOfficial"] == 1]
+
+    MIN_PACE_SPF = 10.0
+    MAX_PACE_SPF = 18.0
+
+    for _, row in winners.iterrows():
+        rid = row["race_id"]
+        # QC-1: No standard time for course/distance
+        if row.get("std_key") not in std_times:
+            failed[rid] = "no historical data to generate figures"
+            continue
+        # QC-2: Impossible winner finishing time
+        ft = row.get("finishingTime")
+        dist = row.get("distance")
+        if pd.notna(ft) and pd.notna(dist) and dist > 0:
+            pace_spf = ft / dist
+            if pace_spf < MIN_PACE_SPF or pace_spf > MAX_PACE_SPF:
+                failed[rid] = "no historical data to generate figures"
+                log.warning("    QC: Race %s failed — impossible pace %.1f s/f "
+                            "(time=%.2f, dist=%.1f)", rid, pace_spf, ft, dist)
+
+    # QC-3: Broken beaten lengths
+    for rid, grp in df.groupby("race_id"):
+        if rid in failed:
+            continue
+        non_winners = grp[grp["positionOfficial"] != 1]
+        if len(non_winners) >= 3:
+            bl_vals = non_winners["distanceCumulative"].dropna()
+            if len(bl_vals) >= 3 and bl_vals.nunique() == 1:
+                failed[rid] = "no historical data to generate figures"
+                log.warning("    QC: Race %s failed — all beaten lengths "
+                            "identical (%.2f)", rid, bl_vals.iloc[0])
+
+    if failed:
+        log.info("    QC: %d races failed quality checks", len(failed))
+
+    return failed
+
+
 def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
     """
     Speed figures for race winners.
@@ -617,10 +669,14 @@ def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
     """
     log.info("  Computing winner speed figures...")
 
+    # ── Quality checks — exclude races that should not produce figures ──
+    qc_failed = _quality_check_winners(df, std_times)
+
     w = df[df["positionOfficial"] == 1].copy()
     w = w[
         w["std_key"].isin(std_times)
         & w["meeting_id"].isin(going_allowances)
+        & ~w["race_id"].isin(qc_failed)
     ].copy()
 
     w["standard_time"] = w["std_key"].map(std_times)
@@ -664,7 +720,7 @@ def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
         log.info("    Mean:  %.1f", w["raw_figure"].mean())
 
     winner_fig = dict(zip(w["race_id"], w["raw_figure"]))
-    return w, winner_fig
+    return w, winner_fig, qc_failed
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1211,9 +1267,18 @@ def run_pipeline(session: Session, start_date=None, end_date=None,
     df["ga_value"] = df["meeting_id"].map(ga_dict).fillna(0)
 
     # Stage 4: Winner figures
-    winner_df, winner_fig_dict = compute_winner_figures(
+    winner_df, winner_fig_dict, qc_failed = compute_winner_figures(
         df, std_dict, ga_dict, lpl_dict
     )
+
+    # Annotate races that failed quality checks:
+    # no historical data to generate figures
+    df["figure_comment"] = ""
+    if qc_failed:
+        failed_mask = df["race_id"].isin(qc_failed)
+        df.loc[failed_mask, "figure_comment"] = (
+            "no historical data to generate figures"
+        )
 
     # Stage 5: All-runner figures
     df = compute_all_figures(

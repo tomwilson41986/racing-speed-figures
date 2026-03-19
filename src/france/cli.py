@@ -561,6 +561,7 @@ def rate_today(ctx, target_date, artifact_dir, output_csv):
             "raceSurfaceName", "raceClass", "horseAge", "weightCarried",
             "finishingTime", "distanceCumulative", "going_allowance",
             "raw_figure", "weight_adj", "wfa_adj", "figure_calibrated", "figure_final",
+            "figure_comment",
         ] if c in df.columns]
         df[out_cols].to_csv(csv_path, index=False)
         click.echo(f"\nSaved: {csv_path}")
@@ -577,7 +578,7 @@ def rate_today(ctx, target_date, artifact_dir, output_csv):
             "standard_time", "lpl", "going_allowance",
             "raw_figure", "weight_adj", "figure_after_weight",
             "wfa_adj", "figure_after_wfa",
-            "figure_calibrated", "figure_final",
+            "figure_calibrated", "figure_final", "figure_comment",
         ] if c in df.columns]
         df[audit_cols].to_csv(str(audit_path), index=False)
         click.echo(f"Audit CSV: {audit_path}")
