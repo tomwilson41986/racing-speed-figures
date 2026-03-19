@@ -539,7 +539,7 @@ def rate_today(ctx, target_date, artifact_dir, output_csv):
         from pathlib import Path
         xlsx_dir = Path(LIVE_DIR).parent.parent / "output" / "daily_ratings"
         os.makedirs(xlsx_dir, exist_ok=True)
-        xlsx_path = xlsx_dir / f"ratings_{d.isoformat()}.xlsx"
+        xlsx_path = xlsx_dir / f"france_ratings_{d.isoformat()}.xlsx"
         xlsx_cols = [c for c in [
             "meetingDate", "courseName", "raceNumber", "race_id",
             "horseName", "positionOfficial", "distance", "going",
