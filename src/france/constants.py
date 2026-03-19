@@ -190,6 +190,24 @@ def classify_french_race(race_name: str, prize_money) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# NON-FRENCH COURSE BLOCKLIST
+# ─────────────────────────────────────────────────────────────────────
+# Course codes identified in the QA audit (french_standard_times_audit.md §3)
+# that are not French racecourses.  These leak in from UK, Irish, German,
+# and Swiss fixtures and contaminate French standard times.
+NON_FRENCH_COURSE_CODES = {
+    # British
+    "ASC", "DON", "EPS", "GOO", "HAY", "KEM", "MKT", "NBU", "SDW", "WAR", "YOR",
+    # Irish
+    "CUR", "DUB", "GAL", "LEO",
+    # German
+    "BAD", "DUS", "FRA", "KOE",
+    # Swiss
+    "ZUR",
+}
+
+
+# ─────────────────────────────────────────────────────────────────────
 # PSF (ALL-WEATHER) TRACK IDENTIFICATION
 # ─────────────────────────────────────────────────────────────────────
 

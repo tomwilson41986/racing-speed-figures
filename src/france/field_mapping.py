@@ -20,6 +20,7 @@ from .beaten_lengths import compute_cumulative_bl
 from .constants import (
     FRANCE_SEX_MAP,
     KG_TO_LBS,
+    NON_FRENCH_COURSE_CODES,
     classify_french_race,
     detect_surface,
     is_maiden_race,
@@ -211,6 +212,9 @@ def _filter_valid(df: pd.DataFrame) -> pd.DataFrame:
     winner time (winner_time_s).  Individual runner times are not required
     because PMU only provides the winner's time — other runners get their
     figures via beaten-length extension.
+
+    Also removes non-French course codes identified in the QA audit
+    (see NON_FRENCH_COURSE_CODES in constants.py).
     """
     winner_time = pd.to_numeric(df["winner_time_s"], errors="coerce")
     mask = (
@@ -219,6 +223,17 @@ def _filter_valid(df: pd.DataFrame) -> pd.DataFrame:
         & (df["distance"] > 0)
         & df["positionOfficial"].notna()
     )
+
+    # Remove non-French courses (audit §3: UK, Irish, German, Swiss leakage)
+    if "courseName" in df.columns:
+        is_non_french = df["courseName"].str.upper().str.strip().isin(NON_FRENCH_COURSE_CODES)
+        n_non_french = (mask & is_non_french).sum()
+        if n_non_french > 0:
+            log.info("  Removed %s rows from non-French courses: %s",
+                     f"{n_non_french:,}",
+                     sorted(df.loc[mask & is_non_french, "courseName"].unique()))
+        mask &= ~is_non_french
+
     filtered = df[mask].copy()
     log.info("  After validity filter: %s rows", f"{len(filtered):,}")
     return filtered
