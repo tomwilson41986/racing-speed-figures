@@ -107,6 +107,7 @@ class FranceLiveRatingEngine:
             return df
 
         df = df.copy()
+        df["figure_comment"] = ""
 
         # Map standard times and LPL
         df["standard_time"] = df["std_key"].map(self.std_times)
@@ -130,8 +131,58 @@ class FranceLiveRatingEngine:
                 lambda g: self.estimate_going_allowance(g)
             )
 
-        # Only process runners with standard times
-        has_std = df["standard_time"].notna()
+        # ── Quality checks ──────────────────────────────────────────
+        # Mark races that fail quality checks so figures are not
+        # generated.  Affected runners get figure_final = NaN and a
+        # descriptive comment instead.
+
+        failed_race_ids = set()
+
+        # QC-1: No standard time for winner's course/distance
+        #   → no historical data to generate figures
+        winners_all = df[df["positionOfficial"] == 1]
+        for race_id, row in winners_all.iterrows():
+            rid = row["race_id"]
+            if pd.isna(row.get("standard_time")):
+                failed_race_ids.add(rid)
+
+        # QC-2: Impossible winner finishing time
+        #   Plausible pace is 10–18 seconds per furlong for flat turf.
+        #   Anything outside this range indicates bad source data.
+        MIN_PACE_SPF = 10.0
+        MAX_PACE_SPF = 18.0
+        for race_id, row in winners_all.iterrows():
+            rid = row["race_id"]
+            ft = row.get("finishingTime")
+            dist = row.get("distance")
+            if pd.notna(ft) and pd.notna(dist) and dist > 0:
+                pace_spf = ft / dist
+                if pace_spf < MIN_PACE_SPF or pace_spf > MAX_PACE_SPF:
+                    failed_race_ids.add(rid)
+                    log.warning("  QC: Race %s failed — impossible pace %.1f s/f "
+                                "(time=%.2f, dist=%.1f)", rid, pace_spf, ft, dist)
+
+        # QC-3: Broken beaten lengths (all non-winners share identical
+        #   cumulative BL — indicates parser failure on source data)
+        for rid, grp in df.groupby("race_id"):
+            non_winners = grp[grp["positionOfficial"] != 1]
+            if len(non_winners) >= 3:
+                bl_vals = non_winners["distanceCumulative"].dropna()
+                if len(bl_vals) >= 3 and bl_vals.nunique() == 1:
+                    failed_race_ids.add(rid)
+                    log.warning("  QC: Race %s failed — all beaten lengths "
+                                "identical (%.2f)", rid, bl_vals.iloc[0])
+
+        if failed_race_ids:
+            failed_mask = df["race_id"].isin(failed_race_ids)
+            df.loc[failed_mask, "figure_comment"] = (
+                "no historical data to generate figures"
+            )
+            log.info("  QC: %d races (%d runners) failed quality checks",
+                     len(failed_race_ids), failed_mask.sum())
+
+        # Only process runners with standard times AND passing QC
+        has_std = df["standard_time"].notna() & ~df["race_id"].isin(failed_race_ids)
         log.info("  Runners with standard times: %d / %d", has_std.sum(), len(df))
 
         # --- Winner figures ---
@@ -591,6 +642,7 @@ def main():
             "raceSurfaceName", "raceClass", "horseAge", "weightCarried",
             "finishingTime", "distanceCumulative", "going_allowance",
             "raw_figure", "weight_adj", "wfa_adj", "figure_calibrated", "figure_final",
+            "figure_comment",
         ] if c in df.columns]
         df[out_cols].to_csv(csv_path, index=False)
         print(f"\nSaved: {csv_path}")
