@@ -20,7 +20,6 @@ from .beaten_lengths import compute_cumulative_bl
 from .constants import (
     FRANCE_SEX_MAP,
     KG_TO_LBS,
-    METERS_PER_FURLONG,
     classify_french_race,
     detect_surface,
     is_maiden_race,
@@ -41,7 +40,7 @@ def load_france_dataframe(
     Mirrors ``load_data()`` + ``filter_uk_ire_flat()`` from the UK pipeline:
     loads raw data, filters to flat races with valid times, applies unit
     conversions, and builds derived columns (race_id, meeting_id, std_key,
-    dist_round, month).
+    month).  Distances are kept in metres throughout (no furlong conversion).
 
     Parameters
     ----------
@@ -165,10 +164,9 @@ def _map_fields(df: pd.DataFrame) -> pd.DataFrame:
     # Prize fund
     out["prizeFund"] = pd.to_numeric(out["prize_money"], errors="coerce")
 
-    # ── Distance: meters → furlongs ──
+    # ── Distance: keep in metres (no conversion, no rounding) ──
     out["distance_m_raw"] = pd.to_numeric(out["distance_m"], errors="coerce")
-    out["distance"] = out["distance_m_raw"] / METERS_PER_FURLONG
-    out["distanceFurlongs"] = out["distance"]
+    out["distance"] = out["distance_m_raw"]
 
     # ── Runner fields ──
     out["positionOfficial"] = pd.to_numeric(out["finish_position"], errors="coerce")
@@ -227,10 +225,7 @@ def _filter_valid(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _build_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Build race_id, meeting_id, std_key, dist_round — mirrors UK pipeline."""
-    # Distance rounding to nearest 0.5 furlongs (same as UK)
-    df["dist_round"] = (df["distance"] * 2).round(0) / 2
-
+    """Build race_id, meeting_id, std_key from exact metre distances."""
     # Race ID (unique per race)
     df["race_id"] = (
         df["meetingDate"].astype(str) + "_"
@@ -245,10 +240,11 @@ def _build_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
         + df["raceSurfaceName"].astype(str)
     )
 
-    # Standard-time key — one per track + rounded distance + surface (same as UK)
+    # Standard-time key — one per track + exact distance (metres) + surface
+    # Uses integer metres from PMU (e.g. "AIX_2000_Turf") — no rounding.
     df["std_key"] = (
         df["courseName"].astype(str) + "_"
-        + df["dist_round"].astype(str) + "_"
+        + df["distance"].astype(int).astype(str) + "_"
         + df["raceSurfaceName"].astype(str)
     )
 

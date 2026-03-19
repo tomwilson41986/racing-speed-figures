@@ -16,8 +16,8 @@ import re
 BASE_RATING = 100          # 100-rated horse = standard time on good ground
 BASE_WEIGHT_LBS = 126      # 9st 0lb — flat racing base weight
 SECONDS_PER_LENGTH = 0.2   # BHA standard
-LBS_PER_SECOND_5F = 20     # Empirical (matches UK pipeline)
-BENCHMARK_FURLONGS = 5.0   # Anchor distance
+LBS_PER_SECOND_BENCHMARK = 20   # Empirical (matches UK pipeline, anchor at ~1006m)
+BENCHMARK_METRES = 1005.84      # 5 furlongs in metres (5 × 201.168)
 
 # Surface-specific LPL multipliers (same as UK)
 LPL_SURFACE_MULTIPLIER = {
@@ -33,12 +33,12 @@ BL_ATTENUATION_FACTOR = 0.5
 MIN_RACES_STANDARD_TIME = 20
 MIN_RACES_GOING_ALLOWANCE = 3
 
-# Going-allowance robustness parameters (same as UK)
+# Going-allowance robustness parameters (same as UK, converted to s/m)
 GA_OUTLIER_ZSCORE = 3.0
 GA_SHRINKAGE_K = 3.0
-GA_NONLINEAR_THRESHOLD = 0.30
-GA_NONLINEAR_BETA = 0.25
-GA_CONVERGENCE_TOL = 0.005
+GA_NONLINEAR_THRESHOLD = 0.30 / 201.168   # ~0.001491 s/m (was 0.30 s/f)
+GA_NONLINEAR_BETA = 0.25 * 201.168        # ~50.292 (scaled for s/m²→s/m)
+GA_CONVERGENCE_TOL = 0.005 / 201.168      # ~0.0000249 s/m
 INTERPOLATED_GA_WEIGHT = 0.7   # Discount weight for interpolated standard times in GA
 
 # Recency weighting for iterative standard times (same as UK)
@@ -79,49 +79,51 @@ FRANCE_GOOD_GOING = {
     "PSF STANDARD", "PSF RAPIDE",
 }
 
-# Going-description GA priors for Bayesian shrinkage.
+# Going-description GA priors for Bayesian shrinkage (in seconds per metre).
 # Updated from empirical means computed over ~12,000 meetings.
-# Original seeds had Souple at 0.51 (actual: 0.32), inflating GAs
+# Original seeds had Souple at 0.51 s/f (actual: 0.32), inflating GAs
 # for soft going and producing over-corrected figures.
+# All values converted from s/f to s/m (÷ 201.168).
+_M = 201.168  # metres per furlong — conversion factor
 FRANCE_GOING_GA_PRIOR = {
     # Turf going descriptions — empirical values from ~12,000 French meetings.
     # All casing variants map to the same empirical value.
-    "Très Sec":      -0.25,
-    "Tres Sec":      -0.25,
-    "Sec":           -0.21,
-    "Très leger":     0.05,   # empirical ~0.05
-    "Tres leger":     0.05,
-    "Très Leger":     0.05,
-    "Tres Leger":     0.05,
-    "Bon Léger":      0.02,   # empirical 0.02
-    "Bon Leger":      0.02,
-    "Bon léger":      0.02,
-    "Bon leger":      0.02,
-    "Léger":          0.05,   # empirical ~0.05
-    "Leger":          0.05,
-    "Bon":            0.04,   # empirical 0.037
-    "Bon Souple":     0.14,   # empirical 0.14
-    "Bon souple":     0.14,
-    "Souple":         0.32,   # empirical 0.32
-    "Très Souple":    0.52,   # empirical 0.52
-    "Tres Souple":    0.52,
-    "Très souple":    0.52,
-    "Tres souple":    0.52,
-    "Collant":        0.81,   # empirical 0.81
-    "Lourd":          0.68,   # empirical 0.68
-    "Très lourd":     0.90,   # empirical 0.90
-    "Tres lourd":     0.90,
-    "Très Lourd":     0.90,
-    "Tres Lourd":     0.90,
+    "Très Sec":      -0.25 / _M,
+    "Tres Sec":      -0.25 / _M,
+    "Sec":           -0.21 / _M,
+    "Très leger":     0.05 / _M,   # empirical ~0.05 s/f
+    "Tres leger":     0.05 / _M,
+    "Très Leger":     0.05 / _M,
+    "Tres Leger":     0.05 / _M,
+    "Bon Léger":      0.02 / _M,   # empirical 0.02 s/f
+    "Bon Leger":      0.02 / _M,
+    "Bon léger":      0.02 / _M,
+    "Bon leger":      0.02 / _M,
+    "Léger":          0.05 / _M,   # empirical ~0.05 s/f
+    "Leger":          0.05 / _M,
+    "Bon":            0.04 / _M,   # empirical 0.037 s/f
+    "Bon Souple":     0.14 / _M,   # empirical 0.14 s/f
+    "Bon souple":     0.14 / _M,
+    "Souple":         0.32 / _M,   # empirical 0.32 s/f
+    "Très Souple":    0.52 / _M,   # empirical 0.52 s/f
+    "Tres Souple":    0.52 / _M,
+    "Très souple":    0.52 / _M,
+    "Tres souple":    0.52 / _M,
+    "Collant":        0.81 / _M,   # empirical 0.81 s/f
+    "Lourd":          0.68 / _M,   # empirical 0.68 s/f
+    "Très lourd":     0.90 / _M,   # empirical 0.90 s/f
+    "Tres lourd":     0.90 / _M,
+    "Très Lourd":     0.90 / _M,
+    "Tres Lourd":     0.90 / _M,
     # PSF (artificial surface) — empirical values
-    "PSF STANDARD":   0.04,
-    "PSF RAPIDE":    -0.01,   # empirical -0.013
-    "PSF LENTE":      0.08,   # empirical 0.077
-    "PSF":            0.01,   # empirical 0.008
-    "Standard":       0.04,
-    # Unknown/empty — fall back to near-Bon (0.05)
-    "Inconnu":        0.05,
-    "":               0.05,
+    "PSF STANDARD":   0.04 / _M,
+    "PSF RAPIDE":    -0.01 / _M,   # empirical -0.013 s/f
+    "PSF LENTE":      0.08 / _M,   # empirical 0.077 s/f
+    "PSF":            0.01 / _M,   # empirical 0.008 s/f
+    "Standard":       0.04 / _M,
+    # Unknown/empty — fall back to near-Bon
+    "Inconnu":        0.05 / _M,
+    "":               0.05 / _M,
 }
 
 # Ordinal encoding for potential future ML use
@@ -282,7 +284,7 @@ _WFA_DIST_COLS = [5, 6, 7, 8, 10, 12]
 _WFA_2YO_FLAT = 12
 
 
-def get_france_wfa_allowance(age, month, distance_furlongs):
+def get_france_wfa_allowance(age, month, distance_metres):
     """Return empirical WFA allowance in lbs for a French flat runner.
 
     Parameters
@@ -291,8 +293,8 @@ def get_france_wfa_allowance(age, month, distance_furlongs):
         Horse age (2, 3, 4, …)
     month : int
         Calendar month 1-12.
-    distance_furlongs : float
-        Race distance in furlongs.
+    distance_metres : float
+        Race distance in metres.
 
     Returns
     -------
@@ -306,7 +308,8 @@ def get_france_wfa_allowance(age, month, distance_furlongs):
     row = _EMPIRICAL_WFA_3YO.get(int(month))
     if row is None:
         return 0.0
-    d = float(distance_furlongs)
+    # Convert metres to furlongs for WFA table lookup
+    d = float(distance_metres) / METERS_PER_FURLONG
     # Linear interpolation between bracketing distances
     for i in range(len(_WFA_DIST_COLS) - 1):
         lo, hi = _WFA_DIST_COLS[i], _WFA_DIST_COLS[i + 1]

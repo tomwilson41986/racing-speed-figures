@@ -100,13 +100,13 @@ class FranceLiveRatingEngine:
 
         Mirrors the UK live_ratings approach:
           1. For each meeting with >=3 winners that have standard times,
-             compute per-furlong deviations (no class adjustment — France).
+             compute per-metre deviations (no class adjustment — France).
           2. Per-meeting z-score outlier removal.
           3. Winsorized median.
           4. Bayesian shrinkage toward going-description prior.
           5. Non-linear correction for extreme going.
 
-        Returns dict of meeting_id → GA for newly computed meetings.
+        Returns dict of meeting_id → GA (s/m) for newly computed meetings.
         """
         winners = df[df["positionOfficial"] == 1].copy()
         winners["_std_time"] = interpolate_lookup(winners, self.std_times)
@@ -120,7 +120,7 @@ class FranceLiveRatingEngine:
             return {}
 
         # No class adjustment for France — deviation = raw finish - standard
-        winners["dev_per_furlong"] = (
+        winners["dev_per_metre"] = (
             (winners["finishingTime"] - winners["_std_time"])
             / winners["distance"]
         )
@@ -133,7 +133,7 @@ class FranceLiveRatingEngine:
         for mid, group in winners.groupby("meeting_id"):
             if len(group) < 3:
                 continue
-            vals = group["dev_per_furlong"].sort_values().values.copy()
+            vals = group["dev_per_metre"].sort_values().values.copy()
             n = len(vals)
 
             # Per-meeting z-score outlier removal
@@ -155,7 +155,7 @@ class FranceLiveRatingEngine:
                 vals[-1] = vals[-2]
             raw_ga = float(np.median(vals))
 
-            # Bayesian shrinkage toward going-description prior
+            # Bayesian shrinkage toward going-description prior (s/m)
             going_desc = (
                 meetings.loc[mid, "going"]
                 if mid in meetings.index
@@ -163,7 +163,7 @@ class FranceLiveRatingEngine:
             )
             if pd.isna(going_desc):
                 going_desc = "Bon"
-            prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05)
+            prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05 / 201.168)
             ga = (n * raw_ga + GA_SHRINKAGE_K * prior_ga) / (n + GA_SHRINKAGE_K)
 
             # Non-linear correction for extreme going
@@ -175,8 +175,8 @@ class FranceLiveRatingEngine:
 
             ga_dict[mid] = ga
             log.info(
-                "  %s: computed GA = %+.3f s/f "
-                "(%d winners, raw=%+.3f)",
+                "  %s: computed GA = %+.6f s/m "
+                "(%d winners, raw=%+.6f)",
                 mid, ga, len(group), raw_ga,
             )
 
@@ -269,20 +269,20 @@ class FranceLiveRatingEngine:
                 failed_race_ids.add(rid)
 
         # QC-2: Impossible winner finishing time
-        #   Plausible pace is 10–18 seconds per furlong for flat turf.
+        #   Plausible pace in seconds per metre (converted from 10–18 s/f).
         #   Anything outside this range indicates bad source data.
-        MIN_PACE_SPF = 10.0
-        MAX_PACE_SPF = 18.0
+        MIN_PACE_SPM = 10.0 / 201.168
+        MAX_PACE_SPM = 18.0 / 201.168
         for race_id, row in winners_all.iterrows():
             rid = row["race_id"]
             ft = row.get("finishingTime")
             dist = row.get("distance")
             if pd.notna(ft) and pd.notna(dist) and dist > 0:
-                pace_spf = ft / dist
-                if pace_spf < MIN_PACE_SPF or pace_spf > MAX_PACE_SPF:
+                pace_spm = ft / dist
+                if pace_spm < MIN_PACE_SPM or pace_spm > MAX_PACE_SPM:
                     failed_race_ids.add(rid)
-                    log.warning("  QC: Race %s failed — impossible pace %.1f s/f "
-                                "(time=%.2f, dist=%.1f)", rid, pace_spf, ft, dist)
+                    log.warning("  QC: Race %s failed — impossible pace %.4f s/m "
+                                "(time=%.2f, dist=%.0fm)", rid, pace_spm, ft, dist)
 
         # QC-3: Broken beaten lengths (all non-winners share identical
         #   cumulative BL — indicates parser failure on source data)
@@ -377,8 +377,8 @@ class FranceLiveRatingEngine:
         cal = self.cal_params if self.cal_params else DEFAULT_CAL_PARAMS
 
         # Extract ga_coeff (float, separate from global params)
-        # Cap to ±3 lbs/s/f — old artifacts may have uncapped values (e.g. -6.76)
-        MAX_GA_COEFF = 3.0
+        # Cap GA coeff — scaled for s/m units (3 lbs/(s/f) × 201.168 ≈ 604)
+        MAX_GA_COEFF = 3.0 * 201.168
         ga_coeff = cal.get("ga_coeff", None) if isinstance(cal, dict) else None
         if ga_coeff is not None:
             ga_coeff = float(np.clip(ga_coeff, -MAX_GA_COEFF, MAX_GA_COEFF))
@@ -430,13 +430,13 @@ class FranceLiveRatingEngine:
 
         # Apply continuous GA correction from batch calibration.
         # ga_coeff captures residual going bias not removed by the
-        # per-meeting going allowance (e.g. -6.76 lbs per s/f).
+        # per-meeting going allowance.
         if ga_coeff is not None and abs(ga_coeff) > 0.01:
             ga_vals = df["going_allowance"].fillna(0)
             ga_adj = ga_coeff * ga_vals
             has_cal = df["figure_calibrated"].notna()
             df.loc[has_cal, "figure_calibrated"] += ga_adj[has_cal]
-            log.info("  GA coeff correction: %+.2f lbs/s/f applied", ga_coeff)
+            log.info("  GA coeff correction: %+.2f lbs/s/m applied", ga_coeff)
 
         # Exclude runners beaten > 20 lengths
         beaten_far = (
@@ -566,9 +566,9 @@ def format_email_html(df, target_date, run_time):
         surface = first.get("raceSurfaceName", "?")
         ga = first.get("going_allowance", 0)
 
-        # Format distance in furlongs
+        # Format distance in metres
         if pd.notna(dist):
-            dist_str = f"{dist:.1f}f"
+            dist_str = f"{int(dist)}m"
         else:
             dist_str = "?"
 
@@ -578,7 +578,7 @@ def format_email_html(df, target_date, run_time):
             f'{surface}</p>'
         )
         if pd.notna(ga):
-            html += f'<p class="note">Going allowance: {ga:+.3f} s/f</p>'
+            html += f'<p class="note">Going allowance: {ga:+.6f} s/m</p>'
 
         html += (
             "<table><tr><th>Pos</th><th>Horse</th><th>Age</th>"
@@ -799,7 +799,9 @@ def save_qa_output(df, race_date, run_source="manual"):
         rid = race_row.get("race_id", "?")
         lines.append("=" * 80)
         lines.append(f"RACE: {course} Race {int(rnum)}  (id={rid})")
-        lines.append(f"  Distance: {race_row.get('distance', '?')}f  "
+        dist_val = race_row.get('distance', '?')
+        dist_display = f"{int(dist_val)}m" if pd.notna(dist_val) else "?"
+        lines.append(f"  Distance: {dist_display}  "
                       f"Going: {race_row.get('going', '?')}  "
                       f"Surface: {race_row.get('raceSurfaceName', '?')}  "
                       f"Class: {race_row.get('raceClass', '?')}")
@@ -814,7 +816,7 @@ def save_qa_output(df, race_date, run_source="manual"):
         ga = race_row.get("going_allowance")
         lpl_val = race_row.get("lpl")
         lines.append(f"  standard_time={_fmt(std_t)}s  "
-                      f"going_allowance={_fmt(ga)} s/f  "
+                      f"going_allowance={_fmt(ga, dp=6)} s/m  "
                       f"lpl={_fmt(lpl_val)} lbs/L")
         lines.append("-" * 60)
 
