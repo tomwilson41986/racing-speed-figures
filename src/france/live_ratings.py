@@ -199,6 +199,15 @@ class FranceLiveRatingEngine:
         winner_fig = dict(zip(winners["race_id"], winners["raw_figure"]))
         log.info("  Winner figures computed: %d", len(winner_fig))
 
+        # Propagate winner calculation columns back to main DataFrame
+        # so QA output can display the full calculation chain.
+        winner_calc_cols = ["corrected_time", "deviation_seconds",
+                           "deviation_lengths", "deviation_lbs"]
+        for col in winner_calc_cols:
+            if col not in df.columns:
+                df[col] = np.nan
+            df.loc[winners.index, col] = winners[col]
+
         # --- All-runner figures via beaten lengths ---
         df["winner_figure"] = df["race_id"].map(winner_fig)
         has_winner = df["winner_figure"].notna()
@@ -574,6 +583,189 @@ def send_email(html, target_date, run_time, recipients=None):
         return False
 
 
+# ═════════════════════════════════════════════════════════════════════
+# QA OUTPUT — save full calculation chain for review
+# ═════════════════════════════════════════════════════════════════════
+
+QA_DIR = ROOT_DIR / "output" / "france_qa"
+
+
+def save_qa_output(df, race_date, run_source="manual"):
+    """Save a comprehensive QA package for a ratings run.
+
+    Creates ``output/france_qa/{date}/`` containing:
+      - ``qa_full_{date}.csv``  — every intermediate column so each
+        calculation step can be verified row-by-row.
+      - ``qa_calc_logic_{date}.txt``  — a per-race breakdown showing the
+        formula applied at each stage with actual values.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The rated DataFrame (output of ``compute_figures``).
+    race_date : datetime.date
+        Target race date.
+    run_source : str
+        Label for the run ("live", "workflow", "manual").
+    """
+    date_str = race_date.isoformat()
+    qa_run_dir = QA_DIR / date_str
+    os.makedirs(qa_run_dir, exist_ok=True)
+
+    # ── 1. Full QA CSV with all intermediate columns ────────────────
+    qa_cols = [c for c in [
+        "meetingDate", "courseName", "raceNumber", "race_id",
+        "horseName", "positionOfficial", "distance", "going",
+        "raceSurfaceName", "raceClass", "horseAge", "weightCarried",
+        "finishingTime", "distanceCumulative",
+        # Lookup values
+        "standard_time", "lpl", "going_allowance",
+        # Winner calculation chain
+        "corrected_time", "deviation_seconds", "deviation_lengths",
+        "deviation_lbs",
+        # All-runner extension
+        "winner_figure", "lbs_behind", "raw_figure",
+        # Adjustments
+        "weight_adj", "figure_after_weight",
+        "wfa_adj", "figure_after_wfa",
+        # Calibration
+        "figure_calibrated", "figure_final",
+        # QA
+        "figure_comment",
+    ] if c in df.columns]
+
+    qa_csv_path = qa_run_dir / f"qa_full_{date_str}.csv"
+    df[qa_cols].sort_values(
+        ["courseName", "raceNumber", "positionOfficial"]
+    ).to_csv(str(qa_csv_path), index=False, float_format="%.4f")
+    log.info("QA full CSV saved: %s", qa_csv_path)
+
+    # ── 2. Calculation logic breakdown (human-readable) ─────────────
+    logic_path = qa_run_dir / f"qa_calc_logic_{date_str}.txt"
+    lines = []
+    lines.append(f"France Speed Figures — Calculation Logic QA")
+    lines.append(f"Date: {date_str}   Run source: {run_source}")
+    lines.append(f"Generated: {datetime.datetime.utcnow().isoformat(timespec='seconds')}Z")
+    lines.append("=" * 80)
+    lines.append("")
+    lines.append("FORMULA REFERENCE")
+    lines.append("-" * 40)
+    lines.append(f"  BASE_RATING          = {BASE_RATING}")
+    lines.append(f"  BASE_WEIGHT_LBS      = {BASE_WEIGHT_LBS}")
+    lines.append(f"  SECONDS_PER_LENGTH   = {SECONDS_PER_LENGTH}")
+    lines.append(f"  BL_ATTENUATION_THRESH= {BL_ATTENUATION_THRESHOLD}")
+    lines.append(f"  BL_ATTENUATION_FACTOR= {BL_ATTENUATION_FACTOR}")
+    lines.append("")
+    lines.append("  corrected_time       = finishingTime - (going_allowance * distance)")
+    lines.append("  deviation_seconds    = corrected_time - standard_time")
+    lines.append("  deviation_lengths    = deviation_seconds / SECONDS_PER_LENGTH")
+    lines.append("  deviation_lbs        = deviation_lengths * lpl")
+    lines.append("  raw_figure (winner)  = BASE_RATING - deviation_lbs")
+    lines.append("  raw_figure (others)  = winner_figure - lbs_behind")
+    lines.append("  figure_after_weight  = raw_figure + (weightCarried - BASE_WEIGHT_LBS)")
+    lines.append("  figure_after_wfa     = figure_after_weight + wfa_adj")
+    lines.append("  figure_calibrated    = figure_after_wfa * scale + shift")
+    lines.append("  figure_final         = figure_calibrated")
+    lines.append("")
+
+    # Per-race breakdown
+    sorted_df = df.sort_values(["courseName", "raceNumber", "positionOfficial"])
+    for (course, rnum), race_df in sorted_df.groupby(
+        ["courseName", "raceNumber"], sort=False
+    ):
+        race_row = race_df.iloc[0]
+        rid = race_row.get("race_id", "?")
+        lines.append("=" * 80)
+        lines.append(f"RACE: {course} Race {int(rnum)}  (id={rid})")
+        lines.append(f"  Distance: {race_row.get('distance', '?')}f  "
+                      f"Going: {race_row.get('going', '?')}  "
+                      f"Surface: {race_row.get('raceSurfaceName', '?')}  "
+                      f"Class: {race_row.get('raceClass', '?')}")
+
+        comment = race_row.get("figure_comment", "")
+        if comment:
+            lines.append(f"  ** QC: {comment} **")
+            lines.append("")
+            continue
+
+        std_t = race_row.get("standard_time")
+        ga = race_row.get("going_allowance")
+        lpl_val = race_row.get("lpl")
+        lines.append(f"  standard_time={_fmt(std_t)}s  "
+                      f"going_allowance={_fmt(ga)} s/f  "
+                      f"lpl={_fmt(lpl_val)} lbs/L")
+        lines.append("-" * 60)
+
+        # Winner calculation
+        winner_rows = race_df[race_df["positionOfficial"] == 1]
+        if len(winner_rows) > 0:
+            w = winner_rows.iloc[0]
+            lines.append(f"  WINNER: {w.get('horseName', '?')}")
+            ft = w.get("finishingTime")
+            ct = w.get("corrected_time")
+            dev_s = w.get("deviation_seconds")
+            dev_l = w.get("deviation_lengths")
+            dev_lbs = w.get("deviation_lbs")
+            raw = w.get("raw_figure")
+            lines.append(f"    finishingTime        = {_fmt(ft)}s")
+            lines.append(f"    corrected_time       = {_fmt(ft)} - ({_fmt(ga)} * {_fmt(w.get('distance'))}) = {_fmt(ct)}")
+            lines.append(f"    deviation_seconds    = {_fmt(ct)} - {_fmt(std_t)} = {_fmt(dev_s)}")
+            lines.append(f"    deviation_lengths    = {_fmt(dev_s)} / {SECONDS_PER_LENGTH} = {_fmt(dev_l)}")
+            lines.append(f"    deviation_lbs        = {_fmt(dev_l)} * {_fmt(lpl_val)} = {_fmt(dev_lbs)}")
+            lines.append(f"    raw_figure           = {BASE_RATING} - {_fmt(dev_lbs)} = {_fmt(raw)}")
+            _append_adjustment_lines(lines, w)
+            lines.append("")
+
+        # Other runners
+        others = race_df[race_df["positionOfficial"] != 1]
+        for _, r in others.iterrows():
+            pos = r.get("positionOfficial")
+            pos_str = str(int(pos)) if pd.notna(pos) and pos > 0 else "DNF"
+            lines.append(f"  {pos_str:>4s}. {r.get('horseName', '?')}")
+            wf = r.get("winner_figure")
+            lb = r.get("lbs_behind")
+            raw = r.get("raw_figure")
+            cum = r.get("distanceCumulative")
+            lines.append(f"    beaten_lengths       = {_fmt(cum)}L")
+            lines.append(f"    lbs_behind           = {_fmt(cum)} * {_fmt(lpl_val)} = {_fmt(lb)}")
+            lines.append(f"    raw_figure           = {_fmt(wf)} - {_fmt(lb)} = {_fmt(raw)}")
+            _append_adjustment_lines(lines, r)
+            lines.append("")
+
+        lines.append("")
+
+    with open(logic_path, "w") as f:
+        f.write("\n".join(lines))
+    log.info("QA calculation logic saved: %s", logic_path)
+
+    return qa_run_dir
+
+
+def _fmt(val, dp=4):
+    """Format a value for the QA text file."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return "N/A"
+    if isinstance(val, float):
+        return f"{val:.{dp}f}"
+    return str(val)
+
+
+def _append_adjustment_lines(lines, row):
+    """Append weight/WFA/calibration lines for a runner."""
+    w_adj = row.get("weight_adj")
+    fig_w = row.get("figure_after_weight")
+    wfa = row.get("wfa_adj")
+    fig_wfa = row.get("figure_after_wfa")
+    fig_cal = row.get("figure_calibrated")
+    fig_final = row.get("figure_final")
+    lines.append(f"    weight_adj           = {_fmt(w_adj)}")
+    lines.append(f"    figure_after_weight  = {_fmt(fig_w)}")
+    lines.append(f"    wfa_adj              = {_fmt(wfa)}")
+    lines.append(f"    figure_after_wfa     = {_fmt(fig_wfa)}")
+    lines.append(f"    figure_calibrated    = {_fmt(fig_cal)}")
+    lines.append(f"    figure_final         = {_fmt(fig_final)}")
+
+
 def main():
     """CLI entry point for France live ratings."""
     parser = argparse.ArgumentParser(description="France Live Daily Ratings")
@@ -646,6 +838,10 @@ def main():
         ] if c in df.columns]
         df[out_cols].to_csv(csv_path, index=False)
         print(f"\nSaved: {csv_path}")
+
+        # Save QA output for review
+        qa_dir = save_qa_output(df, target_date, run_source="live")
+        print(f"QA output: {qa_dir}")
 
     finally:
         session.close()
