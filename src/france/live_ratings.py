@@ -123,6 +123,23 @@ class FranceLiveRatingEngine:
                 axis=1,
             )
 
+        # Velocity-weighted LPL (matches batch pipeline)
+        winners_for_vw = df[df["positionOfficial"] == 1][["race_id", "finishingTime"]].copy()
+        winners_for_vw = winners_for_vw.rename(columns={"finishingTime": "winner_time"})
+        winners_for_vw = winners_for_vw.drop_duplicates(subset="race_id")
+        df = df.merge(winners_for_vw, on="race_id", how="left")
+
+        has_both = (
+            df["standard_time"].notna()
+            & df["winner_time"].notna()
+            & (df["winner_time"] > 0)
+        )
+        if has_both.any():
+            velocity_ratio = (df["standard_time"] / df["winner_time"]).clip(0.85, 1.15)
+            df.loc[has_both, "lpl"] = df.loc[has_both, "lpl"] * velocity_ratio[has_both]
+            log.info("  Velocity-weighted LPL applied to %d runners", has_both.sum())
+        df.drop(columns=["winner_time"], inplace=True, errors="ignore")
+
         # Going allowance: use pre-computed if available, else estimate
         df["going_allowance"] = df["meeting_id"].map(self.ga_dict)
         missing_ga = df["going_allowance"].isna()
