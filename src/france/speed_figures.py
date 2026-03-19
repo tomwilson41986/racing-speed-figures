@@ -109,6 +109,52 @@ def _filter_std_time_winners(winners):
     return winners[mask].copy()
 
 
+def _flag_divergence(std_df, threshold=0.05, exclude_threshold=0.10):
+    """Flag and optionally exclude standard times with high median-mean divergence.
+
+    Audit §2 identified 25 rows with >5% divergence between median and mean,
+    indicating severe outlier contamination in the underlying race-time
+    distribution.  Rows above ``exclude_threshold`` (default 10%) are dropped;
+    rows between ``threshold`` and ``exclude_threshold`` are flagged as
+    provisional.
+
+    Parameters
+    ----------
+    std_df : pd.DataFrame
+        Standard times DataFrame with median_time and mean_time columns.
+    threshold : float
+        Divergence ratio above which rows are flagged as provisional.
+    exclude_threshold : float
+        Divergence ratio above which rows are excluded entirely.
+
+    Returns
+    -------
+    pd.DataFrame with ``divergence`` and ``provisional`` columns added,
+    and extreme-divergence rows removed.
+    """
+    std_df = std_df.copy()
+    std_df["divergence"] = (
+        (std_df["mean_time"] - std_df["median_time"]) / std_df["median_time"]
+    ).abs()
+
+    extreme = std_df["divergence"] >= exclude_threshold
+    n_extreme = extreme.sum()
+    if n_extreme > 0:
+        log.warning("    Excluding %d standard-time combos with >%.0f%% median-mean divergence: %s",
+                     n_extreme, exclude_threshold * 100,
+                     list(std_df.loc[extreme, "std_key"]))
+        std_df = std_df[~extreme].copy()
+
+    provisional = std_df["divergence"] >= threshold
+    std_df["provisional"] = provisional
+    n_prov = provisional.sum()
+    if n_prov > 0:
+        log.info("    Flagged %d standard-time combos as provisional (%.0f%%–%.0f%% divergence)",
+                 n_prov, threshold * 100, exclude_threshold * 100)
+
+    return std_df
+
+
 def compute_standard_times(df):
     """
     Standard times per track / distance / surface.
@@ -178,6 +224,9 @@ def compute_standard_times(df):
              C.MIN_RACES_STANDARD_TIME, f"{len(valid):,}")
     log.info("    Dropped (insufficient data): %s",
              f"{len(std_times) - len(valid):,}")
+
+    # Flag high median-mean divergence (audit §2: outlier contamination)
+    valid = _flag_divergence(valid)
 
     std_dict = dict(zip(valid["std_key"], valid["median_time"]))
     return std_dict, valid
@@ -260,6 +309,9 @@ def compute_standard_times_iterative(df, going_allowances):
                 below_threshold.loc[idx, "median_time"] = blended
         valid = pd.concat([valid, below_threshold], ignore_index=True)
         log.info("    Shrinkage combos added: %s", f"{len(below_threshold):,}")
+
+    # Flag high median-mean divergence (audit §2)
+    valid = _flag_divergence(valid)
 
     log.info("    Standard-time combos (>= %d races): %s (using all goings, recency-weighted)",
              C.MIN_RACES_STANDARD_TIME, f"{len(valid):,}")
