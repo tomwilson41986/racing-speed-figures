@@ -1940,7 +1940,7 @@ def run_once(target_date=None, send_email_flag=True):
     # 3b. Save xlsx archive (committed to repo)
     xlsx_dir = ROOT_DIR / "output" / "daily_ratings"
     xlsx_dir.mkdir(parents=True, exist_ok=True)
-    xlsx_path = xlsx_dir / f"ratings_{target_date}.xlsx"
+    xlsx_path = xlsx_dir / f"uk_ratings_{target_date}.xlsx"
 
     XLSX_COLS = [
         "raceDate", "courseName", "raceNumber", "raceName",
