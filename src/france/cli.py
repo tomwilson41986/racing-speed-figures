@@ -583,6 +583,11 @@ def rate_today(ctx, target_date, artifact_dir, output_csv):
         df[audit_cols].to_csv(str(audit_path), index=False)
         click.echo(f"Audit CSV: {audit_path}")
 
+        # Save QA output (full calculation chain + logic breakdown)
+        from .live_ratings import save_qa_output
+        qa_dir = save_qa_output(df, d, run_source="workflow")
+        click.echo(f"QA output: {qa_dir}")
+
     finally:
         session.close()
 
