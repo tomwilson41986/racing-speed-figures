@@ -80,9 +80,11 @@ FRANCE_GOOD_GOING = {
 }
 
 # Going-description GA priors for Bayesian shrinkage (in seconds per metre).
-# Updated from empirical means computed over ~12,000 meetings.
-# Original seeds had Souple at 0.51 s/f (actual: 0.32), inflating GAs
-# for soft going and producing over-corrected figures.
+# Values derived from empirical mean GA per going description computed
+# over ~12,000 meetings (693k runners).  Previous hardcoded values
+# significantly under-estimated "Bon" (0.04 vs empirical 0.10 s/f),
+# which — as the most common going — pulled standard times too fast
+# and inflated raw figures by ~5-8 lbs on soft-going days.
 # All values converted from s/f to s/m (÷ 201.168).
 _M = 201.168  # metres per furlong — conversion factor
 FRANCE_GOING_GA_PRIOR = {
@@ -91,39 +93,39 @@ FRANCE_GOING_GA_PRIOR = {
     "Très Sec":      -0.25 / _M,
     "Tres Sec":      -0.25 / _M,
     "Sec":           -0.21 / _M,
-    "Très leger":     0.05 / _M,   # empirical ~0.05 s/f
+    "Très leger":     0.05 / _M,   # empirical 0.05 s/f
     "Tres leger":     0.05 / _M,
     "Très Leger":     0.05 / _M,
     "Tres Leger":     0.05 / _M,
     "Bon Léger":      0.02 / _M,   # empirical 0.02 s/f
     "Bon Leger":      0.02 / _M,
-    "Bon léger":      0.02 / _M,
-    "Bon leger":      0.02 / _M,
-    "Léger":          0.05 / _M,   # empirical ~0.05 s/f
-    "Leger":          0.05 / _M,
-    "Bon":            0.04 / _M,   # empirical 0.037 s/f
+    "Bon léger":      0.11 / _M,   # empirical 0.11 s/f (lowercase variant)
+    "Bon leger":      0.11 / _M,
+    "Léger":          0.27 / _M,   # empirical 0.27 s/f
+    "Leger":          0.27 / _M,
+    "Bon":            0.10 / _M,   # empirical 0.097 s/f — was 0.04, most impactful fix
     "Bon Souple":     0.14 / _M,   # empirical 0.14 s/f
-    "Bon souple":     0.14 / _M,
-    "Souple":         0.32 / _M,   # empirical 0.32 s/f
+    "Bon souple":     0.16 / _M,   # empirical 0.16 s/f (lowercase variant)
+    "Souple":         0.30 / _M,   # empirical 0.30 s/f
     "Très Souple":    0.52 / _M,   # empirical 0.52 s/f
     "Tres Souple":    0.52 / _M,
     "Très souple":    0.52 / _M,
     "Tres souple":    0.52 / _M,
-    "Collant":        0.81 / _M,   # empirical 0.81 s/f
-    "Lourd":          0.68 / _M,   # empirical 0.68 s/f
-    "Très lourd":     0.90 / _M,   # empirical 0.90 s/f
-    "Tres lourd":     0.90 / _M,
-    "Très Lourd":     0.90 / _M,
-    "Tres Lourd":     0.90 / _M,
+    "Collant":        0.86 / _M,   # empirical 0.86 s/f
+    "Lourd":          0.67 / _M,   # empirical 0.67 s/f
+    "Très lourd":     1.31 / _M,   # empirical 1.31 s/f
+    "Tres lourd":     1.31 / _M,
+    "Très Lourd":     1.31 / _M,
+    "Tres Lourd":     1.31 / _M,
     # PSF (artificial surface) — empirical values
-    "PSF STANDARD":   0.04 / _M,
-    "PSF RAPIDE":    -0.01 / _M,   # empirical -0.013 s/f
-    "PSF LENTE":      0.08 / _M,   # empirical 0.077 s/f
-    "PSF":            0.01 / _M,   # empirical 0.008 s/f
-    "Standard":       0.04 / _M,
-    # Unknown/empty — fall back to near-Bon
-    "Inconnu":        0.05 / _M,
-    "":               0.05 / _M,
+    "PSF STANDARD":   0.06 / _M,   # empirical 0.061 s/f
+    "PSF RAPIDE":     0.01 / _M,   # empirical 0.013 s/f
+    "PSF LENTE":      0.13 / _M,   # empirical 0.129 s/f
+    "PSF":            0.02 / _M,   # empirical 0.015 s/f
+    "Standard":       0.06 / _M,
+    # Unknown/empty — fall back to Bon empirical
+    "Inconnu":        0.10 / _M,   # empirical 0.099 s/f
+    "":               0.10 / _M,
 }
 
 # Ordinal encoding for potential future ML use

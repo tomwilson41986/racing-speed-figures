@@ -1382,11 +1382,11 @@ def _compute_going_corrections(df):
     # Cap per-group corrections: France going corrections are computed from
     # global residuals (figure_calibrated - global_mean) which capture
     # confounded class/track/distance effects — unlike UK which computes
-    # going offsets after class+course+distance corrections.  UK going
-    # offsets are ±2 lbs; uncapped France corrections reach ±10 lbs.
-    # Cap at ±3 lbs to prevent over-correction while still adjusting
-    # for genuine going bias.
-    MAX_GOING_CORRECTION = 3.0
+    # going offsets after class+course+distance corrections.  Raised from
+    # ±3 to ±6 lbs because the prior correction now uses empirical values
+    # (reducing systematic bias), but residual going-group effects of
+    # 4-5 lbs remain and were previously clamped.
+    MAX_GOING_CORRECTION = 6.0
 
     corrections = {}
     for grp in grp_means.index:
