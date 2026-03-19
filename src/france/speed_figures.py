@@ -342,18 +342,30 @@ def _parse_std_keys(lookup_dict):
     return dict(cs_map)
 
 
-def _interp_single(actual_dist, dist_val_pairs):
+def _interp_single(actual_dist, dist_val_pairs, extrap_ratios=None):
     """Linearly interpolate a value for actual_dist given sorted (dist, val) pairs.
 
-    Clamps to nearest known value if outside the range (no extrapolation).
+    When actual_dist is outside the range and extrap_ratios is provided,
+    extrapolates using cross-track median ratios instead of clamping.
+    extrap_ratios maps target_dist → ratio (target_value / anchor_value).
     """
     if len(dist_val_pairs) == 1:
-        return dist_val_pairs[0][1]
+        d0, v0 = dist_val_pairs[0]
+        if actual_dist == d0 or extrap_ratios is None:
+            return v0
+        # Try extrapolation from the single known point
+        return _extrapolate(actual_dist, d0, v0, dist_val_pairs, extrap_ratios)
     dists = [dv[0] for dv in dist_val_pairs]
     vals = [dv[1] for dv in dist_val_pairs]
     if actual_dist <= dists[0]:
+        if extrap_ratios is not None:
+            return _extrapolate(actual_dist, dists[0], vals[0],
+                                dist_val_pairs, extrap_ratios)
         return vals[0]
     if actual_dist >= dists[-1]:
+        if extrap_ratios is not None:
+            return _extrapolate(actual_dist, dists[-1], vals[-1],
+                                dist_val_pairs, extrap_ratios)
         return vals[-1]
     # Find bracketing pair
     for i in range(len(dists) - 1):
@@ -363,13 +375,70 @@ def _interp_single(actual_dist, dist_val_pairs):
     return vals[-1]
 
 
+def _extrapolate(target_dist, anchor_dist, anchor_val, dist_val_pairs,
+                 extrap_ratios):
+    """Extrapolate using cross-track median ratios.
+
+    Rounds target_dist to nearest 0.5f bucket, looks up the median ratio
+    of (target_bucket / anchor_bucket) across all other tracks, and applies
+    it to the anchor value.
+    """
+    target_bucket = round(target_dist * 2) / 2
+    anchor_bucket = round(anchor_dist * 2) / 2
+    ratio_key = (target_bucket, anchor_bucket)
+    if ratio_key in extrap_ratios:
+        return anchor_val * extrap_ratios[ratio_key]
+    # No ratio available — fall back to clamping
+    return anchor_val
+
+
+def _build_extrap_ratios(cs_map):
+    """Build cross-track median ratios for extrapolation.
+
+    For every pair of distance buckets (d_target, d_anchor), compute the
+    median ratio value(d_target) / value(d_anchor) across all courses that
+    have both buckets on the same surface.  This lets us infer, e.g., a
+    5.0f standard time for a course that only has 6.0f by using the median
+    5.0f/6.0f ratio observed at other courses.
+
+    Returns {(target_bucket, anchor_bucket): median_ratio}.
+    """
+    # Collect per-surface distance→value for each course
+    from collections import defaultdict
+    surface_data = defaultdict(lambda: defaultdict(dict))
+    for (course, surface), pairs in cs_map.items():
+        for dist, val in pairs:
+            surface_data[surface][course][dist] = val
+
+    ratios = defaultdict(list)
+    for surface, course_dicts in surface_data.items():
+        # All distance buckets observed on this surface
+        all_dists = set()
+        for cd in course_dicts.values():
+            all_dists.update(cd.keys())
+        all_dists = sorted(all_dists)
+
+        for d_target in all_dists:
+            for d_anchor in all_dists:
+                if d_target == d_anchor:
+                    continue
+                for cd in course_dicts.values():
+                    if d_target in cd and d_anchor in cd and cd[d_anchor] > 0:
+                        ratios[(d_target, d_anchor)].append(
+                            cd[d_target] / cd[d_anchor]
+                        )
+
+    return {k: np.median(v) for k, v in ratios.items() if len(v) >= 3}
+
+
 def interpolate_lookup(df, lookup_dict, course_col="courseName",
                        surface_col="raceSurfaceName", dist_col="distance"):
     """Interpolate values from a std_key-keyed dict using actual distances.
 
     Instead of rounding distances to 0.5f buckets and doing an exact lookup,
     this linearly interpolates between the two nearest known distance buckets
-    at each course/surface.
+    at each course/surface.  When a distance falls outside the known range
+    for a course, extrapolates using cross-track median ratios.
 
     Parameters
     ----------
@@ -383,6 +452,7 @@ def interpolate_lookup(df, lookup_dict, course_col="courseName",
     pd.Series aligned with df.index, with NaN where interpolation is impossible.
     """
     cs_map = _parse_std_keys(lookup_dict)
+    extrap_ratios = _build_extrap_ratios(cs_map)
     result = pd.Series(np.nan, index=df.index)
 
     for (course, surface), dist_val_pairs in cs_map.items():
@@ -391,7 +461,9 @@ def interpolate_lookup(df, lookup_dict, course_col="courseName",
             continue
         actual_dists = df.loc[mask, dist_col]
         result.loc[mask] = actual_dists.apply(
-            lambda d: _interp_single(d, dist_val_pairs)
+            lambda d, dvp=dist_val_pairs: _interp_single(
+                d, dvp, extrap_ratios
+            )
         )
 
     return result
