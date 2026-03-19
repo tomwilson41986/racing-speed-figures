@@ -564,7 +564,6 @@ def format_email_html(df, target_date, run_time):
         dist = first.get("distance", "?")
         going = first.get("going", "?")
         surface = first.get("raceSurfaceName", "?")
-        rc = first.get("raceClass", "?")
         ga = first.get("going_allowance", 0)
 
         # Format distance in furlongs
@@ -576,7 +575,7 @@ def format_email_html(df, target_date, run_time):
         html += f"<h3>{course} &mdash; Race {int(race_num)}</h3>"
         html += (
             f'<p class="meta">{dist_str} &middot; {going} &middot; '
-            f'{surface} &middot; Class {rc}</p>'
+            f'{surface}</p>'
         )
         if pd.notna(ga):
             html += f'<p class="note">Going allowance: {ga:+.3f} s/f</p>'
