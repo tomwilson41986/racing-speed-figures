@@ -92,7 +92,7 @@ class FranceLiveRatingEngine:
 
     def estimate_going_allowance(self, going_desc):
         """Estimate GA from going description when no computed GA exists."""
-        return FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05)
+        return FRANCE_GOING_GA_PRIOR.get(going_desc, 0.10 / 201.168)
 
     def _compute_realtime_ga(self, df):
         """Compute going allowances from same-day results for meetings
@@ -340,6 +340,22 @@ class FranceLiveRatingEngine:
         winners["deviation_lengths"] = winners["deviation_seconds"] / SECONDS_PER_LENGTH
         winners["deviation_lbs"] = winners["deviation_lengths"] * winners["lpl"]
         winners["raw_figure"] = BASE_RATING - winners["deviation_lbs"]
+
+        # Clip extreme raw figures (matches batch pipeline speed_figures.py:1003)
+        winners["raw_figure"] = winners["raw_figure"].clip(lower=-50, upper=250)
+
+        # Suppress races where raw figure is extreme — indicates bad standard
+        # time fallback, impossible finishing time, or data error.
+        extreme_mask = winners["raw_figure"].abs() > 150
+        if extreme_mask.any():
+            extreme_ids = winners.loc[extreme_mask, "race_id"].tolist()
+            log.warning("  Suppressing %d races with extreme raw figures: %s",
+                        len(extreme_ids), extreme_ids)
+            for rid in extreme_ids:
+                df.loc[df["race_id"] == rid, "figure_comment"] = (
+                    "suppressed: extreme raw figure indicates bad standard time or data"
+                )
+            winners = winners[~extreme_mask]
 
         # Store the effective GA used for this race (for QA audit)
         winners["going_allowance_effective"] = attenuated_ga

@@ -309,8 +309,8 @@ def get_france_wfa_allowance(age, month, distance_metres):
 
     Parameters
     ----------
-    age : int
-        Horse age (2, 3, 4, …)
+    age : int or float
+        Horse age (2, 3, 4, …).  Returns 0.0 for invalid/NaN ages.
     month : int
         Calendar month 1-12.
     distance_metres : float
@@ -320,6 +320,10 @@ def get_france_wfa_allowance(age, month, distance_metres):
     -------
     float  (always >= 0)
     """
+    try:
+        age = int(age)
+    except (TypeError, ValueError):
+        return 0.0
     if age >= 4:
         return 0.0
     if age == 2:

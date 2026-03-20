@@ -823,7 +823,7 @@ def compute_going_allowances(df, std_times):
         going_desc = meeting_going.get(
             mid.replace("_early", "").replace("_late", ""), "Bon"
         )
-        prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05)
+        prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.10 / 201.168)
 
         k = GA_SHRINKAGE_K
         shrunk_ga = (n * raw_ga + k * prior_ga) / (n + k)
