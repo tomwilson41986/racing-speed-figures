@@ -1157,11 +1157,17 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict, std_times=None,
 
         out["standard_time"] = interpolate_lookup(out, std_times)
         has_both = out["standard_time"].notna() & out["winner_time"].notna() & (out["winner_time"] > 0)
-        # Clamp ratio to [0.85, 1.15] to prevent extreme adjustments
-        velocity_ratio = (out["standard_time"] / out["winner_time"]).clip(0.85, 1.15)
+        # Distance-adaptive clip: staying distances (13f+) have naturally
+        # higher pace variance, so allow a wider ratio range to avoid
+        # clipping genuine pace effects.  Sprint/mile: ±15%, staying: ±22%.
+        clip_lo = np.where(out["distance"] >= 13, 0.78, 0.85)
+        clip_hi = np.where(out["distance"] >= 13, 1.22, 1.15)
+        velocity_ratio = (out["standard_time"] / out["winner_time"]).clip(clip_lo, clip_hi)
         out.loc[has_both, "lpl"] = out.loc[has_both, "lpl"] * velocity_ratio[has_both]
         n_adjusted = has_both.sum()
-        print(f"    Velocity-weighted LPL applied to {n_adjusted:,} runners")
+        n_staying = (has_both & (out["distance"] >= 13)).sum()
+        print(f"    Velocity-weighted LPL applied to {n_adjusted:,} runners "
+              f"({n_staying:,} staying with wider clip)")
         out.drop(columns=["winner_time", "standard_time"], inplace=True, errors="ignore")
 
     is_winner = out["positionOfficial"] == 1
@@ -1699,11 +1705,23 @@ def enhance_with_gbr(df):
         df["draw"] = 0
     df["draw"] = pd.to_numeric(df["draw"], errors="coerce").fillna(0)
 
+    # Staying flag: binary indicator for 13f+ to let GBR learn
+    # distance-specific corrections for staying trips
+    df["is_staying"] = (df["distance"] >= 13).astype(float)
+
+    # Field size × staying interaction: larger fields at staying trips
+    # produce more honest pace, making figures more reliable.  This lets
+    # GBR apply stronger corrections for small-field staying races where
+    # pace variation is highest.
+    df["fieldsize_x_staying"] = (
+        df["numberOfRunners"] * df["is_staying"] / 10.0
+    )
+
     FEATURES = [
         "figure_calibrated", "figure_final", "raceClass",
         "distance", "horseAge", "positionOfficial",
         "weightCarried", "ga_value", "going_num", "course_freq",
-        "numberOfRunners", "draw",
+        "numberOfRunners", "draw", "is_staying", "fieldsize_x_staying",
     ]
 
     mask = (
@@ -1788,7 +1806,8 @@ def enhance_with_gbr(df):
         print(f"    {'':15}  fit MAE={fit_mae:.2f}, corr={fit_corr:.4f}")
 
     # Clean up temporary columns
-    df.drop(columns=["going_num", "course_freq"], inplace=True)
+    df.drop(columns=["going_num", "course_freq", "is_staying",
+                      "fieldsize_x_staying"], inplace=True)
 
     return df, gbr_models
 
@@ -1827,7 +1846,10 @@ def expand_scale(df):
 
     print("\n  Applying quantile mapping (fixing GBR compression)...")
 
-    N_QUANTILES = 20  # fewer bins = more aggressive tail correction
+    # Tail-enriched quantile spacing: denser at distribution extremes
+    # where GBR compression is most severe.  The top/bottom 5% get
+    # extra anchor points (1% spacing) while the interior uses 5% spacing.
+    # This gives ~4x better resolution at the tails vs uniform spacing.
 
     # Adaptive training window: all years up to max_year - 1
     max_year = int(df["source_year"].max())
@@ -1842,7 +1864,12 @@ def expand_scale(df):
         & (df["source_year"] <= qm_train_end)
     )
 
-    quantile_levels = np.linspace(0, 100, N_QUANTILES + 1)
+    # Tail-enriched: 0,1,2,3,5,10,15,...,85,90,95,97,98,99,100
+    quantile_levels = np.array(sorted(set(
+        list(range(0, 6)) +            # 0,1,2,3,4,5
+        list(range(5, 96, 5)) +         # 5,10,...,95
+        list(range(95, 101))             # 95,96,97,98,99,100
+    )), dtype=float)
     qm_params = {}
 
     for surface in df["raceSurfaceName"].unique():
@@ -1891,7 +1918,7 @@ def expand_scale(df):
         df.loc[has_fig, "figure_calibrated"] = mapped
 
         print(
-            f"    {surface:<15}: {N_QUANTILES} quantile anchors, "
+            f"    {surface:<15}: {len(quantile_levels)} quantile anchors (tail-enriched), "
             f"std {old_std:.1f} → {new_std:.1f} (target {tf_std:.1f}), "
             f"mean {old_mean:.1f} → {new_mean:.1f} (target {tf_mean:.1f})"
         )
@@ -2063,6 +2090,7 @@ def apply_oos_corrections(df):
         total_adj = dist_adj.values + going_adj.values + temporal_adj
         total_correction.loc[surf_mask] = total_adj
         df.loc[surf_mask, "figure_calibrated"] -= total_adj
+
 
     df.drop(columns=["dist_round_tmp", "going_group_tmp"], inplace=True)
 
