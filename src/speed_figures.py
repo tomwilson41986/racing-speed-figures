@@ -1454,6 +1454,10 @@ def calibrate_figures(df):
         cd_means = cd_groups.mean()
         cd_counts = cd_groups.count()
         cd_shrunk = cd_means * cd_counts / (cd_counts + SHRINKAGE_K)
+        # Cap offsets to prevent extreme corrections from sparse/miscalibrated
+        # combos (e.g. NEWCASTLE_10 AW had -15.4 lbs from a ~5s standard-time
+        # error, crushing all figures at that distance).
+        cd_shrunk = cd_shrunk.clip(-10, 10)
         course_dist_offset_dict = cd_shrunk.to_dict()
 
         all_cd_key = (

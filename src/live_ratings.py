@@ -925,6 +925,14 @@ class LiteRatingEngine:
         df = self._apply_quantile_mapping(df)
         df = self._apply_oos_corrections(df)
 
+        # Diagnostic: how much the figure-based rank diverges from finish position.
+        # Positive = figure ranks higher than finishing position (weight boost).
+        # Large values flag counter-intuitive ordering for manual QA review.
+        fig_rank = df.groupby("race_id")["figure_calibrated"].rank(
+            ascending=False, na_option="bottom"
+        )
+        df["rank_vs_position"] = df["positionOfficial"] - fig_rank
+
         return df
 
     def _prepare_data(self, df):
@@ -1308,16 +1316,21 @@ class LiteRatingEngine:
             df.loc[no_position, "figure_calibrated"] = np.nan
             log.info(f"  Excluded {n_no_pos} non-finishers (no position)")
 
-        # Exclude runners beaten > 20 lengths — figures are unreliable
+        # Flag runners beaten > 20 lengths as low confidence (but keep figures).
+        # The batch pipeline uses soft attenuation (0.5x beyond 20L) and never
+        # nulls finishers.  Previously this code hard-excluded them, which
+        # contradicted the batch pipeline and destroyed valid data.
         beaten_far = (
             df["distanceCumulative"].notna()
             & (df["distanceCumulative"] > 20)
             & (df["positionOfficial"] != 1)
         )
-        n_excluded = beaten_far.sum()
-        if n_excluded > 0:
-            df.loc[beaten_far, "figure_calibrated"] = np.nan
-            log.info(f"  Excluded {n_excluded} runners beaten > 20 lengths")
+        if "figure_confidence" not in df.columns:
+            df["figure_confidence"] = "high"
+        df.loc[beaten_far, "figure_confidence"] = "low"
+        n_flagged = beaten_far.sum()
+        if n_flagged > 0:
+            log.info(f"  Flagged {n_flagged} runners beaten > 20 lengths as low confidence")
 
         return df
 
@@ -1949,6 +1962,7 @@ def run_once(target_date=None, send_email_flag=True):
         "positionOfficial", "horseName", "horseAge", "jockeyName",
         "trainerName", "weightCarried", "officialRating",
         "distanceCumulative", "finishingTime", "figure_calibrated",
+        "figure_confidence", "rank_vs_position",
     ]
     export_cols = [c for c in XLSX_COLS if c in df.columns]
     export_df = df[export_cols].copy()
