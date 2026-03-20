@@ -926,14 +926,25 @@ class LiteRatingEngine:
         df = self._apply_oos_corrections(df)
 
         # Floor: a legitimate flat-race figure should not go negative.
-        # Negative values are pipeline artefacts (e.g. extreme
-        # course-distance offsets compounded by GBR/QM).
-        neg = df["figure_calibrated"].notna() & (df["figure_calibrated"] < 0)
-        if neg.any():
+        # Winners get a higher floor (15) because even the slowest
+        # winner demonstrates competitive ability.  Timeform typically
+        # floors extreme-outlier winners at 25-35, so 15 is conservative.
+        WINNER_FLOOR = 15.0
+        RUNNER_FLOOR = 0.0
+        has_fig = df["figure_calibrated"].notna()
+        is_winner = df["positionOfficial"] == 1
+        low_winner = has_fig & is_winner & (df["figure_calibrated"] < WINNER_FLOOR)
+        low_runner = has_fig & ~is_winner & (df["figure_calibrated"] < RUNNER_FLOOR)
+        if low_winner.any():
             log.info(
-                f"  Flooring {neg.sum()} negative figures to 0"
+                f"  Flooring {low_winner.sum()} winner figures to {WINNER_FLOOR}"
             )
-            df.loc[neg, "figure_calibrated"] = 0.0
+            df.loc[low_winner, "figure_calibrated"] = WINNER_FLOOR
+        if low_runner.any():
+            log.info(
+                f"  Flooring {low_runner.sum()} runner figures to {RUNNER_FLOOR}"
+            )
+            df.loc[low_runner, "figure_calibrated"] = RUNNER_FLOOR
 
         # Diagnostic: how much the figure-based rank diverges from finish position.
         # Positive = figure ranks higher than finishing position (weight boost).
@@ -1285,6 +1296,13 @@ class LiteRatingEngine:
         if has_wfa.any():
             log.info(f"  WFA applied to {has_wfa.sum()} runners")
 
+        # Store WFA for post-calibration residual correction.
+        # The calibration slope (e.g. 0.679 for AW) compresses the
+        # WFA that was embedded in figure_final.  We recover the lost
+        # fraction after QM/OOS so the full WFA value is reflected in
+        # the final figure.
+        df["_wfa_raw"] = df["wfa_adj"].fillna(0.0)
+
         return df
 
     def _compute_sex_allowance(self, df):
@@ -1417,9 +1435,13 @@ class LiteRatingEngine:
                 )
                 # NOT added to cal_vals — deferred to post-QM/OOS
 
-            # Course x distance offsets (capped at ±10 lbs to prevent
-            # outlier track/distance combos from dominating figures)
-            CD_OFFSET_CAP = 10.0
+            # Course x distance offsets (capped at ±5 lbs).  The GBR was
+            # trained with CD offsets in figure_calibrated, so we keep
+            # them pre-GBR to match the training distribution.  The cap
+            # limits extreme, likely-overfitted offsets (e.g. NEWCASTLE_5
+            # at +10, NEWCASTLE_10 at -15) that compound with GBR's own
+            # course-distance adjustments.
+            CD_OFFSET_CAP = 5.0
             cd_offsets = params.get("course_dist_offsets", {})
             if cd_offsets:
                 cd_key = (
@@ -1652,8 +1674,35 @@ class LiteRatingEngine:
                     f"{has_both.sum()} runners"
                 )
             df.drop(columns=["_class_offset"], errors="ignore", inplace=True)
-            df["figure_calibrated"] = df["figure_calibrated"].round(1)
 
+        # Recover the WFA residual lost to calibration-slope compression.
+        # WFA was applied pre-calibration (embedded in figure_final).
+        # A slope of 0.679 compresses +8 lbs WFA to +5.4 effective points.
+        # We add back the lost fraction so 2yo/3yo get full WFA credit.
+        if "_wfa_raw" in df.columns:
+            # Determine per-surface calibration slope
+            cal = self._artifacts.get("cal_params", {}) if self._artifacts else {}
+            for surface, params in cal.items():
+                slope = params.get("a", 1.0)
+                residual_frac = 1.0 - slope  # e.g. 0.321 for slope 0.679
+                if residual_frac <= 0:
+                    continue
+
+                wfa_mask = (
+                    (df["raceSurfaceName"] == surface)
+                    & df["figure_calibrated"].notna()
+                    & (df["_wfa_raw"].abs() > 0.01)
+                )
+                if wfa_mask.any():
+                    wfa_residual = df.loc[wfa_mask, "_wfa_raw"] * residual_frac
+                    df.loc[wfa_mask, "figure_calibrated"] += wfa_residual
+                    log.info(
+                        f"  WFA residual ({residual_frac:.1%} of raw WFA) "
+                        f"applied to {wfa_mask.sum()} {surface} runners"
+                    )
+            df.drop(columns=["_wfa_raw"], errors="ignore", inplace=True)
+
+        df["figure_calibrated"] = df["figure_calibrated"].round(1)
         return df
 
 
