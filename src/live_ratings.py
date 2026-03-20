@@ -925,6 +925,16 @@ class LiteRatingEngine:
         df = self._apply_quantile_mapping(df)
         df = self._apply_oos_corrections(df)
 
+        # Floor: a legitimate flat-race figure should not go negative.
+        # Negative values are pipeline artefacts (e.g. extreme
+        # course-distance offsets compounded by GBR/QM).
+        neg = df["figure_calibrated"].notna() & (df["figure_calibrated"] < 0)
+        if neg.any():
+            log.info(
+                f"  Flooring {neg.sum()} negative figures to 0"
+            )
+            df.loc[neg, "figure_calibrated"] = 0.0
+
         # Diagnostic: how much the figure-based rank diverges from finish position.
         # Positive = figure ranks higher than finishing position (weight boost).
         # Large values flag counter-intuitive ordering for manual QA review.
@@ -1355,6 +1365,7 @@ class LiteRatingEngine:
         """Apply the full calibration chain from batch pipeline artifacts."""
         cal = self._artifacts["cal_params"]
         df["figure_calibrated"] = np.nan
+        df["_class_offset"] = 0.0
 
         for surface, params in cal.items():
             mask = (
@@ -1376,7 +1387,14 @@ class LiteRatingEngine:
             else:
                 cal_vals = a * x + b
 
-            # Class offsets
+            # Class offsets — applied as a FINAL post-QM correction.
+            # Due to a historical key-format mismatch ("6.0" vs "6"),
+            # class offsets were silently zeroed during training of the
+            # GBR and QM.  Those models learned class effects internally.
+            # We now apply a damped fraction (50%) of the class offset
+            # AFTER QM/OOS as a residual correction, so the GBR/QM
+            # handle the bulk of the class effect and we only nudge.
+            CLASS_OFFSET_DAMP = 0.5
             class_offsets = params.get("class_offsets", {})
             if class_offsets:
                 rc = (
@@ -1384,12 +1402,24 @@ class LiteRatingEngine:
                         df.loc[mask, "raceClass"], errors="coerce"
                     )
                     .fillna(0)
-                    .astype(int)
-                    .astype(str)
                 )
-                cal_vals += rc.map(class_offsets).fillna(0).values
+                # Normalise keys: artifact may store "6.0", code needs "6"
+                _co_norm = {}
+                for _k, _v in class_offsets.items():
+                    try:
+                        _co_norm[str(int(float(_k)))] = _v
+                    except (ValueError, TypeError):
+                        _co_norm[str(_k)] = _v
+                rc_str = rc.astype(int).astype(str)
+                df.loc[mask, "_class_offset"] = (
+                    rc_str.map(_co_norm).fillna(0).values
+                    * CLASS_OFFSET_DAMP
+                )
+                # NOT added to cal_vals — deferred to post-QM/OOS
 
-            # Course x distance offsets
+            # Course x distance offsets (capped at ±10 lbs to prevent
+            # outlier track/distance combos from dominating figures)
+            CD_OFFSET_CAP = 10.0
             cd_offsets = params.get("course_dist_offsets", {})
             if cd_offsets:
                 cd_key = (
@@ -1397,7 +1427,9 @@ class LiteRatingEngine:
                     + "_"
                     + df.loc[mask, "distance"].round(0).astype(int).astype(str)
                 )
-                cal_vals += cd_key.map(cd_offsets).fillna(0).values
+                cd_vals = cd_key.map(cd_offsets).fillna(0).values
+                cd_vals = np.clip(cd_vals, -CD_OFFSET_CAP, CD_OFFSET_CAP)
+                cal_vals += cd_vals
 
             # Going group offsets
             going_offsets = params.get("going_offsets", {})
@@ -1496,14 +1528,28 @@ class LiteRatingEngine:
             sub["horseAge"] = sub["horseAge"].clip(upper=4)
 
             preds = gbr.predict(sub.values)
-            df.loc[mask, "figure_calibrated"] = preds
-            log.info(f"  {surface}: GBR applied to {mask.sum()} runners")
+
+            # Blend GBR prediction with linear calibration to dampen
+            # over-correction.  The GBR was trained on batch data and
+            # can over-adjust for certain course/distance combos on
+            # live data (e.g. Newcastle AW).  A 70/30 blend keeps the
+            # GBR's pattern-correction while anchoring to the linear
+            # calibration.
+            GBR_WEIGHT = 0.7
+            linear_vals = df.loc[mask, "figure_calibrated"].values
+            blended = GBR_WEIGHT * preds + (1 - GBR_WEIGHT) * linear_vals
+            df.loc[mask, "figure_calibrated"] = blended
+            log.info(
+                f"  {surface}: GBR blended ({GBR_WEIGHT:.0%} GBR / "
+                f"{1 - GBR_WEIGHT:.0%} linear) for {mask.sum()} runners"
+            )
 
         df.drop(
             columns=["going_num", "course_freq", "ga_value"],
             errors="ignore",
             inplace=True,
         )
+
         return df
 
     def _apply_quantile_mapping(self, df):
@@ -1587,6 +1633,27 @@ class LiteRatingEngine:
             )
 
         df["figure_calibrated"] = df["figure_calibrated"].round(1)
+
+        # Apply deferred class offsets as FINAL correction.
+        # These are damped (50%) because GBR/QM already learned class
+        # effects internally during training (when offsets were zero).
+        if "_class_offset" in df.columns:
+            has_both = (
+                df["figure_calibrated"].notna()
+                & df["_class_offset"].notna()
+                & (df["_class_offset"].abs() > 0.01)
+            )
+            if has_both.any():
+                df.loc[has_both, "figure_calibrated"] += (
+                    df.loc[has_both, "_class_offset"]
+                )
+                log.info(
+                    f"  Class offsets (damped) applied to "
+                    f"{has_both.sum()} runners"
+                )
+            df.drop(columns=["_class_offset"], errors="ignore", inplace=True)
+            df["figure_calibrated"] = df["figure_calibrated"].round(1)
+
         return df
 
 
