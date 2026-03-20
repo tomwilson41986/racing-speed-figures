@@ -38,8 +38,6 @@ GA_OUTLIER_ZSCORE = 3.0
 GA_SHRINKAGE_K = 3.0
 GA_NONLINEAR_THRESHOLD = 0.30 / 201.168   # ~0.001491 s/m (was 0.30 s/f)
 GA_NONLINEAR_BETA = 0.25 * 201.168        # ~50.292 (scaled for s/m²→s/m)
-GA_CONVERGENCE_TOL = 0.005 / 201.168      # ~0.0000249 s/m
-INTERPOLATED_GA_WEIGHT = 0.7   # Discount weight for interpolated standard times in GA
 
 # Recency weighting for iterative standard times (same as UK)
 RECENCY_HALF_LIFE_YEARS = 4.0
@@ -320,7 +318,12 @@ def get_france_wfa_allowance(age, month, distance_metres):
     -------
     float  (always >= 0)
     """
-    if age >= 4:
+    # Guard against NaN / None / non-numeric age
+    try:
+        age = int(age)
+    except (TypeError, ValueError):
+        return 0.0
+    if age < 2 or age >= 4:
         return 0.0
     if age == 2:
         return float(_WFA_2YO_FLAT)

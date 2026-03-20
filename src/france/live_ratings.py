@@ -92,7 +92,7 @@ class FranceLiveRatingEngine:
 
     def estimate_going_allowance(self, going_desc):
         """Estimate GA from going description when no computed GA exists."""
-        return FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05)
+        return FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05 / 201.168)
 
     def _compute_realtime_ga(self, df):
         """Compute going allowances from same-day results for meetings
@@ -163,7 +163,7 @@ class FranceLiveRatingEngine:
             )
             if pd.isna(going_desc):
                 going_desc = "Bon"
-            prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05 / 201.168)
+            prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05 / 201.168)  # s/m
             ga = (n * raw_ga + GA_SHRINKAGE_K * prior_ga) / (n + GA_SHRINKAGE_K)
 
             # Non-linear correction for extreme going
@@ -258,15 +258,14 @@ class FranceLiveRatingEngine:
         # generated.  Affected runners get figure_final = NaN and a
         # descriptive comment instead.
 
-        failed_race_ids = set()
+        qc_failed = {}  # race_id → comment
 
         # QC-1: No standard time for winner's course/distance
-        #   → no historical data to generate figures
         winners_all = df[df["positionOfficial"] == 1]
         for race_id, row in winners_all.iterrows():
             rid = row["race_id"]
             if pd.isna(row.get("standard_time")):
-                failed_race_ids.add(rid)
+                qc_failed[rid] = "missing standard time for course/surface"
 
         # QC-2: Impossible winner finishing time
         #   Plausible pace in seconds per metre (converted from 10–18 s/f).
@@ -280,7 +279,7 @@ class FranceLiveRatingEngine:
             if pd.notna(ft) and pd.notna(dist) and dist > 0:
                 pace_spm = ft / dist
                 if pace_spm < MIN_PACE_SPM or pace_spm > MAX_PACE_SPM:
-                    failed_race_ids.add(rid)
+                    qc_failed[rid] = "impossible finishing time"
                     log.warning("  QC: Race %s failed — impossible pace %.4f s/m "
                                 "(time=%.2f, dist=%.0fm)", rid, pace_spm, ft, dist)
 
@@ -291,17 +290,17 @@ class FranceLiveRatingEngine:
             if len(non_winners) >= 3:
                 bl_vals = non_winners["distanceCumulative"].dropna()
                 if len(bl_vals) >= 3 and bl_vals.nunique() == 1:
-                    failed_race_ids.add(rid)
+                    qc_failed[rid] = "broken beaten lengths"
                     log.warning("  QC: Race %s failed — all beaten lengths "
                                 "identical (%.2f)", rid, bl_vals.iloc[0])
 
-        if failed_race_ids:
-            failed_mask = df["race_id"].isin(failed_race_ids)
-            df.loc[failed_mask, "figure_comment"] = (
-                "no historical data to generate figures"
-            )
+        failed_race_ids = set(qc_failed.keys())
+        if qc_failed:
+            race_comment = df["race_id"].map(qc_failed)
+            has_comment = race_comment.notna()
+            df.loc[has_comment, "figure_comment"] = race_comment[has_comment]
             log.info("  QC: %d races (%d runners) failed quality checks",
-                     len(failed_race_ids), failed_mask.sum())
+                     len(qc_failed), has_comment.sum())
 
         # Only process runners with standard times AND passing QC
         has_std = df["standard_time"].notna() & ~df["race_id"].isin(failed_race_ids)
@@ -340,6 +339,9 @@ class FranceLiveRatingEngine:
         winners["deviation_lengths"] = winners["deviation_seconds"] / SECONDS_PER_LENGTH
         winners["deviation_lbs"] = winners["deviation_lengths"] * winners["lpl"]
         winners["raw_figure"] = BASE_RATING - winners["deviation_lbs"]
+
+        # Cap extreme outlier figures (matches batch pipeline)
+        winners["raw_figure"] = winners["raw_figure"].clip(lower=-50, upper=250)
 
         # Store the effective GA used for this race (for QA audit)
         winners["going_allowance_effective"] = attenuated_ga

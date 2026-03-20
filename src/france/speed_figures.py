@@ -37,7 +37,6 @@ from .constants import (
     BL_ATTENUATION_THRESHOLD,
 
     FRANCE_GOING_GA_PRIOR,
-    FRANCE_GOOD_GOING,
     GA_NONLINEAR_BETA,
     GA_NONLINEAR_THRESHOLD,
     GA_OUTLIER_ZSCORE,
@@ -76,13 +75,20 @@ DEFAULT_CAL_PARAMS = {
 # ═════════════════════════════════════════════════════════════════════
 
 
-def _filter_std_time_winners(winners):
+def _filter_std_time_winners(winners, all_runners=None):
     """
     Filter winners for standard-time compilation.
 
     Excludes:
       - Maiden races (detected heuristically from race_name)
       - 2yo-only races (all runners in the race have age == 2)
+
+    Parameters
+    ----------
+    winners : DataFrame of race winners only.
+    all_runners : DataFrame of all runners (optional). Used for 2yo-only
+        detection so that the check considers all runners in the race,
+        not just the winner.
     """
     mask = pd.Series(True, index=winners.index)
 
@@ -90,11 +96,17 @@ def _filter_std_time_winners(winners):
     if "is_maiden" in winners.columns:
         mask &= ~winners["is_maiden"].fillna(False)
 
-    # Exclude 2yo-only races: if all runners in the race are age 2
-    if "horseAge" in winners.columns and "race_id" in winners.columns:
-        race_max_age = winners.groupby("race_id")["horseAge"].transform("max")
-        race_min_age = winners.groupby("race_id")["horseAge"].transform("min")
-        is_2yo_only = (race_max_age == 2) & (race_min_age == 2)
+    # Exclude 2yo-only races: if all runners in the race are age 2.
+    # Use all_runners (not just winners) to correctly detect mixed-age
+    # races with a 2yo winner vs truly 2yo-restricted races.
+    age_source = all_runners if all_runners is not None else winners
+    if "horseAge" in age_source.columns and "race_id" in age_source.columns:
+        race_max_age = age_source.groupby("race_id")["horseAge"].max()
+        race_min_age = age_source.groupby("race_id")["horseAge"].min()
+        races_2yo_only = set(
+            race_max_age[(race_max_age == 2) & (race_min_age == 2)].index
+        )
+        is_2yo_only = winners["race_id"].isin(races_2yo_only)
         n_2yo = is_2yo_only.sum()
         if n_2yo > 0:
             log.info("    Excluded %s 2yo-only winners from standard-time compilation",
@@ -299,7 +311,7 @@ def compute_standard_times(df):
     log.info("  Computing standard times (per track / distance / surface)...")
 
     winners = df[df["positionOfficial"] == 1].copy()
-    winners = _filter_std_time_winners(winners)
+    winners = _filter_std_time_winners(winners, all_runners=df)
 
     log.info("    Winners total: %s", f"{len(winners):,}")
 
@@ -307,7 +319,7 @@ def compute_standard_times(df):
     # reflect median ground conditions, not just good-going conditions.
     # This reduces GA corrective burden (GA audit §2).
     winners["prior_ga"] = winners["going"].map(FRANCE_GOING_GA_PRIOR).fillna(
-        FRANCE_GOING_GA_PRIOR.get("Bon", 0.04 / 201.168)
+        FRANCE_GOING_GA_PRIOR.get("Bon", 0.10 / 201.168)
     )
     winners["adj_time"] = (
         winners["finishingTime"] - (winners["prior_ga"] * winners["distance"])
@@ -361,7 +373,7 @@ def compute_standard_times_iterative(df, going_allowances):
     log.info("    Recomputing standard times (going-corrected, all goings, recency-weighted)...")
 
     winners = df[df["positionOfficial"] == 1].copy()
-    winners = _filter_std_time_winners(winners)
+    winners = _filter_std_time_winners(winners, all_runners=df)
 
     # Apply going correction
     winners["ga"] = winners["meeting_id"].map(going_allowances).fillna(0)
@@ -823,7 +835,7 @@ def compute_going_allowances(df, std_times):
         going_desc = meeting_going.get(
             mid.replace("_early", "").replace("_late", ""), "Bon"
         )
-        prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05)
+        prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05 / 201.168)
 
         k = GA_SHRINKAGE_K
         shrunk_ga = (n * raw_ga + k * prior_ga) / (n + k)
@@ -918,7 +930,7 @@ def _quality_check_winners(df, std_times):
         # QC-1: No standard time for course/surface (interpolation requires
         # at least one known distance bucket at this course/surface)
         if (row.get("courseName"), row.get("raceSurfaceName")) not in cs_with_std:
-            failed[rid] = "no historical data to generate figures"
+            failed[rid] = "missing standard time for course/surface"
             continue
         # QC-2: Impossible winner finishing time
         ft = row.get("finishingTime")
@@ -926,7 +938,7 @@ def _quality_check_winners(df, std_times):
         if pd.notna(ft) and pd.notna(dist) and dist > 0:
             pace_spm = ft / dist
             if pace_spm < MIN_PACE_SPM or pace_spm > MAX_PACE_SPM:
-                failed[rid] = "no historical data to generate figures"
+                failed[rid] = "impossible finishing time"
                 log.warning("    QC: Race %s failed — impossible pace %.4f s/m "
                             "(time=%.2f, dist=%.0fm)", rid, pace_spm, ft, dist)
 
@@ -938,7 +950,7 @@ def _quality_check_winners(df, std_times):
         if len(non_winners) >= 3:
             bl_vals = non_winners["distanceCumulative"].dropna()
             if len(bl_vals) >= 3 and bl_vals.nunique() == 1:
-                failed[rid] = "no historical data to generate figures"
+                failed[rid] = "broken beaten lengths"
                 log.warning("    QC: Race %s failed — all beaten lengths "
                             "identical (%.2f)", rid, bl_vals.iloc[0])
 
@@ -969,6 +981,14 @@ def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
     ].copy()
 
     w["going_allowance"] = w["meeting_id"].map(going_allowances)
+
+    # Per-race going attenuation: when the meeting GA substantially
+    # overshoots a race's own deviation from standard, attenuate the GA
+    # for that race to prevent over-correction (matches live pipeline).
+    GA_RACE_ATTENUATION = 0.5
+    race_dev = (w["finishingTime"] - w["standard_time"]) / w["distance"]
+    excess = (w["going_allowance"] - race_dev).clip(lower=0)
+    w["going_allowance"] = w["going_allowance"] - GA_RACE_ATTENUATION * excess
 
     # Going-corrected time (NO class adjustment — figure reflects raw speed)
     w["corrected_time"] = (
@@ -1279,64 +1299,6 @@ def calibrate_to_uk_scale(df):
     return df, cal_params
 
 
-def _compute_bl_band_corrections(df):
-    """Compute beaten-length band corrections using internal consistency.
-
-    Winners are the anchor (correction=0).  For each BL band, compute
-    the systematic residual (how much beaten horses' figures deviate from
-    what the winner-based race quality suggests).
-
-    Uses shrinkage (K=100) to regularise small-sample bands.
-    """
-    has_fig = df["figure_calibrated"].notna()
-    if not has_fig.any():
-        return {}
-
-    # Get winner figure per race
-    winners = df[has_fig & (df["positionOfficial"] == 1)][["race_id", "figure_calibrated"]].copy()
-    winners = winners.rename(columns={"figure_calibrated": "race_quality"})
-    winners = winners.drop_duplicates("race_id")
-
-    beaten = df[has_fig & (df["positionOfficial"] > 1)].copy()
-    if beaten.empty:
-        return {}
-
-    beaten = beaten.merge(winners, on="race_id", how="inner")
-    if beaten.empty:
-        return {}
-
-    # Expected figure = race_quality - lbs_behind (already computed)
-    # Residual = actual figure - expected
-    # But since figure_calibrated = winner_figure - lbs_behind + adjustments,
-    # we approximate the residual as figure_calibrated vs race_quality expectation
-    beaten["residual"] = beaten["figure_calibrated"] - beaten["race_quality"]
-
-    cum_bl = beaten["distanceCumulative"].fillna(0).clip(lower=0)
-    beaten["bl_band"] = pd.cut(
-        cum_bl, bins=[0, 1, 3, 5, 10, 15, 20, 999],
-        labels=["0-1", "1-3", "3-5", "5-10", "10-15", "15-20", "20+"],
-        include_lowest=True,
-    ).astype(str).fillna("0-1")
-
-    SHRINKAGE_K = 100
-    band_groups = beaten.groupby("bl_band")["residual"]
-    band_means = band_groups.mean()
-    band_counts = band_groups.count()
-
-    # Shrunk corrections: positive residual means over-rated → subtract
-    corrections = {}
-    for band in band_means.index:
-        n = band_counts[band]
-        raw = band_means[band]
-        shrunk = raw * n / (n + SHRINKAGE_K)
-        # We want to SUBTRACT the over-rating (negative correction)
-        corrections[band] = -shrunk
-
-    # Winner band gets no correction
-    corrections["winner"] = 0.0
-
-    return corrections
-
 
 def _french_going_group_map():
     """Map French going descriptions to groups for correction."""
@@ -1558,14 +1520,12 @@ def run_pipeline(session: Session, start_date=None, end_date=None,
         df, std_dict, ga_dict, lpl_dict
     )
 
-    # Annotate races that failed quality checks:
-    # no historical data to generate figures
+    # Annotate races that failed quality checks with specific failure reason
     df["figure_comment"] = ""
     if qc_failed:
-        failed_mask = df["race_id"].isin(qc_failed)
-        df.loc[failed_mask, "figure_comment"] = (
-            "no historical data to generate figures"
-        )
+        race_comment = df["race_id"].map(qc_failed)
+        has_comment = race_comment.notna()
+        df.loc[has_comment, "figure_comment"] = race_comment[has_comment]
 
     # Stage 5: All-runner figures
     df = compute_all_figures(

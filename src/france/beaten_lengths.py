@@ -69,7 +69,7 @@ def parse_beaten_length(text: Optional[str]) -> float:
     m = _NUMERIC_RE.match(text)
     if m:
         whole = int(m.group(1)) if m.group(1) else 0
-        frac = _FRACTION_MAP.get(m.group(2), 0.0) if m.group(2) else 0.0
+        frac = _FRACTION_MAP.get(m.group(2), np.nan) if m.group(2) else 0.0
         result = whole + frac
         if result > 0:
             return result
@@ -113,6 +113,7 @@ def compute_cumulative_bl(df: pd.DataFrame) -> pd.DataFrame:
 
     def _cumsum_race(group):
         vals = group["_bl_individual"].values.copy()
+        positions = group["positionOfficial"].values
         # First runner (winner) = 0, rest are cumulative
         cum = np.zeros(len(vals))
         running = 0.0
@@ -121,6 +122,11 @@ def compute_cumulative_bl(df: pd.DataFrame) -> pd.DataFrame:
                 cum[i] = 0.0
             else:
                 margin = vals[i] if not np.isnan(vals[i]) else 0.0
+                # Dead heat: same position as previous horse means 0
+                # additional margin (they finished together)
+                if (not np.isnan(positions[i]) and not np.isnan(positions[i - 1])
+                        and positions[i] == positions[i - 1]):
+                    margin = 0.0
                 running += margin
                 cum[i] = running
         return pd.Series(cum, index=group.index)
