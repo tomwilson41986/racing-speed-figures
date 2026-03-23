@@ -1607,6 +1607,9 @@ def run_pipeline(session: Session, start_date=None, end_date=None,
 
     log.info("=" * 70)
 
+    # Save audit files
+    save_france_batch_audit(df, std_dict, ga_dict)
+
     if return_artifacts:
         return {
             "df": df,
@@ -1619,6 +1622,124 @@ def run_pipeline(session: Session, start_date=None, end_date=None,
             "empirical_ga_priors": empirical_ga_priors,
         }
     return df
+
+
+# ═════════════════════════════════════════════════════════════════════
+# AUDIT OUTPUT (batch pipeline)
+# ═════════════════════════════════════════════════════════════════════
+
+FRANCE_AUDIT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "output", "france_audit"
+)
+
+
+def save_france_batch_audit(df, std_dict, ga_dict):
+    """Save audit files for the France batch pipeline run.
+
+    Creates ``output/france_audit/batch/`` containing:
+      - ``audit_full_batch.csv``  — all intermediate columns for row-by-row
+        verification of every calculation step.
+      - ``audit_calc_logic_batch.txt``  — formula reference and summary
+        statistics with the constants used.
+    """
+    from datetime import datetime, timezone
+
+    audit_dir = os.path.join(FRANCE_AUDIT_DIR, "batch")
+    os.makedirs(audit_dir, exist_ok=True)
+
+    # 1. Full audit CSV
+    audit_cols = [c for c in [
+        "meetingDate", "courseName", "raceNumber", "race_id",
+        "horseName", "positionOfficial",
+        "distance", "going", "raceSurfaceName", "raceClass",
+        "horseAge", "horseGender", "weightCarried",
+        "finishingTime", "distanceCumulative",
+        # Lookup / intermediate values
+        "standard_time", "going_allowance", "lpl",
+        "corrected_time", "deviation_seconds",
+        # Figure chain
+        "raw_figure", "weight_adj", "figure_after_weight",
+        "wfa_adj", "figure_after_wfa",
+        "figure_calibrated", "figure_final",
+        # QA
+        "figure_comment", "ga_value",
+    ] if c in df.columns]
+
+    csv_path = os.path.join(audit_dir, "audit_full_batch.csv")
+    df[audit_cols].sort_values(
+        ["meetingDate", "courseName", "raceNumber", "positionOfficial"]
+    ).to_csv(csv_path, index=False, float_format="%.4f")
+    log.info("Audit CSV: %s (%d rows)", csv_path, len(df))
+
+    # 2. Calculation logic reference
+    logic_path = os.path.join(audit_dir, "audit_calc_logic_batch.txt")
+    lines = []
+    lines.append("France Speed Figures — Batch Pipeline Calculation Logic Audit")
+    lines.append(f"Generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}")
+    lines.append("=" * 80)
+    lines.append("")
+    lines.append("CONSTANTS")
+    lines.append("-" * 40)
+    lines.append(f"  BASE_RATING            = {BASE_RATING}")
+    lines.append(f"  BASE_WEIGHT_LBS        = {BASE_WEIGHT_LBS}")
+    lines.append(f"  SECONDS_PER_LENGTH     = {SECONDS_PER_LENGTH}")
+    lines.append(f"  BENCHMARK_METRES       = {C.BENCHMARK_METRES}")
+    lines.append(f"  LBS_PER_SECOND_BENCH   = {C.LBS_PER_SECOND_BENCHMARK}")
+    lines.append(f"  LPL_SURFACE_MULTIPLIER = {C.LPL_SURFACE_MULTIPLIER}")
+    lines.append(f"  GA_SHRINKAGE_K         = {GA_SHRINKAGE_K}")
+    lines.append(f"  GA_OUTLIER_ZSCORE      = {GA_OUTLIER_ZSCORE}")
+    lines.append(f"  BL_ATTENUATION_THRESH  = {BL_ATTENUATION_THRESHOLD}")
+    lines.append(f"  BL_ATTENUATION_FACTOR  = {BL_ATTENUATION_FACTOR}")
+    lines.append("")
+    lines.append("FORMULA CHAIN")
+    lines.append("-" * 40)
+    lines.append("  Stage 1:  standard_time         = trimmed_median(class_adjusted winner times)")
+    lines.append("  Stage 2:  going_allowance (GA)   = bayesian_shrunk(winsorized_median(deviations))")
+    lines.append("  Stage 3:  lpl                    = generic_lpl * course_correction * surface_mult")
+    lines.append("  Stage 4:  corrected_time         = finishingTime - (GA * distance)")
+    lines.append("            deviation_seconds      = corrected_time - standard_time")
+    lines.append("            deviation_lbs          = (deviation_seconds / SPL) * lpl")
+    lines.append("            raw_figure (winner)    = BASE_RATING - deviation_lbs")
+    lines.append("  Stage 5:  raw_figure (others)    = winner_figure - (beaten_lengths * lpl)")
+    lines.append("  Stage 6:  figure_after_weight    = raw_figure + (weightCarried - BASE_WEIGHT_LBS)")
+    lines.append("  Stage 7:  figure_after_wfa       = figure_after_weight + wfa_adj")
+    lines.append("  Stage 8:  sex_adj                (not applied)")
+    lines.append("  Stage 9:  figure_calibrated      = self_calibration(figure_final)")
+    lines.append("")
+
+    # Summary by surface
+    has_fig = df["figure_final"].notna()
+    lines.append("SUMMARY BY SURFACE")
+    lines.append("-" * 40)
+    if has_fig.any():
+        for surf, grp in df[has_fig].groupby("raceSurfaceName"):
+            lines.append(f"  {surf}: {len(grp):>6,} runners  "
+                          f"mean={grp['figure_final'].mean():.1f}  "
+                          f"std={grp['figure_final'].std():.1f}  "
+                          f"range=[{grp['figure_final'].min():.0f}, "
+                          f"{grp['figure_final'].max():.0f}]")
+    lines.append("")
+
+    # Summary by class
+    lines.append("SUMMARY BY CLASS")
+    lines.append("-" * 40)
+    if has_fig.any() and "raceClass" in df.columns:
+        for cls, grp in df[has_fig].groupby("raceClass"):
+            lines.append(f"  Class {cls}: {len(grp):>6,} runners  "
+                          f"mean={grp['figure_final'].mean():.1f}")
+    lines.append("")
+
+    lines.append(f"GOING ALLOWANCES: {len(ga_dict):,} meetings")
+    lines.append(f"STANDARD TIMES: {len(std_dict):,} entries")
+    lines.append("")
+    lines.append(f"Total runners: {len(df):,}")
+    lines.append(f"Runners with figures: {has_fig.sum():,}")
+
+    with open(logic_path, "w") as f:
+        f.write("\n".join(lines))
+    log.info("Audit logic: %s", logic_path)
+
+    return audit_dir
 
 
 # ═════════════════════════════════════════════════════════════════════
