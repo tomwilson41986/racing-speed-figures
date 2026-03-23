@@ -538,15 +538,24 @@ def _parse_std_keys(lookup_dict):
 def _interp_single(actual_dist, dist_val_pairs):
     """Linearly interpolate a value for actual_dist given sorted (dist, val) pairs.
 
-    Clamps to nearest known value if outside the range (no extrapolation).
+    Returns NaN if the actual distance is more than 20% beyond the known range
+    (prevents e.g. a 1600m standard time being used for a 2300m race).
+    Clamps to nearest known value for small extrapolations within the 20% guard.
     """
     if len(dist_val_pairs) == 1:
+        only_dist = dist_val_pairs[0][0]
+        if abs(actual_dist - only_dist) / only_dist > 0.20:
+            return np.nan
         return dist_val_pairs[0][1]
     dists = [dv[0] for dv in dist_val_pairs]
     vals = [dv[1] for dv in dist_val_pairs]
     if actual_dist <= dists[0]:
+        if (dists[0] - actual_dist) / dists[0] > 0.20:
+            return np.nan
         return vals[0]
     if actual_dist >= dists[-1]:
+        if (actual_dist - dists[-1]) / dists[-1] > 0.20:
+            return np.nan
         return vals[-1]
     # Find bracketing pair
     for i in range(len(dists) - 1):
@@ -1076,6 +1085,19 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict, std_times=None,
     no_pos = out["positionOfficial"].isna() | (out["positionOfficial"] == 0)
     out.loc[no_pos, "raw_figure"] = np.nan
 
+    # Cap extreme outlier figures — same bounds as winner figures (Stage 4).
+    # Without this, garbage values from clamped/missing standard times leak
+    # into calibration and distort the global scale+shift.
+    extreme = out["raw_figure"].notna() & (
+        (out["raw_figure"] < -50) | (out["raw_figure"] > 250)
+    )
+    if extreme.any():
+        log.info("    Capping %s extreme all-runner figures to [-50, 250]",
+                 f"{extreme.sum():,}")
+        out.loc[extreme, "raw_figure"] = out.loc[extreme, "raw_figure"].clip(
+            lower=-50, upper=250
+        )
+
     log.info("    All-runner figures: %s", f"{len(out):,}")
     return out
 
@@ -1193,14 +1215,23 @@ def calibrate_to_uk_scale(df):
     # 80+ due to extreme outliers, yielding scale ~0.22 which makes
     # beaten-length and weight adjustments nearly invisible.
     fr_vals = df.loc[has_fig, "figure_after_sex"]
-    fr_mean = fr_vals.mean()
-    fr_std = fr_vals.std()
 
-    q25 = fr_vals.quantile(0.25)
-    q75 = fr_vals.quantile(0.75)
+    # Pre-filter: exclude extreme outliers before computing IQR.
+    # Figures outside [-50, 250] are almost certainly from bad standard
+    # times or timing errors and should not influence calibration.
+    sane_mask = fr_vals.between(-50, 250)
+    fr_vals_sane = fr_vals[sane_mask]
+    if len(fr_vals_sane) < 20:
+        fr_vals_sane = fr_vals  # fall back if too few sane values
+
+    fr_mean = fr_vals_sane.mean()
+    fr_std = fr_vals_sane.std()
+
+    q25 = fr_vals_sane.quantile(0.25)
+    q75 = fr_vals_sane.quantile(0.75)
     iqr = q75 - q25
     robust_std = iqr / 1.349  # IQR-based std estimator for normal distribution
-    robust_center = fr_vals.median()
+    robust_center = fr_vals_sane.median()
 
     # Use robust std for scaling (prevents outlier-driven compression)
     cal_std = robust_std if robust_std > 0 else fr_std
