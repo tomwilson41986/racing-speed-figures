@@ -283,12 +283,16 @@ FRANCE_SEX_MAP = {
 # 3yo WFA table: rows = months 1-12, columns keyed by distance in furlongs.
 # Values in lbs.  No surface split — sample sizes too thin when split.
 _EMPIRICAL_WFA_3YO = {
-    #        5f  6f  7f  8f 10f 12f
-    1:  [5,  5,  7,  5,  4,  0],
-    2:  [9,  3,  9,  5,  4,  0],
-    3:  [6,  4,  5,  5,  2,  0],
-    4:  [5,  2,  2,  1,  0,  0],
-    5:  [5,  2,  5,  0,  0,  0],
+    # Months 1-5 updated 2026-03 to align with BHA/Timeform WFA scales.
+    # Previous empirical values were too low in early season (3-9 lbs
+    # vs BHA 10-13), causing systematic under-rating of 3yo performances.
+    # Months 6-12 retain empirical values.
+    #        5f   6f   7f   8f  10f  12f
+    1:  [13,  13,  13,  12,  10,  9],
+    2:  [13,  13,  13,  12,  10,  9],
+    3:  [13,  13,  13,  12,  10,  8],
+    4:  [12,  12,  11,  11,  10,  8],
+    5:  [10,  10,  10,  10,   9,  7],
     6:  [1,  7,  4,  3,  2,  0],
     7:  [2,  4,  6,  2,  2,  0],
     8:  [2,  4,  4,  3,  1,  0],

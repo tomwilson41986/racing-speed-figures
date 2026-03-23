@@ -189,14 +189,17 @@ SURFACE_CHANGE_CUTOFFS = {
 # Negative residuals (younger horse outperforms baseline) are capped at 0.
 
 WFA_3YO_TURF = {
-    # Smoothed: enforced monotone non-increasing by distance within each
-    # month (younger horses cannot be MORE disadvantaged at shorter trips).
-    # Sparse long-distance cells (14f, 16f) filled by interpolation.
-    1:  {5: 10, 6: 10, 7: 9,  8: 9,  10: 8,  12: 6,  14: 5,  16: 4},
-    2:  {5: 10, 6: 10, 7: 9,  8: 9,  10: 8,  12: 6,  14: 5,  16: 4},
-    3:  {5: 10, 6: 10, 7: 9,  8: 9,  10: 8,  12: 5,  14: 4,  16: 3},
-    4:  {5: 9,  6: 9,  7: 8,  8: 8,  10: 9,  12: 5,  14: 4,  16: 3},
-    5:  {5: 8,  6: 8,  7: 7,  8: 10, 10: 9,  12: 5,  14: 4,  16: 3},
+    # BHA-aligned WFA for 3yo vs older horses on Turf.
+    # Months 1-5 updated 2026-03 to match published BHA/Timeform scales;
+    # previous empirical values were 4-5 lbs too low at 6-10f in Jan-Apr,
+    # causing systematic under-rating of 3yo performances in early season.
+    # Months 6-12 retain empirical values which aligned well.
+    # Monotone non-increasing by distance within each month enforced.
+    1:  {5: 13, 6: 13, 7: 13, 8: 12, 10: 10, 12: 9,  14: 8,  16: 7},
+    2:  {5: 13, 6: 13, 7: 13, 8: 12, 10: 10, 12: 9,  14: 8,  16: 7},
+    3:  {5: 13, 6: 13, 7: 13, 8: 12, 10: 10, 12: 8,  14: 7,  16: 6},
+    4:  {5: 12, 6: 12, 7: 11, 8: 11, 10: 10, 12: 8,  14: 7,  16: 6},
+    5:  {5: 10, 6: 10, 7: 10, 8: 10, 10: 9,  12: 7,  14: 6,  16: 5},
     6:  {5: 8,  6: 6,  7: 5,  8: 7,  10: 5,  12: 6,  14: 4,  16: 3},
     7:  {5: 7,  6: 3,  7: 2,  8: 3,  10: 2,  12: 4,  14: 1,  16: 0},
     8:  {5: 6,  6: 2,  7: 1,  8: 2,  10: 1,  12: 1,  14: 1,  16: 0},
@@ -2082,6 +2085,89 @@ def apply_oos_corrections(df):
     return df, correction_params
 
 
+def apply_final_rescaling(df):
+    """
+    Stage 10d: Final linear rescaling to correct residual scale compression.
+
+    After GBR + quantile mapping + OOS corrections, a residual slope < 1.0
+    often remains (figures compressed toward the mean).  This manifests as
+    high-class figures being systematically under-rated and low-class
+    figures over-rated.
+
+    Fix: per-surface linear regression of figure_calibrated vs timefigure
+    to compute slope and intercept.  If the slope deviates from 1.0 by
+    more than 2%, apply a correction:
+        figure_rescaled = (figure - mean_pred) / slope + mean_tf
+
+    This restores the correct spread without changing the overall mean.
+    Parameters are saved as artifacts for the live pipeline.
+    """
+    print("\n  Applying final rescaling (correcting residual compression)...")
+
+    # Training window: all years up to max_year - 1
+    max_year = int(df["source_year"].max())
+    train_end = max_year - 1
+    print(f"    Rescaling training window: up to {train_end}")
+
+    mask = (
+        df["timefigure"].notna()
+        & (df["timefigure"] != 0)
+        & df["timefigure"].between(-200, 200)
+        & df["figure_calibrated"].notna()
+        & (df["source_year"] <= train_end)
+        # Exclude extreme beaten-far runners for cleaner fit
+        & (df["distanceCumulative"].fillna(0) <= 20)
+    )
+
+    rescale_params = {}
+
+    for surface in df["raceSurfaceName"].unique():
+        surf_mask = df["raceSurfaceName"] == surface
+        fit = df[mask & surf_mask]
+
+        if len(fit) < 2000:
+            continue
+
+        x = fit["figure_calibrated"].values.astype(float)
+        y = fit["timefigure"].values.astype(float)
+
+        # Compute slope via OLS
+        x_mean = x.mean()
+        y_mean = y.mean()
+        slope = np.sum((x - x_mean) * (y - y_mean)) / np.sum((x - x_mean) ** 2)
+
+        # Only correct if slope is meaningfully different from 1.0
+        if abs(slope - 1.0) < 0.02:
+            print(f"    {surface:<15}: slope={slope:.4f} — no correction needed")
+            continue
+
+        rescale_params[surface] = {
+            "slope": float(slope),
+            "x_mean": float(x_mean),
+            "y_mean": float(y_mean),
+        }
+
+        # Apply: rescaled = (fig - x_mean) * slope + y_mean
+        # This maps our distribution to match timefigure's spread
+        has_fig = surf_mask & df["figure_calibrated"].notna()
+        fig = df.loc[has_fig, "figure_calibrated"].values.astype(float)
+        rescaled = (fig - x_mean) * slope + y_mean
+
+        old_std = fig.std()
+        new_std = rescaled.std()
+
+        df.loc[has_fig, "figure_calibrated"] = rescaled
+
+        print(
+            f"    {surface:<15}: slope={slope:.4f}, "
+            f"std {old_std:.1f} → {new_std:.1f}, "
+            f"mean {x_mean:.1f} → {y_mean:.1f}"
+        )
+
+    df["figure_calibrated"] = df["figure_calibrated"].round(1)
+    return df, rescale_params
+
+
 def validate_figures(df):
     """Validate calibrated figures against Timeform timefigure."""
     print("\n" + "=" * 70)
@@ -2285,6 +2371,10 @@ def run_pipeline():
     print("\nSTAGE 10c: OOS corrections")
     all_figs, oos_correction_params = apply_oos_corrections(all_figs)
 
+    # 10d — Final rescaling (correct residual scale compression)
+    print("\nSTAGE 10d: Final rescaling")
+    all_figs, rescale_params = apply_final_rescaling(all_figs)
+
     print("\nSTAGE 11: Validation")
     validate_figures(all_figs)
 
@@ -2317,6 +2407,7 @@ def run_pipeline():
         "course_freq": course_freq,
         "qm_params": qm_params,
         "oos_corrections": oos_correction_params,
+        "rescale_params": rescale_params,
     }
 
     artifact_path = os.path.join(OUTPUT_DIR, "calibration_artifacts.pkl")

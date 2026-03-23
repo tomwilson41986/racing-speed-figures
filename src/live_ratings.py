@@ -924,6 +924,7 @@ class LiteRatingEngine:
         df = self._apply_gbr(df)
         df = self._apply_quantile_mapping(df)
         df = self._apply_oos_corrections(df)
+        df = self._apply_final_rescaling(df)
 
         # Diagnostic: how much the figure-based rank diverges from finish position.
         # Positive = figure ranks higher than finishing position (weight boost).
@@ -1170,7 +1171,12 @@ class LiteRatingEngine:
         return df
 
     def _extend_to_all_runners(self, df):
-        """Extend figures to all runners via beaten lengths."""
+        """Extend figures to all runners via beaten lengths.
+
+        Matches the batch pipeline (compute_all_figures) with:
+        - Velocity-weighted LPL (adjusts for actual race pace)
+        - Soft-cap beaten-length attenuation (going-dependent threshold)
+        """
         log.info("Extending to all runners...")
 
         df["raw_figure"] = np.nan
@@ -1196,9 +1202,48 @@ class LiteRatingEngine:
                 missing, "distance"
             ].apply(generic_lbs_per_length)
 
-        # Beaten lengths (capped at 30)
         is_winner = df_in["positionOfficial"] == 1
-        cum = df_in["distanceCumulative"].fillna(0).clip(lower=0, upper=30)
+
+        # Winner finishing time per race (for velocity weighting)
+        winner_times = (
+            df_in.loc[is_winner, ["race_id", "finishingTime"]]
+            .drop_duplicates("race_id")
+            .set_index("race_id")["finishingTime"]
+        )
+        df_in["winner_time"] = df_in["race_id"].map(winner_times)
+
+        # Velocity-weighted LPL: adjust by standard_time / winner_time ratio.
+        # Faster races produce bigger gaps per unit of ability -> higher LPL.
+        # Matches batch pipeline logic (compute_all_figures).
+        has_both = (
+            df_in["standard_time"].notna()
+            & df_in["winner_time"].notna()
+            & (df_in["winner_time"] > 0)
+        )
+        if has_both.any():
+            velocity_ratio = (
+                df_in["standard_time"] / df_in["winner_time"]
+            ).clip(0.85, 1.15)
+            df_in.loc[has_both, "lpl"] = (
+                df_in.loc[has_both, "lpl"] * velocity_ratio[has_both]
+            )
+            n_vel = has_both.sum()
+            log.info(f"  Velocity-weighted LPL applied to {n_vel} runners")
+
+        # Soft-cap beaten-length attenuation (matching batch pipeline).
+        # Going-dependent threshold: soft ground bunches fields (lower T),
+        # firm ground spreads them (higher T).
+        BL_THRESHOLD = 20.0
+        BL_FACTOR = 0.5
+        cum_raw = df_in["distanceCumulative"].fillna(0).clip(lower=0)
+
+        if "going_allowance" in df_in.columns:
+            ga = df_in["going_allowance"].fillna(0)
+            T = np.clip(BL_THRESHOLD + (ga * -8), 10, 30)
+        else:
+            T = BL_THRESHOLD
+
+        cum = np.where(cum_raw <= T, cum_raw, T + BL_FACTOR * (cum_raw - T))
 
         df_in["lbs_behind"] = cum * df_in["lpl"]
         df_in.loc[is_winner, "lbs_behind"] = 0.0
@@ -1211,12 +1256,6 @@ class LiteRatingEngine:
         # Estimated finish times:
         #   Winner = actual comptime (finishingTime)
         #   Others = winner_time + cumulative_beaten_lengths * SECONDS_PER_LENGTH
-        winner_times = (
-            df_in.loc[is_winner, ["race_id", "finishingTime"]]
-            .drop_duplicates("race_id")
-            .set_index("race_id")["finishingTime"]
-        )
-        df_in["winner_time"] = df_in["race_id"].map(winner_times)
         df_in["est_time"] = df_in["winner_time"]
         non_winner = ~is_winner & df_in["distanceCumulative"].notna()
         df_in.loc[non_winner, "est_time"] = (
@@ -1584,6 +1623,38 @@ class LiteRatingEngine:
             log.info(
                 f"  {surface}: OOS corrections applied to {n_adj} runners "
                 f"(temporal={temporal:+.2f})"
+            )
+
+        df["figure_calibrated"] = df["figure_calibrated"].round(1)
+        return df
+
+    def _apply_final_rescaling(self, df):
+        """Apply final linear rescaling to correct residual scale compression."""
+        if not self._artifacts or not self._artifacts.get("rescale_params"):
+            return df
+
+        log.info("Applying final rescaling...")
+
+        rescale = self._artifacts["rescale_params"]
+
+        for surface, params in rescale.items():
+            mask = (
+                (df["raceSurfaceName"] == surface)
+                & df["figure_calibrated"].notna()
+            )
+            if mask.sum() == 0:
+                continue
+
+            slope = params["slope"]
+            x_mean = params["x_mean"]
+            y_mean = params["y_mean"]
+
+            fig = df.loc[mask, "figure_calibrated"].values.astype(float)
+            df.loc[mask, "figure_calibrated"] = (fig - x_mean) * slope + y_mean
+
+            log.info(
+                f"  {surface}: rescaled with slope={slope:.4f} "
+                f"(n={mask.sum()})"
             )
 
         df["figure_calibrated"] = df["figure_calibrated"].round(1)
