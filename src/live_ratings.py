@@ -1885,6 +1885,201 @@ def run_scheduled():
 
 
 # ═════════════════════════════════════════════════════════════════════
+# AUDIT OUTPUT
+# ═════════════════════════════════════════════════════════════════════
+
+UK_AUDIT_DIR = ROOT_DIR / "output" / "uk_audit"
+
+
+def save_uk_audit_output(df, race_date, run_source="live"):
+    """Save a comprehensive audit package for a UK ratings run.
+
+    Creates ``output/uk_audit/{date}/`` containing:
+      - ``audit_full_{date}.csv``  — every intermediate column so each
+        calculation step can be verified row-by-row.
+      - ``audit_calc_logic_{date}.txt``  — a per-race breakdown showing the
+        formula applied at each stage with actual values.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The rated DataFrame (output of ``compute_figures``).
+    race_date : str or date
+        Target race date (YYYY-MM-DD string or date object).
+    run_source : str
+        Label for the run ("live", "manual").
+    """
+    date_str = str(race_date)
+    audit_run_dir = UK_AUDIT_DIR / date_str
+    audit_run_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── 1. Full audit CSV with all intermediate columns ───────────
+    audit_cols = [c for c in [
+        "raceDate", "courseName", "raceNumber", "race_id",
+        "horseName", "positionOfficial", "distance", "going",
+        "raceSurfaceName", "raceClass", "horseAge", "weightCarried",
+        "finishingTime", "distanceCumulative",
+        # Lookup values
+        "standard_time", "lpl", "going_allowance",
+        # Winner calculation chain
+        "winner_figure", "lbs_behind", "raw_figure",
+        # Adjustments
+        "weight_adj", "wfa_adj", "sex_allowance",
+        # Calibration
+        "figure_final", "figure_calibrated",
+        # QA
+        "figure_confidence",
+    ] if c in df.columns]
+
+    audit_csv_path = audit_run_dir / f"audit_full_{date_str}.csv"
+    df[audit_cols].sort_values(
+        ["courseName", "raceNumber", "positionOfficial"]
+    ).to_csv(str(audit_csv_path), index=False, float_format="%.4f")
+    log.info("Audit full CSV saved: %s", audit_csv_path)
+
+    # ── 2. Calculation logic breakdown (human-readable) ───────────
+    logic_path = audit_run_dir / f"audit_calc_logic_{date_str}.txt"
+    lines = _build_uk_calc_logic(df, date_str, run_source)
+
+    with open(logic_path, "w") as f:
+        f.write("\n".join(lines))
+    log.info("Audit calculation logic saved: %s", logic_path)
+
+    return audit_run_dir
+
+
+def _build_uk_calc_logic(df, date_str, run_source):
+    """Build human-readable calculation logic lines for UK ratings."""
+    lines = []
+    lines.append("UK Speed Figures — Calculation Logic Audit")
+    lines.append(f"Date: {date_str}   Run source: {run_source}")
+    lines.append(f"Generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}")
+    lines.append("=" * 80)
+    lines.append("")
+    lines.append("FORMULA REFERENCE")
+    lines.append("-" * 40)
+    lines.append(f"  BASE_RATING          = {BASE_RATING}")
+    lines.append(f"  BASE_WEIGHT_LBS      = {BASE_WEIGHT_LBS}")
+    lines.append(f"  SECONDS_PER_LENGTH   = {SECONDS_PER_LENGTH}")
+    lines.append(f"  LBS_PER_SECOND_5F    = {LBS_PER_SECOND_5F}")
+    lines.append(f"  BENCHMARK_FURLONGS   = {BENCHMARK_FURLONGS}")
+    lines.append("")
+    lines.append("  corrected_time       = finishingTime - (going_allowance * distance)")
+    lines.append("  deviation_seconds    = corrected_time - standard_time")
+    lines.append("  deviation_lengths    = deviation_seconds / SECONDS_PER_LENGTH")
+    lines.append("  deviation_lbs        = deviation_lengths * lpl")
+    lines.append("  raw_figure (winner)  = BASE_RATING - deviation_lbs")
+    lines.append("  raw_figure (others)  = winner_figure - lbs_behind")
+    lines.append("  after_weight         = raw_figure + (weightCarried - BASE_WEIGHT_LBS)")
+    lines.append("  figure_final         = after_weight + wfa_adj")
+    lines.append("  figure_calibrated    = calibration(figure_final)  [surface-specific]")
+    lines.append("")
+
+    # Summary stats
+    rated = df["figure_calibrated"].notna()
+    lines.append("SUMMARY")
+    lines.append("-" * 40)
+    lines.append(f"  Total runners: {len(df)}")
+    lines.append(f"  Runners rated: {rated.sum()}")
+    lines.append(f"  Races: {df['raceNumber'].nunique() if 'raceNumber' in df.columns else '?'}")
+    lines.append(f"  Courses: {', '.join(df['courseName'].unique()) if 'courseName' in df.columns else '?'}")
+    if rated.any():
+        lines.append(f"  Figure range: {df.loc[rated, 'figure_calibrated'].min():.0f} to "
+                      f"{df.loc[rated, 'figure_calibrated'].max():.0f}")
+        lines.append(f"  Figure mean:  {df.loc[rated, 'figure_calibrated'].mean():.1f}")
+    lines.append("")
+
+    # Per-race breakdown
+    sorted_df = df.sort_values(["courseName", "raceNumber", "positionOfficial"])
+    for (course, rnum), race_df in sorted_df.groupby(
+        ["courseName", "raceNumber"], sort=False
+    ):
+        first = race_df.iloc[0]
+        rid = first.get("race_id", "?")
+        lines.append("=" * 80)
+        lines.append(f"RACE: {course} Race {int(rnum)}  (id={rid})")
+        dist_val = first.get("distance", "?")
+        dist_display = f"{dist_val:.1f}f" if pd.notna(dist_val) else "?"
+        lines.append(f"  Distance: {dist_display}  "
+                      f"Going: {first.get('going', '?')}  "
+                      f"Surface: {first.get('raceSurfaceName', '?')}  "
+                      f"Class: {first.get('raceClass', '?')}")
+
+        std_t = first.get("standard_time")
+        ga = first.get("going_allowance")
+        lpl_val = first.get("lpl")
+        lines.append(f"  standard_time={_uk_fmt(std_t)}s  "
+                      f"going_allowance={_uk_fmt(ga, dp=6)} s/f  "
+                      f"lpl={_uk_fmt(lpl_val)} lbs/L")
+        lines.append("-" * 60)
+
+        # Winner calculation
+        winner_rows = race_df[race_df["positionOfficial"] == 1]
+        if len(winner_rows) > 0:
+            w = winner_rows.iloc[0]
+            lines.append(f"  WINNER: {w.get('horseName', '?')}")
+            ft = w.get("finishingTime")
+            wf = w.get("winner_figure")
+            raw = w.get("raw_figure")
+            lines.append(f"    finishingTime        = {_uk_fmt(ft)}s")
+            ct_val = ft - (ga * dist_val) if pd.notna(ft) and pd.notna(ga) and pd.notna(dist_val) else None
+            lines.append(f"    corrected_time       = {_uk_fmt(ft)} - ({_uk_fmt(ga)} * {_uk_fmt(dist_val)}) = {_uk_fmt(ct_val)}")
+            dev_s = ct_val - std_t if ct_val is not None and pd.notna(std_t) else None
+            lines.append(f"    deviation_seconds    = {_uk_fmt(ct_val)} - {_uk_fmt(std_t)} = {_uk_fmt(dev_s)}")
+            dev_l = dev_s / SECONDS_PER_LENGTH if dev_s is not None else None
+            lines.append(f"    deviation_lengths    = {_uk_fmt(dev_s)} / {SECONDS_PER_LENGTH} = {_uk_fmt(dev_l)}")
+            dev_lbs = dev_l * lpl_val if dev_l is not None and pd.notna(lpl_val) else None
+            lines.append(f"    deviation_lbs        = {_uk_fmt(dev_l)} * {_uk_fmt(lpl_val)} = {_uk_fmt(dev_lbs)}")
+            lines.append(f"    raw_figure           = {BASE_RATING} - {_uk_fmt(dev_lbs)} = {_uk_fmt(wf or raw)}")
+            _uk_append_adjustments(lines, w)
+            lines.append("")
+
+        # Other runners
+        others = race_df[race_df["positionOfficial"] != 1]
+        for _, r in others.iterrows():
+            pos = r.get("positionOfficial")
+            pos_str = str(int(pos)) if pd.notna(pos) and pos > 0 else "DNF"
+            lines.append(f"  {pos_str:>4s}. {r.get('horseName', '?')}")
+            wf = r.get("winner_figure")
+            lb = r.get("lbs_behind")
+            raw = r.get("raw_figure")
+            cum = r.get("distanceCumulative")
+            lines.append(f"    beaten_lengths       = {_uk_fmt(cum)}L")
+            lines.append(f"    lbs_behind           = {_uk_fmt(cum)} * {_uk_fmt(lpl_val)} = {_uk_fmt(lb)}")
+            lines.append(f"    raw_figure           = {_uk_fmt(wf)} - {_uk_fmt(lb)} = {_uk_fmt(raw)}")
+            _uk_append_adjustments(lines, r)
+            lines.append("")
+
+        lines.append("")
+
+    return lines
+
+
+def _uk_fmt(val, dp=4):
+    """Format a value for the UK audit text file."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return "N/A"
+    if isinstance(val, float):
+        return f"{val:.{dp}f}"
+    return str(val)
+
+
+def _uk_append_adjustments(lines, row):
+    """Append weight/WFA/calibration lines for a UK runner."""
+    w_adj = row.get("weight_adj")
+    wfa = row.get("wfa_adj")
+    fig_final = row.get("figure_final")
+    fig_cal = row.get("figure_calibrated")
+    sex_alw = row.get("sex_allowance")
+    lines.append(f"    weight_adj           = {_uk_fmt(w_adj)}")
+    lines.append(f"    wfa_adj              = {_uk_fmt(wfa)}")
+    if pd.notna(sex_alw) and sex_alw != 0:
+        lines.append(f"    sex_allowance        = {_uk_fmt(sex_alw)}")
+    lines.append(f"    figure_final         = {_uk_fmt(fig_final)}")
+    lines.append(f"    figure_calibrated    = {_uk_fmt(fig_cal)}")
+
+
+# ═════════════════════════════════════════════════════════════════════
 # MAIN
 # ═════════════════════════════════════════════════════════════════════
 
@@ -1982,6 +2177,10 @@ def run_once(target_date=None, send_email_flag=True):
 
     if send_email_flag:
         send_email(html, target_date, run_time)
+
+    # 5. Save audit files (ratings + calculation logic for review)
+    audit_dir = save_uk_audit_output(df, target_date, run_source="live")
+    log.info(f"Audit output: {audit_dir}")
 
     log.info("Done!")
     return df

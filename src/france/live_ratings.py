@@ -1004,7 +1004,24 @@ def main():
         df[out_cols].to_csv(csv_path, index=False)
         print(f"\nSaved: {csv_path}")
 
-        # Save QA output for review
+        # Save audit CSV with all intermediate columns
+        audit_dir = ROOT_DIR / "output" / "france_audit"
+        os.makedirs(audit_dir, exist_ok=True)
+        audit_path = audit_dir / f"audit_{target_date.isoformat()}.csv"
+        audit_cols = [c for c in [
+            "meetingDate", "courseName", "raceNumber", "race_id",
+            "horseName", "positionOfficial", "distance", "going",
+            "raceSurfaceName", "raceClass", "horseAge", "weightCarried",
+            "finishingTime", "distanceCumulative",
+            "standard_time", "lpl", "going_allowance",
+            "raw_figure", "weight_adj", "figure_after_weight",
+            "wfa_adj", "figure_after_wfa",
+            "figure_calibrated", "figure_final", "figure_comment",
+        ] if c in df.columns]
+        df[audit_cols].to_csv(str(audit_path), index=False)
+        print(f"Audit CSV: {audit_path}")
+
+        # Save QA output for review (full calculation chain + logic breakdown)
         qa_dir = save_qa_output(df, target_date, run_source="live")
         print(f"QA output: {qa_dir}")
 
