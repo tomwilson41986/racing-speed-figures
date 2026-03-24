@@ -295,11 +295,58 @@ class FranceLiveRatingEngine:
                     log.warning("  QC: Race %s failed — all beaten lengths "
                                 "identical (%.2f)", rid, bl_vals.iloc[0])
 
+        # QC-4: Arabian / non-TB race detection
+        #   Winners finishing >7% slower than standard time (after GA
+        #   correction) are likely Arabian races misclassified as PLAT.
+        #   Even on heavy ground, TB deviations rarely exceed 5%.
+        #   Arabian TBs run ~8-12% slower than regular thoroughbreds.
+        QC4_DEVIATION_THRESHOLD = 0.07
+        for race_id, row in winners_all.iterrows():
+            rid = row["race_id"]
+            if rid in failed_race_ids:
+                continue
+            ft = row.get("finishingTime")
+            std = row.get("standard_time")
+            ga = row.get("going_allowance") if "going_allowance" in row.index else None
+            if pd.notna(ft) and pd.notna(std) and std > 0:
+                dist = row.get("distance", 0)
+                ga_val = ga if pd.notna(ga) else 0
+                corrected = ft - (ga_val * dist)
+                deviation_pct = (corrected - std) / std
+                if deviation_pct > QC4_DEVIATION_THRESHOLD:
+                    failed_race_ids.add(rid)
+                    log.warning(
+                        "  QC: Race %s failed — winner %.1f%% slower than "
+                        "standard (likely Arabian or non-TB race, "
+                        "time=%.2f, std=%.2f)",
+                        rid, deviation_pct * 100, ft, std,
+                    )
+
         if failed_race_ids:
             failed_mask = df["race_id"].isin(failed_race_ids)
-            df.loc[failed_mask, "figure_comment"] = (
-                "no historical data to generate figures"
-            )
+            # Set specific comments per QC check
+            for rid in failed_race_ids:
+                rid_mask = df["race_id"] == rid
+                # Check which QC failed for the comment
+                winner_rows = df[rid_mask & (df["positionOfficial"] == 1)]
+                if len(winner_rows) > 0:
+                    w = winner_rows.iloc[0]
+                    std = w.get("standard_time")
+                    ft = w.get("finishingTime")
+                    if pd.notna(ft) and pd.notna(std) and std > 0:
+                        ga_val = w.get("going_allowance", 0)
+                        if pd.isna(ga_val):
+                            ga_val = 0
+                        corrected = ft - (ga_val * w.get("distance", 0))
+                        if (corrected - std) / std > 0.10:
+                            df.loc[rid_mask, "figure_comment"] = (
+                                "likely Arabian/non-TB race (winner >10% slower than standard)"
+                            )
+                            continue
+                if df.loc[rid_mask, "figure_comment"].iloc[0] == "":
+                    df.loc[rid_mask, "figure_comment"] = (
+                        "no historical data to generate figures"
+                    )
             log.info("  QC: %d races (%d runners) failed quality checks",
                      len(failed_race_ids), failed_mask.sum())
 
