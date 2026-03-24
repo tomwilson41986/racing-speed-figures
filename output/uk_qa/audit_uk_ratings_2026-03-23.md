@@ -214,4 +214,4 @@ The overall figure-OR correlation is only **0.09** across 63 runners with offici
 
 ## Note on UK Meetings
 
-No UK meetings from 23 March 2026 were available for audit. The HRB data download requires credentials (HRB_USER/HRB_PASS) which were not configured. This audit covers the Naas (Ireland) card only, based on the manual audit spreadsheet `Naas Ratings Audit 230326.xlsx`. If UK results become available, a supplementary audit should be conducted.
+**UPDATE 2026-03-24:** UK results (Wolverhampton, 9 races, 67 runners) have been downloaded and audited separately. See `audit_uk_wolverhampton_2026-03-23.md` for the full Wolverhampton QA audit. Key finding: distance-dependent calibration bias at Wolverhampton AW — 6f figures inflated +14–19 vs OR, 8.6–9.5f figures depressed -21–30 vs OR.
