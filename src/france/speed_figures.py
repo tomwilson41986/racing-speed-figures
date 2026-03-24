@@ -62,10 +62,10 @@ log = logging.getLogger(__name__)
 # Scale = target_std / fr_std; shift = target_mean - fr_mean * scale.
 DEFAULT_CAL_PARAMS = {
     "global": {
-        "scale": 0.700, "shift": 2.0,
+        "scale": 0.700, "shift": -15.0,
         "fr_mean": 100.0, "fr_std": 60.0,
         "fr_robust_std": 25.7, "fr_median": 100.0,
-        "target_mean": 72.0, "target_std": 18.0,
+        "target_mean": 55.0, "target_std": 18.0,
         "n_runners": 0,
     },
 }
@@ -1133,10 +1133,18 @@ def apply_wfa_adjustment(df):
     """
     Weight-for-age adjustment using empirical WFA table derived from
     GBR Timeform timefigure gaps (2021-2025, ~270k runners).
+
+    WFA is only applied to runners in mixed-age races.  In age-restricted
+    races (e.g. all 3yos) there is no older-horse benchmark, so the WFA
+    would artificially inflate figures.
     """
     from .constants import get_france_wfa_allowance
 
     log.info("  Applying WFA adjustment (empirical)...")
+
+    # Detect single-age races: all runners share the same age
+    race_age_nunique = df.groupby("race_id")["horseAge"].transform("nunique")
+    is_mixed_age = race_age_nunique > 1
 
     df["wfa_adj"] = df.apply(
         lambda r: get_france_wfa_allowance(
@@ -1144,10 +1152,14 @@ def apply_wfa_adjustment(df):
         ),
         axis=1,
     )
+    # Zero out WFA for single-age races (no older-horse benchmark)
+    single_age_mask = ~is_mixed_age
+    n_zeroed = (single_age_mask & (df["wfa_adj"] > 0)).sum()
+    df.loc[single_age_mask, "wfa_adj"] = 0.0
 
     has = df["wfa_adj"] > 0
-    log.info("    Runners with WFA: %s / %s",
-             f"{has.sum():,}", f"{len(df):,}")
+    log.info("    Runners with WFA: %s / %s (zeroed %s in single-age races)",
+             f"{has.sum():,}", f"{len(df):,}", f"{n_zeroed:,}")
     if has.any():
         log.info("    WFA range: %.1f - %.1f lbs",
                  df.loc[has, "wfa_adj"].min(), df.loc[has, "wfa_adj"].max())
@@ -1180,7 +1192,7 @@ def apply_sex_allowance(df):
 # class-independent: a single global scale+shift maps French raw figures
 # onto the Timeform scale without artificially anchoring each class to
 # its expected mean.
-GLOBAL_TARGET_MEAN = 72.0   # overall UK flat Timeform mean (all classes)
+GLOBAL_TARGET_MEAN = 55.0   # French figure target mean (lowered from 72 — see QA audit 2026-03-23)
 GLOBAL_TARGET_STD  = 18.0   # overall UK flat Timeform std  (all classes)
 
 
@@ -1267,30 +1279,12 @@ def calibrate_to_uk_scale(df):
     # With the robust IQR-based scale, the BL extension works correctly
     # and no band correction is needed.
 
-    # ── Per-going-group residual correction ──
-    going_corrections = _compute_going_corrections(df)
-    if going_corrections:
-        going_group_map = _french_going_group_map()
-        df_going_grp = df["going"].map(going_group_map).fillna("Bon")
-        going_adj = df_going_grp.map(going_corrections).fillna(0)
-        df.loc[has_fig, "figure_calibrated"] += going_adj[has_fig]
-
-        cal_params["going_corrections"] = going_corrections
-        cal_params["going_group_map"] = _french_going_group_map()
-        going_str = ", ".join(f"{k}:{v:+.1f}" for k, v in sorted(going_corrections.items()))
-        log.info("    Going corrections: %s", going_str)
-
-    # ── Continuous GA correction ──
-    # Cap GA coeff — scaled for s/m units (3 lbs/(s/f) × 201.168 ≈ 604)
-    MAX_GA_COEFF = 3.0 * 201.168
-    if "ga_value" in df.columns:
-        ga_coeff = _compute_ga_correction_coeff(df)
-        ga_coeff = float(np.clip(ga_coeff, -MAX_GA_COEFF, MAX_GA_COEFF))
-        if abs(ga_coeff) > 0.01:
-            ga_adj = ga_coeff * df["ga_value"].fillna(0)
-            df.loc[has_fig, "figure_calibrated"] += ga_adj[has_fig]
-            log.info("    Continuous GA coeff: %+.2f lbs per s/m", ga_coeff)
-            cal_params["ga_coeff"] = ga_coeff
+    # ── NOTE: Per-going-group and continuous GA corrections REMOVED ──
+    # These post-calibration adjustments inflated figures by +3-5 lbs
+    # (PSF going correction +2.67, GA coeff up to +0.8) and obscured
+    # the base calibration.  The per-meeting going allowance already
+    # accounts for going variation at the race level.
+    # See QA audit 2026-03-23.
 
     # ── Exclude runners beaten > 20 lengths (unreliable) ──
     beaten_far = (

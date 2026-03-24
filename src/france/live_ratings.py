@@ -440,6 +440,8 @@ class FranceLiveRatingEngine:
         df["figure_after_weight"] = df["raw_figure"] + df["weight_adj"]
 
         # --- WFA adjustment (empirical, derived from GBR timefigures) ---
+        # Only applied in mixed-age races; single-age races (e.g. all 3yos)
+        # get no WFA since there is no older-horse benchmark.
         from .constants import get_france_wfa_allowance
         df["wfa_adj"] = df.apply(
             lambda r: get_france_wfa_allowance(
@@ -447,6 +449,9 @@ class FranceLiveRatingEngine:
             ),
             axis=1,
         )
+        race_age_nunique = df.groupby("race_id")["horseAge"].transform("nunique")
+        single_age_mask = race_age_nunique <= 1
+        df.loc[single_age_mask, "wfa_adj"] = 0.0
         df["figure_after_wfa"] = df["figure_after_weight"] + df["wfa_adj"]
 
         # --- Global calibration using batch-derived parameters ---
@@ -457,13 +462,6 @@ class FranceLiveRatingEngine:
         has_wfa = df["figure_after_wfa"].notna()
 
         cal = self.cal_params if self.cal_params else DEFAULT_CAL_PARAMS
-
-        # Extract ga_coeff (float, separate from global params)
-        # Cap GA coeff — scaled for s/m units (3 lbs/(s/f) × 201.168 ≈ 604)
-        MAX_GA_COEFF = 3.0 * 201.168
-        ga_coeff = cal.get("ga_coeff", None) if isinstance(cal, dict) else None
-        if ga_coeff is not None:
-            ga_coeff = float(np.clip(ga_coeff, -MAX_GA_COEFF, MAX_GA_COEFF))
 
         # Apply global scale+shift
         global_params = cal.get("global")
@@ -500,25 +498,12 @@ class FranceLiveRatingEngine:
         # With the robust IQR-based calibration scale, the BL extension
         # works correctly and no band correction is needed.
 
-        # Apply per-going-group corrections from batch calibration.
-        going_corrections = cal.get("going_corrections") if isinstance(cal, dict) else None
-        going_group_map = cal.get("going_group_map") if isinstance(cal, dict) else None
-        if going_corrections and going_group_map:
-            has_cal = df["figure_calibrated"].notna()
-            df_going_grp = df["going"].map(going_group_map).fillna("Bon")
-            going_adj = df_going_grp.map(going_corrections).fillna(0)
-            df.loc[has_cal, "figure_calibrated"] += going_adj[has_cal]
-            log.info("  Going group corrections applied (%d groups)", len(going_corrections))
-
-        # Apply continuous GA correction from batch calibration.
-        # ga_coeff captures residual going bias not removed by the
-        # per-meeting going allowance.
-        if ga_coeff is not None and abs(ga_coeff) > 0.01:
-            ga_vals = df["going_allowance"].fillna(0)
-            ga_adj = ga_coeff * ga_vals
-            has_cal = df["figure_calibrated"].notna()
-            df.loc[has_cal, "figure_calibrated"] += ga_adj[has_cal]
-            log.info("  GA coeff correction: %+.2f lbs/s/m applied", ga_coeff)
+        # NOTE: Per-going-group corrections and continuous GA coeff corrections
+        # are NOT applied.  These post-calibration adjustments were inflating
+        # figures by +3-5 lbs (PSF going correction +2.67, GA coeff up to +0.8)
+        # and were computed against the old target_mean=72 calibration.
+        # The per-meeting going allowance already accounts for going variation
+        # at the race level.  See QA audit 2026-03-23.
 
         # Exclude runners beaten > 20 lengths
         beaten_far = (
