@@ -1,0 +1,55 @@
+UK Speed Figures — Batch Pipeline Calculation Logic Audit
+Generated: 2026-03-24T09:36:55+00:00
+================================================================================
+
+CONSTANTS
+----------------------------------------
+  BASE_RATING            = 100
+  BASE_WEIGHT_LBS        = 126
+  SECONDS_PER_LENGTH     = 0.2
+  LBS_PER_SECOND_5F      = 20
+  BENCHMARK_FURLONGS     = 5.0
+  LPL_SURFACE_MULTIPLIER = {'Turf': 1.0, 'All Weather': 1.1}
+
+FORMULA CHAIN
+----------------------------------------
+  Stage 1:  standard_time         = trimmed_median(class_adjusted winner times)
+  Stage 2:  going_allowance (GA)   = bayesian_shrunk(winsorized_median(deviations))
+  Stage 3:  lpl                    = generic_lpl * course_correction * surface_mult
+  Stage 4:  corrected_time         = finishingTime - (GA * distance)
+            deviation_seconds      = corrected_time - standard_time
+            deviation_lbs          = (deviation_seconds / SPL) * lpl
+            raw_figure (winner)    = BASE_RATING - deviation_lbs
+  Stage 5:  raw_figure (others)    = winner_figure - (beaten_lengths * lpl)
+  Stage 6:  figure_after_weight    = raw_figure + (weightCarried - BASE_WEIGHT_LBS)
+  Stage 7:  figure_after_wfa       = figure_after_weight + wfa_adj
+  Stage 8:  sex_adj                (not applied)
+  Stage 9:  figure_calibrated      = quadratic_calibration(figure_final)
+  Stage 10: figure_calibrated      = GBR_enhancement(figure_calibrated)
+  Stage 10b: quantile_mapping      (corrects GBR distribution compression)
+
+SUMMARY BY YEAR
+----------------------------------------
+  2015: 51,406 runners  mean=53.8  std=21.5  range=[-116, 126]
+  2016: 53,576 runners  mean=54.2  std=21.3  range=[-164, 128]
+  2017: 56,737 runners  mean=53.9  std=21.3  range=[-164, 121]
+  2018: 56,742 runners  mean=53.2  std=21.0  range=[-115, 123]
+  2019: 56,284 runners  mean=53.7  std=20.9  range=[-95, 126]
+  2020: 46,560 runners  mean=53.9  std=20.5  range=[-83, 120]
+  2021: 59,718 runners  mean=53.6  std=20.6  range=[-136, 118]
+  2022: 60,253 runners  mean=53.1  std=20.9  range=[-147, 121]
+  2023: 62,704 runners  mean=53.0  std=20.5  range=[-85, 120]
+  2024: 64,416 runners  mean=53.2  std=20.7  range=[-167, 119]
+  2025: 60,827 runners  mean=53.5  std=20.9  range=[-141, 118]
+  2026:  4,793 runners  mean=45.3  std=19.7  range=[-62, 109]
+
+SUMMARY BY SURFACE
+----------------------------------------
+  All Weather: 230,259 runners  mean=48.6  std=19.5
+  Turf: 403,757 runners  mean=56.2  std=21.2
+
+GOING ALLOWANCES: 12,101 meetings
+STANDARD TIMES: 408 entries
+
+Total runners: 692,879
+Runners with figures: 634,016
