@@ -75,57 +75,60 @@ KG_TO_LBS = 2.20462
 # Going descriptions considered "Good/Standard" for standard-time
 # compilation (mirrors GOOD_GOING in UK pipeline).
 FRANCE_GOOD_GOING = {
-    "Bon", "Bon Léger", "Bon Leger", "Bon léger", "Léger",
+    "Bon", "Bon Léger", "Bon Leger", "Bon léger",
     "PSF STANDARD", "PSF RAPIDE",
 }
+# NOTE: "Léger" removed — empirically rides as soft ground (+0.39 s/f),
+# despite the name meaning "light".  Including it in GOOD_GOING was
+# contaminating standard times with slow-ground races.
 
 # Going-description GA priors for Bayesian shrinkage (in seconds per metre).
-# Values derived from empirical mean GA per going description computed
-# over ~12,000 meetings (693k runners).  Previous hardcoded values
-# significantly under-estimated "Bon" (0.04 vs empirical 0.10 s/f),
-# which — as the most common going — pulled standard times too fast
-# and inflated raw figures by ~5-8 lbs on soft-going days.
+# Updated 2026-03-30 from batch-computed empirical means (638k runners,
+# ~12,000 meetings).  Previous values were stale seeds that diverged
+# significantly from the data — notably "Très leger" (lowercase) was
+# 7.5x too low, and "Léger" was 1.4x too low.
 # All values converted from s/f to s/m (÷ 201.168).
 _M = 201.168  # metres per furlong — conversion factor
 FRANCE_GOING_GA_PRIOR = {
-    # Turf going descriptions — empirical values from ~12,000 French meetings.
-    # All casing variants map to the same empirical value.
+    # Turf going descriptions — empirical values from batch pipeline.
+    # Casing variants can have different empirical values (different
+    # PMU data sources / regional conventions).
     "Très Sec":      -0.25 / _M,
     "Tres Sec":      -0.25 / _M,
     "Sec":           -0.21 / _M,
-    "Très leger":     0.05 / _M,   # empirical 0.05 s/f
-    "Tres leger":     0.05 / _M,
-    "Très Leger":     0.05 / _M,
+    "Très leger":     0.375 / _M,  # empirical 0.375 s/f (was 0.05 — seed was wrong)
+    "Tres leger":     0.375 / _M,
+    "Très Leger":     0.05 / _M,   # seed — below MIN_MEETINGS threshold
     "Tres Leger":     0.05 / _M,
-    "Bon Léger":      0.02 / _M,   # empirical 0.02 s/f
+    "Bon Léger":      0.02 / _M,   # seed — below MIN_MEETINGS threshold
     "Bon Leger":      0.02 / _M,
-    "Bon léger":      0.11 / _M,   # empirical 0.11 s/f (lowercase variant)
-    "Bon leger":      0.11 / _M,
-    "Léger":          0.27 / _M,   # empirical 0.27 s/f
-    "Leger":          0.27 / _M,
-    "Bon":            0.10 / _M,   # empirical 0.097 s/f — was 0.04, most impactful fix
-    "Bon Souple":     0.14 / _M,   # empirical 0.14 s/f
-    "Bon souple":     0.16 / _M,   # empirical 0.16 s/f (lowercase variant)
-    "Souple":         0.30 / _M,   # empirical 0.30 s/f
-    "Très Souple":    0.52 / _M,   # empirical 0.52 s/f
+    "Bon léger":      0.195 / _M,  # empirical 0.195 s/f (was 0.11)
+    "Bon leger":      0.195 / _M,
+    "Léger":          0.386 / _M,  # empirical 0.386 s/f (was 0.27) — soft ground despite name
+    "Leger":          0.386 / _M,
+    "Bon":            0.118 / _M,  # empirical 0.118 s/f (was 0.10)
+    "Bon Souple":     0.14 / _M,   # seed — below MIN_MEETINGS threshold
+    "Bon souple":     0.196 / _M,  # empirical 0.196 s/f (was 0.16)
+    "Souple":         0.332 / _M,  # empirical 0.332 s/f (was 0.30)
+    "Très Souple":    0.52 / _M,   # seed — below MIN_MEETINGS threshold
     "Tres Souple":    0.52 / _M,
-    "Très souple":    0.52 / _M,
+    "Très souple":    0.569 / _M,  # empirical 0.569 s/f (was 0.52)
     "Tres souple":    0.52 / _M,
-    "Collant":        0.86 / _M,   # empirical 0.86 s/f
-    "Lourd":          0.67 / _M,   # empirical 0.67 s/f
-    "Très lourd":     1.31 / _M,   # empirical 1.31 s/f
-    "Tres lourd":     1.31 / _M,
-    "Très Lourd":     1.31 / _M,
+    "Collant":        0.919 / _M,  # empirical 0.919 s/f (was 0.86)
+    "Lourd":          0.705 / _M,  # empirical 0.705 s/f (was 0.67)
+    "Très lourd":     1.534 / _M,  # empirical 1.534 s/f (was 1.31)
+    "Tres lourd":     1.31 / _M,   # seed — below MIN_MEETINGS threshold
+    "Très Lourd":     1.31 / _M,   # seed — below MIN_MEETINGS threshold
     "Tres Lourd":     1.31 / _M,
     # PSF (artificial surface) — empirical values
-    "PSF STANDARD":   0.06 / _M,   # empirical 0.061 s/f
-    "PSF RAPIDE":     0.01 / _M,   # empirical 0.013 s/f
-    "PSF LENTE":      0.13 / _M,   # empirical 0.129 s/f
-    "PSF":            0.02 / _M,   # empirical 0.015 s/f
-    "Standard":       0.06 / _M,
+    "PSF STANDARD":   0.087 / _M,  # empirical 0.087 s/f (was 0.06)
+    "PSF RAPIDE":     0.019 / _M,  # empirical 0.019 s/f (was 0.01)
+    "PSF LENTE":      0.125 / _M,  # empirical 0.125 s/f (was 0.13)
+    "PSF":            0.012 / _M,  # empirical 0.012 s/f (was 0.02)
+    "Standard":       0.06 / _M,   # seed
     # Unknown/empty — fall back to Bon empirical
-    "Inconnu":        0.10 / _M,   # empirical 0.099 s/f
-    "":               0.10 / _M,
+    "Inconnu":        0.143 / _M,  # empirical 0.143 s/f (was 0.10)
+    "":               0.133 / _M,  # empirical 0.133 s/f (was 0.10)
 }
 
 # Ordinal encoding for potential future ML use
@@ -134,7 +137,8 @@ FRANCE_GOING_ORDINAL = {
     "Sec": 1,
     "Bon Léger": 2, "Bon Leger": 2,
     "Bon": 3,
-    "Bon Souple": 4,
+    "Bon Souple": 4, "Bon souple": 4,
+    "Léger": 5, "Leger": 5,          # empirically rides as soft ground
     "Souple": 5,
     "Très Souple": 6, "Tres Souple": 6,
     "Collant": 6,
