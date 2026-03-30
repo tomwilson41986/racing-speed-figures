@@ -62,10 +62,10 @@ log = logging.getLogger(__name__)
 # Scale = target_std / fr_std; shift = target_mean - fr_mean * scale.
 DEFAULT_CAL_PARAMS = {
     "global": {
-        "scale": 0.700, "shift": -15.0,
+        "scale": 0.700, "shift": 2.0,
         "fr_mean": 100.0, "fr_std": 60.0,
         "fr_robust_std": 25.7, "fr_median": 100.0,
-        "target_mean": 55.0, "target_std": 18.0,
+        "target_mean": 72.0, "target_std": 18.0,
         "n_runners": 0,
     },
 }
@@ -1185,7 +1185,7 @@ def apply_sex_allowance(df):
 # class-independent: a single global scale+shift maps French raw figures
 # onto the Timeform scale without artificially anchoring each class to
 # its expected mean.
-GLOBAL_TARGET_MEAN = 55.0   # French figure target mean (lowered from 72 — see QA audit 2026-03-23)
+GLOBAL_TARGET_MEAN = 72.0   # French figure target mean (reverted from 55 — over-correction, see QA 2026-03-29)
 GLOBAL_TARGET_STD  = 18.0   # overall UK flat Timeform std  (all classes)
 
 

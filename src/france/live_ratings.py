@@ -376,39 +376,21 @@ class FranceLiveRatingEngine:
         # --- Winner figures ---
         winners = df[has_std & (df["positionOfficial"] == 1)].copy()
 
-        # Per-race going attenuation: when the meeting GA substantially
-        # overshoots a race's own deviation from standard, the uniform
-        # meeting-level correction inflates that race's figure.  Attenuate
-        # the GA for such races to prevent over-correction.
-        #
-        # Example: meeting GA = 0.32 s/f (Souple) but a 1800m race ran at
-        # near-standard pace (deviation 0.025 s/f).  Without attenuation
-        # the correction makes the race appear 13 lengths faster than
-        # standard → raw figure 130.  With attenuation the correction is
-        # reduced proportionally to the excess.
-        race_dev = (
-            (winners["finishingTime"] - winners["standard_time"])
-            / winners["distance"]
-        )
-        meeting_ga = winners["going_allowance"]
-        # Only attenuate when meeting GA is positive (soft going) and the
-        # race deviation is smaller — i.e., the race was less affected by
-        # the going than the meeting average.
-        excess = (meeting_ga - race_dev).clip(lower=0)
-        GA_RACE_ATTENUATION = 0.5  # remove 50% of the excess
-        attenuated_ga = meeting_ga - GA_RACE_ATTENUATION * excess
-
+        # Use uniform meeting-level GA for all races (no per-race attenuation).
+        # Per-race GA attenuation was removed because it creates a systematic
+        # class bias: better horses in higher-class races naturally run faster,
+        # producing smaller deviations from standard.  The attenuation
+        # misinterpreted this as "the ground was less soft for this race"
+        # rather than "the horse was better", penalising Class 3 winners
+        # by up to 42% of the going correction (see QA review 2026-03-29).
         winners["corrected_time"] = (
             winners["finishingTime"]
-            - (attenuated_ga * winners["distance"])
+            - (winners["going_allowance"] * winners["distance"])
         )
         winners["deviation_seconds"] = winners["corrected_time"] - winners["standard_time"]
         winners["deviation_lengths"] = winners["deviation_seconds"] / SECONDS_PER_LENGTH
         winners["deviation_lbs"] = winners["deviation_lengths"] * winners["lpl"]
         winners["raw_figure"] = BASE_RATING - winners["deviation_lbs"]
-
-        # Store the effective GA used for this race (for QA audit)
-        winners["going_allowance_effective"] = attenuated_ga
 
         winner_fig = dict(zip(winners["race_id"], winners["raw_figure"]))
         log.info("  Winner figures computed: %d", len(winner_fig))
@@ -416,20 +398,11 @@ class FranceLiveRatingEngine:
         # Propagate winner calculation columns back to main DataFrame
         # so QA output can display the full calculation chain.
         winner_calc_cols = ["corrected_time", "deviation_seconds",
-                           "deviation_lengths", "deviation_lbs",
-                           "going_allowance_effective"]
+                           "deviation_lengths", "deviation_lbs"]
         for col in winner_calc_cols:
             if col not in df.columns:
                 df[col] = np.nan
             df.loc[winners.index, col] = winners[col]
-
-        # Propagate effective GA to all runners in each race so that
-        # the ga_coeff calibration step uses the attenuated value.
-        race_eff_ga = dict(zip(winners["race_id"],
-                               winners["going_allowance_effective"]))
-        race_ga_mapped = df["race_id"].map(race_eff_ga)
-        has_eff = race_ga_mapped.notna()
-        df.loc[has_eff, "going_allowance"] = race_ga_mapped[has_eff]
 
         # --- All-runner figures via beaten lengths ---
         df["winner_figure"] = df["race_id"].map(winner_fig)
