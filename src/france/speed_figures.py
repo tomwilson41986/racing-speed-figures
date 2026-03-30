@@ -538,23 +538,24 @@ def _parse_std_keys(lookup_dict):
 def _interp_single(actual_dist, dist_val_pairs):
     """Linearly interpolate a value for actual_dist given sorted (dist, val) pairs.
 
-    Returns NaN if the actual distance is more than 20% beyond the known range
-    (prevents e.g. a 1600m standard time being used for a 2300m race).
-    Clamps to nearest known value for small extrapolations within the 20% guard.
+    Returns NaN if the actual distance is more than 5% beyond the known range
+    (prevents e.g. a 1000m standard time being used for a 900m race).
+    Clamps to nearest known value for small extrapolations within the 5% guard.
     """
+    _EXTRAP_TOL = 0.05
     if len(dist_val_pairs) == 1:
         only_dist = dist_val_pairs[0][0]
-        if abs(actual_dist - only_dist) / only_dist > 0.20:
+        if abs(actual_dist - only_dist) / only_dist > _EXTRAP_TOL:
             return np.nan
         return dist_val_pairs[0][1]
     dists = [dv[0] for dv in dist_val_pairs]
     vals = [dv[1] for dv in dist_val_pairs]
     if actual_dist <= dists[0]:
-        if (dists[0] - actual_dist) / dists[0] > 0.20:
+        if (dists[0] - actual_dist) / dists[0] > _EXTRAP_TOL:
             return np.nan
         return vals[0]
     if actual_dist >= dists[-1]:
-        if (actual_dist - dists[-1]) / dists[-1] > 0.20:
+        if (actual_dist - dists[-1]) / dists[-1] > _EXTRAP_TOL:
             return np.nan
         return vals[-1]
     # Find bracketing pair

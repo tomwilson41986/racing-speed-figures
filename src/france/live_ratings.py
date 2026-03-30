@@ -258,15 +258,14 @@ class FranceLiveRatingEngine:
         # generated.  Affected runners get figure_final = NaN and a
         # descriptive comment instead.
 
-        failed_race_ids = set()
+        failed_race_ids = {}  # {race_id: qc_code}
 
         # QC-1: No standard time for winner's course/distance
-        #   → no historical data to generate figures
         winners_all = df[df["positionOfficial"] == 1]
         for race_id, row in winners_all.iterrows():
             rid = row["race_id"]
             if pd.isna(row.get("standard_time")):
-                failed_race_ids.add(rid)
+                failed_race_ids[rid] = "QC1"
 
         # QC-2: Impossible winner finishing time
         #   Plausible pace in seconds per metre (converted from 10–18 s/f).
@@ -280,7 +279,7 @@ class FranceLiveRatingEngine:
             if pd.notna(ft) and pd.notna(dist) and dist > 0:
                 pace_spm = ft / dist
                 if pace_spm < MIN_PACE_SPM or pace_spm > MAX_PACE_SPM:
-                    failed_race_ids.add(rid)
+                    failed_race_ids[rid] = "QC2"
                     log.warning("  QC: Race %s failed — impossible pace %.4f s/m "
                                 "(time=%.2f, dist=%.0fm)", rid, pace_spm, ft, dist)
 
@@ -291,7 +290,7 @@ class FranceLiveRatingEngine:
             if len(non_winners) >= 3:
                 bl_vals = non_winners["distanceCumulative"].dropna()
                 if len(bl_vals) >= 3 and bl_vals.nunique() == 1:
-                    failed_race_ids.add(rid)
+                    failed_race_ids[rid] = "QC3"
                     log.warning("  QC: Race %s failed — all beaten lengths "
                                 "identical (%.2f)", rid, bl_vals.iloc[0])
 
@@ -314,7 +313,7 @@ class FranceLiveRatingEngine:
                 corrected = ft - (ga_val * dist)
                 deviation_pct = (corrected - std) / std
                 if deviation_pct > QC4_DEVIATION_THRESHOLD:
-                    failed_race_ids.add(rid)
+                    failed_race_ids[rid] = "QC4"
                     log.warning(
                         "  QC: Race %s failed — winner %.1f%% slower than "
                         "standard (likely Arabian or non-TB race, "
@@ -322,31 +321,51 @@ class FranceLiveRatingEngine:
                         rid, deviation_pct * 100, ft, std,
                     )
 
+        # QC-5: Arabian breed detection via horse name suffix
+        #   Arabian-bred horses carry the " AA" suffix on their registered
+        #   name.  If >= 50% of runners have this suffix the race is almost
+        #   certainly an Arabian race.
+        QC5_AA_FRACTION = 0.50
+        for rid, grp in df.groupby("race_id"):
+            if rid in failed_race_ids:
+                continue
+            names = grp["horseName"].dropna()
+            if len(names) == 0:
+                continue
+            aa_count = sum(1 for n in names if str(n).strip().endswith(" AA"))
+            if aa_count / len(names) >= QC5_AA_FRACTION:
+                failed_race_ids[rid] = "QC5"
+                log.warning("  QC: Race %s failed — %d/%d runners have AA suffix "
+                            "(likely Arabian race)", rid, aa_count, len(names))
+
+        QC_COMMENTS = {
+            "QC1": "no standard time for this course/distance",
+            "QC2": "impossible finishing time (bad source data)",
+            "QC3": "broken beaten-length data (all identical)",
+            "QC5": "likely Arabian race (majority of runners have AA suffix)",
+        }
         if failed_race_ids:
             failed_mask = df["race_id"].isin(failed_race_ids)
-            # Set specific comments per QC check
-            for rid in failed_race_ids:
+            for rid, qc_code in failed_race_ids.items():
                 rid_mask = df["race_id"] == rid
-                # Check which QC failed for the comment
-                winner_rows = df[rid_mask & (df["positionOfficial"] == 1)]
-                if len(winner_rows) > 0:
-                    w = winner_rows.iloc[0]
-                    std = w.get("standard_time")
-                    ft = w.get("finishingTime")
-                    if pd.notna(ft) and pd.notna(std) and std > 0:
-                        ga_val = w.get("going_allowance", 0)
-                        if pd.isna(ga_val):
-                            ga_val = 0
-                        corrected = ft - (ga_val * w.get("distance", 0))
-                        if (corrected - std) / std > 0.10:
-                            df.loc[rid_mask, "figure_comment"] = (
-                                "likely Arabian/non-TB race (winner >10% slower than standard)"
-                            )
-                            continue
-                if df.loc[rid_mask, "figure_comment"].iloc[0] == "":
-                    df.loc[rid_mask, "figure_comment"] = (
-                        "no historical data to generate figures"
-                    )
+                if qc_code == "QC4":
+                    # Preserve the >10% / >7% distinction for QC-4
+                    winner_rows = df[rid_mask & (df["positionOfficial"] == 1)]
+                    comment = "likely Arabian/non-TB race (winner >7% slower than standard)"
+                    if len(winner_rows) > 0:
+                        w = winner_rows.iloc[0]
+                        std = w.get("standard_time")
+                        ft = w.get("finishingTime")
+                        if pd.notna(ft) and pd.notna(std) and std > 0:
+                            ga_val = w.get("going_allowance", 0)
+                            if pd.isna(ga_val):
+                                ga_val = 0
+                            corrected = ft - (ga_val * w.get("distance", 0))
+                            if (corrected - std) / std > 0.10:
+                                comment = "likely Arabian/non-TB race (winner >10% slower than standard)"
+                    df.loc[rid_mask, "figure_comment"] = comment
+                else:
+                    df.loc[rid_mask, "figure_comment"] = QC_COMMENTS.get(qc_code, "QC failure")
             log.info("  QC: %d races (%d runners) failed quality checks",
                      len(failed_race_ids), failed_mask.sum())
 
@@ -512,6 +531,7 @@ class FranceLiveRatingEngine:
             & (df["positionOfficial"] != 1)
         )
         df.loc[beaten_far, "figure_calibrated"] = np.nan
+        df.loc[beaten_far, "figure_comment"] = "excluded: beaten >20 lengths"
 
         df["figure_final"] = df["figure_calibrated"]
 

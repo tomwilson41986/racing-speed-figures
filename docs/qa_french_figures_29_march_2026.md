@@ -197,7 +197,7 @@ adjustment.
 | Priority | Action | Status |
 |----------|--------|--------|
 | **Immediate** | Add SHT and HPV to `NON_FRENCH_COURSE_CODES` | ✅ Done |
-| **Short-term** | Add distance-mismatch guard: exclude races where no standard time exists for the exact distance | Open |
-| **Short-term** | Improve `figure_comment` for back-marker exclusions and impossible-time exclusions | Open |
-| **Medium-term** | Add Arabian race detection to the live pipeline (verify QC-4 is active) | Open |
-| **Medium-term** | Add pre-GA sanity filter on winner finishing times (as recommended in 17-18 March QA) | Open |
+| **Short-term** | Tighten distance extrapolation tolerance from 20% to 5% in `_interp_single()` to prevent wrong-distance standard time lookups | ✅ Done |
+| **Short-term** | Add QC-5: Arabian breed detection via " AA" horse name suffix (≥50% threshold) | ✅ Done |
+| **Short-term** | Add specific `figure_comment` for each QC failure type (QC1–QC5) instead of generic fallback | ✅ Done |
+| **Short-term** | Add `figure_comment = "excluded: beaten >20 lengths"` for back-marker exclusions | ✅ Done |
