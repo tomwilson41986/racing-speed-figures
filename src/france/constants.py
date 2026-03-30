@@ -206,6 +206,8 @@ NON_FRENCH_COURSE_CODES = {
     "BAD", "DUS", "FRA", "KOE",
     # Swiss
     "ZUR",
+    # Hong Kong
+    "HPV", "SHT",
 }
 
 
