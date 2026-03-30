@@ -85,13 +85,20 @@ class FranceLiveRatingEngine:
         self.ga_dict = artifacts["ga_dict"]
         self.ga_se_dict = artifacts.get("ga_se_dict", {})
         self.cal_params = artifacts.get("cal_params", {})
+        self.empirical_ga_priors = artifacts.get("empirical_ga_priors", {})
         self._loaded = True
-        log.info("  Loaded: %d std_times, %d lpl, %d ga, cal_params=%s",
+        log.info("  Loaded: %d std_times, %d lpl, %d ga, cal_params=%s, empirical_priors=%s",
                  len(self.std_times), len(self.lpl_dict), len(self.ga_dict),
-                 "yes" if self.cal_params else "no")
+                 "yes" if self.cal_params else "no",
+                 "yes" if self.empirical_ga_priors else "no")
 
     def estimate_going_allowance(self, going_desc):
         """Estimate GA from going description when no computed GA exists."""
+        # Prefer batch-computed empirical priors over hardcoded constants.
+        if self.empirical_ga_priors:
+            ga = self.empirical_ga_priors.get(going_desc)
+            if ga is not None:
+                return ga
         return FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05)
 
     def _compute_realtime_ga(self, df):
@@ -163,7 +170,12 @@ class FranceLiveRatingEngine:
             )
             if pd.isna(going_desc):
                 going_desc = "Bon"
-            prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05 / 201.168)
+            # Prefer batch-computed empirical priors over hardcoded constants
+            prior_ga = None
+            if self.empirical_ga_priors:
+                prior_ga = self.empirical_ga_priors.get(going_desc)
+            if prior_ga is None:
+                prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05 / 201.168)
             ga = (n * raw_ga + GA_SHRINKAGE_K * prior_ga) / (n + GA_SHRINKAGE_K)
 
             # Non-linear correction for extreme going
