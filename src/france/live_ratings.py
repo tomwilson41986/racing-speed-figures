@@ -459,8 +459,8 @@ class FranceLiveRatingEngine:
         df["figure_after_weight"] = df["raw_figure"] + df["weight_adj"]
 
         # --- WFA adjustment (empirical, derived from GBR timefigures) ---
-        # Only applied in mixed-age races; single-age races (e.g. all 3yos)
-        # get no WFA since there is no older-horse benchmark.
+        # Always applied regardless of race age composition so that figures
+        # are comparable across the entire population.
         from .constants import get_france_wfa_allowance
         df["wfa_adj"] = df.apply(
             lambda r: get_france_wfa_allowance(
@@ -468,9 +468,6 @@ class FranceLiveRatingEngine:
             ),
             axis=1,
         )
-        race_age_nunique = df.groupby("race_id")["horseAge"].transform("nunique")
-        single_age_mask = race_age_nunique <= 1
-        df.loc[single_age_mask, "wfa_adj"] = 0.0
         df["figure_after_wfa"] = df["figure_after_weight"] + df["wfa_adj"]
 
         # --- Global calibration using batch-derived parameters ---

@@ -1143,24 +1143,16 @@ def apply_wfa_adjustment(df):
 
     log.info("  Applying WFA adjustment (empirical)...")
 
-    # Detect single-age races: all runners share the same age
-    race_age_nunique = df.groupby("race_id")["horseAge"].transform("nunique")
-    is_mixed_age = race_age_nunique > 1
-
     df["wfa_adj"] = df.apply(
         lambda r: get_france_wfa_allowance(
             r["horseAge"], r["month"], r["distance"],
         ),
         axis=1,
     )
-    # Zero out WFA for single-age races (no older-horse benchmark)
-    single_age_mask = ~is_mixed_age
-    n_zeroed = (single_age_mask & (df["wfa_adj"] > 0)).sum()
-    df.loc[single_age_mask, "wfa_adj"] = 0.0
 
     has = df["wfa_adj"] > 0
-    log.info("    Runners with WFA: %s / %s (zeroed %s in single-age races)",
-             f"{has.sum():,}", f"{len(df):,}", f"{n_zeroed:,}")
+    log.info("    Runners with WFA: %s / %s",
+             f"{has.sum():,}", f"{len(df):,}")
     if has.any():
         log.info("    WFA range: %.1f - %.1f lbs",
                  df.loc[has, "wfa_adj"].min(), df.loc[has, "wfa_adj"].max())
