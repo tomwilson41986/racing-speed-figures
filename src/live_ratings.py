@@ -818,6 +818,11 @@ class LiteRatingEngine:
             )
         std_df = pd.read_csv(std_path)
         self.std_times = dict(zip(std_df["std_key"], std_df["median_time"]))
+        # Store sample counts for confidence flagging
+        if "n_races" in std_df.columns:
+            self.std_n_races = dict(zip(std_df["std_key"], std_df["n_races"]))
+        else:
+            self.std_n_races = {}
         log.info(f"  Standard times: {len(self.std_times)} combos")
 
         # 2. Compute LPL from standard times
@@ -1087,6 +1092,34 @@ class LiteRatingEngine:
 
         df["going_allowance"] = df["meeting_id"].map(ga_dict).fillna(0.0)
         self._ga_dict = ga_dict
+
+        # ── Distance-dependent GA bias detection ──────────────────
+        # After computing a single GA per meeting, check whether
+        # per-race deviations correlate with distance.  A significant
+        # slope indicates the flat GA is introducing distance bias
+        # (e.g. inflating sprints and depressing stayers, or vice versa).
+        for mid, group in winners.groupby("meeting_id"):
+            if mid not in ga_dict or len(group) < 4:
+                continue
+            ga = ga_dict[mid]
+            # Residual = per-race deviation_per_furlong minus the meeting GA
+            residuals = group["dev_per_furlong"].values - ga
+            distances = group["distance"].values
+            if len(distances) < 4 or distances.std() < 0.5:
+                continue  # need distance spread to detect bias
+            # Simple correlation between distance and residual
+            corr = np.corrcoef(distances, residuals)[0, 1]
+            if abs(corr) > 0.7:
+                # Estimate the slope (seconds per furlong per furlong of distance)
+                slope = np.polyfit(distances, residuals, 1)[0]
+                dist_range = distances.max() - distances.min()
+                max_bias = abs(slope * dist_range)
+                log.warning(
+                    f"  {mid}: DISTANCE-DEPENDENT GA BIAS detected "
+                    f"(corr={corr:+.2f}, slope={slope:+.4f} s/f/f, "
+                    f"max bias={max_bias:.2f}s over {dist_range:.1f}f range)"
+                )
+
         return df
 
     def _compute_winner_figures(self, df):
@@ -1267,6 +1300,7 @@ class LiteRatingEngine:
         df.loc[df_in.index, "raw_figure"] = df_in["raw_figure"]
         df.loc[df_in.index, "standard_time"] = df_in["standard_time"]
         df.loc[df_in.index, "est_time"] = df_in["est_time"]
+        df.loc[df_in.index, "lpl"] = df_in["lpl"]
         log.info(f"  All-runner figures: {df['raw_figure'].notna().sum()}")
         return df
 
@@ -1370,6 +1404,27 @@ class LiteRatingEngine:
         n_flagged = beaten_far.sum()
         if n_flagged > 0:
             log.info(f"  Flagged {n_flagged} runners beaten > 20 lengths as low confidence")
+
+        # Flag races with thin standard time samples as provisional.
+        # Standard times based on < 30 winners are statistically fragile
+        # (methodology: 20-29 = provisional, 30-49 = usable with caution).
+        PROVISIONAL_THRESHOLD = 30
+        if self.std_n_races and "std_key" in df.columns:
+            df["std_n_races"] = df["std_key"].map(self.std_n_races)
+            thin_std = (
+                df["std_n_races"].notna()
+                & (df["std_n_races"] < PROVISIONAL_THRESHOLD)
+                & df["figure_calibrated"].notna()
+            )
+            df.loc[thin_std, "figure_confidence"] = "provisional"
+            n_prov = thin_std.sum()
+            if n_prov > 0:
+                thin_keys = df.loc[thin_std, "std_key"].unique()
+                log.warning(
+                    f"  {n_prov} runners flagged PROVISIONAL "
+                    f"(standard time n < {PROVISIONAL_THRESHOLD}): "
+                    f"{', '.join(str(k) for k in thin_keys)}"
+                )
 
         return df
 

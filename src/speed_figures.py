@@ -597,34 +597,59 @@ def compute_standard_times_iterative(df, going_allowances):
 
     valid = std_agg[std_agg["n_races"] >= MIN_RACES_STANDARD_TIME].copy()
 
-    # Irish shrinkage: include Irish combos with 10+ races, blending
-    # their median time with the overall distance median.  Irish tracks
-    # have less data, so we shrink toward the generic to reduce noise.
-    IRISH_MIN_RACES = 10
-    SHRINKAGE_K = 10  # strength of pull toward generic
+    # ── Shrinkage for thin combos ──────────────────────────────────
+    # Any course/distance combo with fewer than MIN_RACES_STANDARD_TIME
+    # but at least THIN_MIN_RACES winners is included with Bayesian
+    # shrinkage toward the generic distance median.  This prevents
+    # under-sampled combos (e.g. Wolverhampton 5f) from producing
+    # unreliable standard times that inflate or deflate figures.
+    #
+    # Irish courses use weaker shrinkage (lower k) because their going
+    # descriptions are less reliable, so we trust the observed data more.
+    THIN_MIN_RACES = 10
+    SHRINKAGE_K_UK = 15   # stronger pull toward generic for UK combos
+    SHRINKAGE_K_IRE = 10  # weaker pull for Irish combos (original value)
+
+    # Compute generic standard time per distance (median across all
+    # well-sampled courses) — used as the shrinkage target.
+    dist_median = valid.groupby(valid["distance"].round(0))["median_time"].median()
+
     below_threshold = std_agg[
-        (std_agg["n_races"] >= IRISH_MIN_RACES)
+        (std_agg["n_races"] >= THIN_MIN_RACES)
         & (std_agg["n_races"] < MIN_RACES_STANDARD_TIME)
-        & std_agg["courseName"].isin(IRE_COURSES)
     ].copy()
 
     if len(below_threshold) > 0:
-        # Compute generic standard time per distance (median across all courses)
-        dist_median = valid.groupby(valid["distance"].round(0))["median_time"].median()
+        n_ire = 0
+        n_uk = 0
         for idx, row in below_threshold.iterrows():
             d_round = round(row["distance"])
             if d_round in dist_median.index:
                 generic_std = dist_median[d_round]
                 n = row["n_races"]
-                blended = (n * row["median_time"] + SHRINKAGE_K * generic_std) / (n + SHRINKAGE_K)
+                is_ire = row["courseName"] in IRE_COURSES
+                k = SHRINKAGE_K_IRE if is_ire else SHRINKAGE_K_UK
+                blended = (n * row["median_time"] + k * generic_std) / (n + k)
                 below_threshold.loc[idx, "median_time"] = blended
+                if is_ire:
+                    n_ire += 1
+                else:
+                    n_uk += 1
         valid = pd.concat([valid, below_threshold], ignore_index=True)
-        print(f"    Irish shrinkage combos added: {len(below_threshold):,}")
+        print(f"    Thin-combo shrinkage: {n_uk} UK + {n_ire} Irish combos added")
+
+    # Flag provisional standard times (n < 30) per methodology guidelines.
+    # These are usable but less reliable than production-grade (n >= 50).
+    PROVISIONAL_THRESHOLD = 30
+    valid["provisional"] = valid["n_races"] < PROVISIONAL_THRESHOLD
 
     print(
-        f"    Standard-time combos (≥ {MIN_RACES_STANDARD_TIME} races): "
-        f"{len(valid):,} (using all goings, incl. Irish shrinkage)"
+        f"    Standard-time combos (≥ {THIN_MIN_RACES} races): "
+        f"{len(valid):,} (using all goings, incl. shrinkage)"
     )
+    n_prov = valid["provisional"].sum()
+    if n_prov > 0:
+        print(f"    Provisional combos (n < {PROVISIONAL_THRESHOLD}): {n_prov:,}")
 
     std_dict = dict(zip(valid["std_key"], valid["median_time"]))
     return std_dict, valid
