@@ -89,6 +89,10 @@ def load_france_dataframe(
         .join(RaceRow, RaceRow.meeting_id == MeetingRow.id)
         .join(RunnerRow, RunnerRow.race_id == RaceRow.id)
         .where(RaceRow.discipline == "PLAT")
+        .where(
+            MeetingRow.country.in_(("FRA", ""))
+            | MeetingRow.country.is_(None)
+        )
     )
 
     if start_date is not None:
