@@ -62,7 +62,7 @@ log = logging.getLogger(__name__)
 # Scale = target_std / fr_std; shift = target_mean - fr_mean * scale.
 DEFAULT_CAL_PARAMS = {
     "global": {
-        "scale": 0.700, "shift": 2.0,
+        "scale": 0.674, "shift": -3.7,
         "fr_mean": 100.0, "fr_std": 60.0,
         "fr_robust_std": 25.7, "fr_median": 100.0,
         "target_mean": 72.0, "target_std": 18.0,
