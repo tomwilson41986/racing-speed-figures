@@ -34,6 +34,8 @@ from .constants import (
     BASE_WEIGHT_LBS,
     BL_ATTENUATION_FACTOR,
     BL_ATTENUATION_THRESHOLD,
+    CLASS_EXCESS_FACTOR,
+    CLASS_EXCESS_REFERENCE,
     FRANCE_GOING_GA_PRIOR,
     GA_NONLINEAR_BETA,
     GA_NONLINEAR_THRESHOLD,
@@ -421,6 +423,30 @@ class FranceLiveRatingEngine:
         winners["deviation_lengths"] = winners["deviation_seconds"] / SECONDS_PER_LENGTH
         winners["deviation_lbs"] = winners["deviation_lengths"] * winners["lpl"]
         winners["raw_figure"] = BASE_RATING - winners["deviation_lbs"]
+
+        # --- Class-based excess compression ---
+        # Standard times are all-class medians.  Lower-class races have
+        # slower standards, inflating raw figures for fast horses.  Compress
+        # the excess above BASE_RATING for lower-class races so that
+        # beating a weak-field standard doesn't inflate the figure.
+        # Only affects raw > BASE; slow performances are untouched.
+        race_class_num = pd.to_numeric(
+            winners["raceClass"], errors="coerce"
+        ).fillna(CLASS_EXCESS_REFERENCE)
+        excess = (winners["raw_figure"] - BASE_RATING).clip(lower=0)
+        compress = (
+            1.0 - CLASS_EXCESS_FACTOR * (race_class_num - CLASS_EXCESS_REFERENCE)
+        ).clip(lower=0)
+        winners["raw_figure"] = np.where(
+            winners["raw_figure"] >= BASE_RATING,
+            BASE_RATING + excess * compress,
+            winners["raw_figure"],
+        )
+        n_compressed = ((compress < 1.0) & (excess > 0)).sum()
+        if n_compressed > 0:
+            log.info("  Class excess compression applied to %d winners "
+                     "(factor=%.3f/level, ref=C%d)",
+                     n_compressed, CLASS_EXCESS_FACTOR, CLASS_EXCESS_REFERENCE)
 
         winner_fig = dict(zip(winners["race_id"], winners["raw_figure"]))
         log.info("  Winner figures computed: %d", len(winner_fig))

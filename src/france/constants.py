@@ -29,6 +29,26 @@ LPL_SURFACE_MULTIPLIER = {
 BL_ATTENUATION_THRESHOLD = 20.0
 BL_ATTENUATION_FACTOR = 0.5
 
+# ── Class-based raw figure compression ──
+# Standard times are course/distance/surface medians across ALL classes.
+# Lower-class races have slower standards that inflate raw figures for
+# horses that beat them.  Rather than adjusting the standard time itself
+# (which gives a flat lbs penalty regardless of performance), we compress
+# the *excess above BASE_RATING* for lower-class races.
+#
+# Formula:
+#   excess = max(0, raw_figure - BASE_RATING)
+#   compress = max(0, 1 - CLASS_EXCESS_FACTOR * (raceClass - CLASS_REF))
+#   raw_adjusted = BASE_RATING + excess * compress  (if raw >= BASE)
+#   raw_adjusted = raw_figure                       (if raw < BASE)
+#
+# This only reduces inflated figures (raw > 100).  Horses that ran near
+# or below the standard are unaffected.
+#
+# Fitted to: TONNANT (CHA C3)=88 unchanged, CENTRICAL (LYO C5)≈80.
+CLASS_EXCESS_FACTOR = 0.354   # compression rate per class level below reference
+CLASS_EXCESS_REFERENCE = 3    # Class 3 = no compression
+
 # Minimum sample sizes (same as UK)
 MIN_RACES_STANDARD_TIME = 20
 MIN_RACES_GOING_ALLOWANCE = 3
