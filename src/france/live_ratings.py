@@ -473,14 +473,16 @@ class FranceLiveRatingEngine:
         )
         df["figure_after_wfa"] = df["figure_after_weight"] + df["wfa_adj"]
 
-        # --- Global calibration using batch-derived parameters ---
-        # Single scale+shift for all runners (class-independent).
-        # Falls back to DEFAULT_CAL_PARAMS if artifacts unavailable.
+        # --- Global calibration using reference-fitted parameters ---
+        # Always use DEFAULT_CAL_PARAMS (fitted via OLS to verified reference
+        # ratings) rather than batch-derived cal_params.  The batch calibration
+        # uses distribution-matching which produces a shift ~18 lbs too high
+        # compared to known ratings (e.g. TONNANT=88 at CHA 30-03-26).
         from .speed_figures import DEFAULT_CAL_PARAMS
         df["figure_calibrated"] = df["figure_after_wfa"].copy()
         has_wfa = df["figure_after_wfa"].notna()
 
-        cal = self.cal_params if self.cal_params else DEFAULT_CAL_PARAMS
+        cal = DEFAULT_CAL_PARAMS
 
         # Apply global scale+shift
         global_params = cal.get("global")
