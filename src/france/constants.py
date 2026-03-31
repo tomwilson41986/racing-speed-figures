@@ -204,6 +204,7 @@ def classify_french_race(race_name: str, prize_money) -> str:
 NON_FRENCH_COURSE_CODES = {
     # British
     "ASC", "DON", "EPS", "GOO", "HAY", "KEM", "MKT", "NBU", "SDW", "WAR", "YOR",
+    "WVD",  # Wolverhampton
     # Irish
     "CUR", "DUB", "GAL", "LEO",
     # German

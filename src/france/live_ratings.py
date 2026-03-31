@@ -40,6 +40,7 @@ from .constants import (
     GA_OUTLIER_ZSCORE,
     GA_SHRINKAGE_K,
     LPL_SURFACE_MULTIPLIER,
+    NON_FRENCH_COURSE_CODES,
     SECONDS_PER_LENGTH,
 )
 from .speed_figures import (
@@ -212,6 +213,23 @@ class FranceLiveRatingEngine:
             return df
 
         df = df.copy()
+
+        # Remove non-French courses that leak in from PMU's international feed
+        if "courseName" in df.columns:
+            is_non_french = df["courseName"].str.upper().str.strip().isin(
+                NON_FRENCH_COURSE_CODES
+            )
+            n_removed = is_non_french.sum()
+            if n_removed > 0:
+                removed_courses = sorted(
+                    df.loc[is_non_french, "courseName"].unique()
+                )
+                log.info("  Removed %d runners from non-French courses: %s",
+                         n_removed, removed_courses)
+                df = df[~is_non_french].copy()
+            if df.empty:
+                return df
+
         df["figure_comment"] = ""
 
         # Interpolate standard times and LPL to actual distances
