@@ -213,6 +213,10 @@ NON_FRENCH_COURSE_CODES = {
     "ZUR",
     # Hong Kong
     "HPV", "SHT",
+    # North African (Morocco / international)
+    "F03",
+    # Spanish / Argentine (international)
+    "VPR",
 }
 
 
