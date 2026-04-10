@@ -144,6 +144,8 @@ class FranceGalopClient:
             log.error("Request failed after retries: %s", url)
             return None
 
+        log.info("Fetched %s → final URL: %s (length=%d)", url, resp.url[:120], len(resp.text))
+
         if resp.status_code != 200:
             log.error("HTTP %s for %s", resp.status_code, url)
             return None
@@ -188,6 +190,16 @@ class FranceGalopClient:
         soup = self._fetch_html(url)
         if soup is None:
             return []
+
+        # Debug: log page info and all links for troubleshooting
+        all_links = soup.find_all("a", href=True)
+        log.info("Page has %d links total. URL after fetch: checking for meetings...", len(all_links))
+
+        # Log links that might be meeting-related
+        for link in all_links:
+            href = link["href"]
+            if any(kw in href.lower() for kw in ["reunion", "meeting", "course", "racing"]):
+                log.debug("  Link: %s -> %s", href[:120], link.get_text(strip=True)[:60])
 
         meetings = []
         # France Galop meeting URLs:
