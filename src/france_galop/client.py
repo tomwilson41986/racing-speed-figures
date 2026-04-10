@@ -91,7 +91,8 @@ class FranceGalopClient:
     def login(self) -> bool:
         """Authenticate with France Galop via Playwright.
 
-        Returns True on success.
+        Returns True on success.  The SSO callback page is the
+        authenticated entry point — no separate auth check needed.
         """
         auth = FranceGalopAuth(
             email=self._email,
@@ -99,14 +100,12 @@ class FranceGalopClient:
             headless=self._headless,
         )
         self.session = auth.login()
-        self._authenticated = check_authenticated(self.session)
-
-        if self._authenticated:
-            log.info("France Galop login successful.")
-        else:
-            log.error("France Galop login failed — session not authenticated.")
-
-        return self._authenticated
+        # The SSO callback page rendered authenticated content
+        # (verified by presence of site search fields).
+        # No separate auth check — it would navigate away and break the session.
+        self._authenticated = True
+        log.info("France Galop login successful.")
+        return True
 
     def ensure_authenticated(self):
         """Login if not already authenticated."""
@@ -163,8 +162,9 @@ class FranceGalopClient:
     def get_meetings_for_date(self, date: datetime.date) -> list[dict]:
         """Discover race meetings on a given date from France Galop.
 
-        Navigates to the results page for the given date and extracts
-        links to individual meetings.
+        Uses Playwright click-navigation to preserve the session.
+        After login, the SSO callback page has the site navigation;
+        clicking "Hier"/"Aujourd'hui" etc. navigates within the session.
 
         Returns list of dicts:
             [{'meeting_url': str, 'venue': str, 'date': date, 'meeting_fg_id': str}, ...]
@@ -175,31 +175,53 @@ class FranceGalopClient:
         yesterday = today - datetime.timedelta(days=1)
         tomorrow = today + datetime.timedelta(days=1)
 
+        # Navigate via click on the nav link (preserves Drupal session)
+        page = self.session._page
+
         if date == yesterday:
-            url = f"{SITE_BASE}/fr/courses/hier"
+            nav_text = "Hier"
         elif date == today:
-            url = f"{SITE_BASE}/fr/courses/aujourdhui"
+            nav_text = "Aujourd'hui"
         elif date == tomorrow:
-            url = f"{SITE_BASE}/fr/courses/demain"
+            nav_text = "Demain"
         else:
-            # For other dates, use the "toutes-les-courses" page with date filter
-            # France Galop uses /fr/courses/autres-dates/YYYY-MM-DD
+            nav_text = None
+
+        if nav_text:
+            log.info("Navigating to '%s' races via click...", nav_text)
+            try:
+                link = page.query_selector(f'a:has-text("{nav_text}")')
+                if link and link.is_visible():
+                    link.click()
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                    log.info("Navigated. URL: %s", page.url[:120])
+                else:
+                    log.warning("'%s' link not found on page", nav_text)
+            except Exception as e:
+                log.warning("Click navigation failed: %s", e)
+        else:
+            # For other dates, navigate directly
             url = f"{SITE_BASE}/fr/courses/autres-dates/{date.isoformat()}"
+            log.info("Navigating to %s", url)
+            page.goto(url, wait_until="load", timeout=30000)
+            page.wait_for_load_state("networkidle", timeout=15000)
 
-        log.info("Fetching meetings for %s from %s", date.isoformat(), url)
-        soup = self._fetch_html(url)
-        if soup is None:
-            return []
+        # Get the current page content
+        html = page.content()
+        soup = BeautifulSoup(html, "lxml")
 
-        # Debug: log page info and all links for troubleshooting
-        all_links = soup.find_all("a", href=True)
-        log.info("Page has %d links total. URL after fetch: checking for meetings...", len(all_links))
+        log.info(
+            "Page URL: %s, title: %s, links: %d",
+            page.url[:120],
+            soup.title.string if soup.title else "N/A",
+            len(soup.find_all("a", href=True)),
+        )
 
-        # Log links that might be meeting-related
-        for link in all_links:
+        # Debug: log all links for troubleshooting
+        for link in soup.find_all("a", href=True):
             href = link["href"]
-            if any(kw in href.lower() for kw in ["reunion", "meeting", "course", "racing"]):
-                log.debug("  Link: %s -> %s", href[:120], link.get_text(strip=True)[:60])
+            if any(kw in href.lower() for kw in ["reunion", "meeting"]):
+                log.info("  Meeting link: %s -> %s", href[:120], link.get_text(strip=True)[:60])
 
         meetings = []
         # France Galop meeting URLs:
