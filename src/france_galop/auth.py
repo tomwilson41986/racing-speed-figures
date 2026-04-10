@@ -261,20 +261,52 @@ class FranceGalopAuth:
                 browser.close()
 
     def _build_session(self, playwright_cookies: list[dict]) -> requests.Session:
-        """Convert Playwright cookies into a requests.Session."""
+        """Convert Playwright cookies into a requests.Session.
+
+        Uses http.cookiejar for proper cookie handling — Playwright's
+        cookie format needs careful mapping to requests' internal jar.
+        """
+        import http.cookiejar
+
         session = requests.Session()
         session.headers.update({"User-Agent": CHROME_USER_AGENT})
 
         for cookie in playwright_cookies:
-            session.cookies.set(
+            domain = cookie.get("domain", "")
+            # Skip cookies for non-france-galop domains
+            if "france-galop" not in domain and "france_galop" not in domain:
+                log.debug("  Skipping cookie %s (domain=%s)", cookie["name"], domain)
+                continue
+
+            # Create a proper cookie via http.cookiejar
+            c = http.cookiejar.Cookie(
+                version=0,
                 name=cookie["name"],
                 value=cookie["value"],
-                domain=cookie.get("domain", ""),
+                port=None,
+                port_specified=False,
+                domain=domain,
+                domain_specified=bool(domain),
+                domain_initial_dot=domain.startswith("."),
                 path=cookie.get("path", "/"),
+                path_specified=bool(cookie.get("path")),
+                secure=cookie.get("secure", False),
+                expires=int(cookie.get("expires", 0)) or None,
+                discard=not cookie.get("expires"),
+                comment=None,
+                comment_url=None,
+                rest={"HttpOnly": ""} if cookie.get("httpOnly") else {},
+            )
+            session.cookies.jar.set_cookie(c)
+            log.debug(
+                "  Cookie: %s domain=%s path=%s secure=%s",
+                cookie["name"], domain, cookie.get("path", "/"),
+                cookie.get("secure", False),
             )
 
         log.info(
-            "Built requests.Session with %d cookies", len(playwright_cookies)
+            "Built requests.Session with %d france-galop cookies",
+            len(session.cookies),
         )
         return session
 
@@ -310,27 +342,28 @@ class FranceGalopAuth:
 def check_authenticated(session: requests.Session) -> bool:
     """Verify that the session is still authenticated with France Galop.
 
-    Makes a request to a protected page and checks whether we get
-    the actual content or a redirect to the OAuth login page.
+    Follows redirects and checks whether the final URL is on
+    france-galop.com (authenticated) or ciamlogin (not authenticated).
     """
     try:
         resp = session.get(
             f"{SITE_BASE}/fr/courses/hier",
-            allow_redirects=False,
+            allow_redirects=True,
             timeout=15,
         )
-        # Authenticated: 200 with race content
-        # Not authenticated: 302/303 redirect to ciamlogin
-        if resp.status_code == 200:
+        final_url = resp.url
+        log.debug("Auth check: status=%d, final URL=%s", resp.status_code, final_url[:120])
+
+        # If we end up on ciamlogin, we're not authenticated
+        if "ciamlogin" in final_url:
+            log.debug("Not authenticated — redirected to OAuth.")
+            return False
+
+        # If we're still on france-galop.com, we're authenticated
+        if "france-galop.com" in final_url:
             return True
-        if resp.status_code in (302, 303):
-            location = resp.headers.get("Location", "")
-            if "ciamlogin" in location:
-                log.debug("Not authenticated — redirected to OAuth.")
-                return False
-            # Redirect within france-galop.com is OK
-            return True
-        log.debug("Auth check: unexpected status %d", resp.status_code)
+
+        log.debug("Auth check: unexpected final URL: %s", final_url[:120])
         return False
     except requests.RequestException as e:
         log.warning("Auth check failed: %s", e)
