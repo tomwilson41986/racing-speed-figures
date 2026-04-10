@@ -61,9 +61,8 @@ def _find_chromium_executable(default_path: str) -> str:
 class PlaywrightSession:
     """Wraps a Playwright browser context to provide an HTTP-request interface.
 
-    Uses Playwright's Page for navigation.  The Drupal session cookie is
-    managed by the browser — the page.goto() method carries the session
-    automatically.
+    Uses Playwright's Page for navigation.  After SSO login, navigates
+    via in-page link clicks or page.goto() to carry the session.
     """
 
     def __init__(self, playwright, browser, context, page):
@@ -73,8 +72,28 @@ class PlaywrightSession:
         self._page = page
 
     def get(self, url: str, **kwargs) -> "PlaywrightResponse":
-        """GET request using the browser page (carries session cookies)."""
+        """GET request using the browser page (carries session cookies).
+
+        First tries clicking an in-page link to the URL (same-origin
+        navigation preserves the Drupal session).  Falls back to
+        page.goto() if no matching link is found.
+        """
         timeout = kwargs.pop("timeout", 30) * 1000  # convert s → ms
+
+        # Try clicking a link on the current page first
+        # (same-origin click navigation preserves session better than goto)
+        from urllib.parse import urlparse
+        path = urlparse(url).path
+        if path:
+            link = self._page.query_selector(f'a[href="{path}"]')
+            if link and link.is_visible():
+                log.debug("Navigating via click: %s", path)
+                link.click()
+                self._page.wait_for_load_state("networkidle", timeout=min(timeout, 15000))
+                return PlaywrightResponse(self._page)
+
+        # Fallback to page.goto
+        log.debug("Navigating via goto: %s", url)
         self._page.goto(url, wait_until="load", timeout=timeout)
         self._page.wait_for_load_state("networkidle", timeout=min(timeout, 15000))
         return PlaywrightResponse(self._page)
@@ -285,7 +304,16 @@ class FranceGalopAuth:
             page.wait_for_load_state("networkidle", timeout=15000)
             log.info("Login complete! URL: %s", page.url[:120])
 
-            # 8. Verify authentication using the browser's own request API
+            # Log cookies for debugging
+            fg_cookies = [
+                c for c in context.cookies()
+                if "france-galop" in c.get("domain", "")
+            ]
+            log.info(
+                "France-galop cookies after login: %s",
+                [(c["name"], c["domain"], c.get("httpOnly")) for c in fg_cookies],
+            )
+
             return PlaywrightSession(pw, browser, context, page)
 
         except Exception:
