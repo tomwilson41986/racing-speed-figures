@@ -256,13 +256,24 @@ class FranceGalopAuth:
             except PWTimeout:
                 log.debug("No 'Stay signed in' prompt appeared.")
 
-            # 7. Wait for redirect back to france-galop.com
-            log.info("Waiting for redirect back to france-galop.com...")
+            # 7. Wait for the FULL redirect chain to complete.
+            #    The chain is: CIAM → SSO callback → actual content page.
+            #    wait_for_url("france-galop.com/**") matches the SSO
+            #    callback too early (it IS on france-galop.com).
+            #    Instead, wait for a URL that is on france-galop.com
+            #    but NOT the openid-connect/sso callback.
+            log.info("Waiting for login redirect chain to complete...")
             try:
                 page.wait_for_url(
-                    "https://www.france-galop.com/**", timeout=30000,
+                    lambda url: (
+                        "france-galop.com" in url
+                        and "openid-connect" not in url
+                    ),
+                    timeout=30000,
                 )
             except PWTimeout:
+                # Maybe we're stuck on the SSO callback or login page
+                log.error("Redirect chain did not complete. URL: %s", page.url)
                 error_el = page.query_selector(
                     '#usernameError, #passwordError, '
                     '.alert-error, [role="alert"]'
@@ -277,20 +288,10 @@ class FranceGalopAuth:
                     f"Login timed out. Current URL: {page.url}"
                 )
 
-            log.info("SSO callback URL: %s", page.url[:120])
-
-            # 8. Wait for SSO to complete and navigate to actual content
             page.wait_for_load_state("networkidle", timeout=15000)
+            log.info("Login complete! Final URL: %s", page.url[:120])
 
-            # Navigate to the content page to fully establish the session
-            page.goto(
-                f"{SITE_BASE}/fr/courses/hier",
-                wait_until="load", timeout=30000,
-            )
-            page.wait_for_load_state("networkidle", timeout=15000)
-            log.info("Final URL: %s", page.url[:120])
-
-            # 9. Verify authentication using the browser's own request API
+            # 8. Verify authentication using the browser's own request API
             api = context.request
             check = api.get(f"{SITE_BASE}/fr/courses/hier", timeout=15000)
             if check.status == 200 and "ciamlogin" not in check.url:
