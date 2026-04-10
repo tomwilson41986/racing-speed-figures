@@ -297,7 +297,7 @@ class FranceGalopAuth:
                 comment_url=None,
                 rest={"HttpOnly": ""} if cookie.get("httpOnly") else {},
             )
-            session.cookies.jar.set_cookie(c)
+            session.cookies.set_cookie(c)
             log.debug(
                 "  Cookie: %s domain=%s path=%s secure=%s",
                 cookie["name"], domain, cookie.get("path", "/"),
