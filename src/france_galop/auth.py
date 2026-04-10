@@ -133,38 +133,57 @@ class FranceGalopAuth:
             page = context.new_page()
 
             try:
-                # 1. Navigate to a protected page to trigger OAuth redirect
+                # 1. Navigate to a protected page to trigger OAuth redirect.
+                #    Use "load" instead of "networkidle" — the CIAM SPA
+                #    keeps polling and networkidle may never fire.
                 log.info("Navigating to %s", LOGIN_TRIGGER_URL)
-                page.goto(LOGIN_TRIGGER_URL, wait_until="networkidle", timeout=30000)
+                page.goto(LOGIN_TRIGGER_URL, wait_until="load", timeout=30000)
                 log.info("Redirected to: %s", page.url[:120])
 
-                # 2. We should now be on the Microsoft CIAM login page.
-                #    Wait for the email/username input to appear.
+                # 2. Wait for the Microsoft CIAM login form to render.
+                #    The page is a JS SPA; the form elements are created
+                #    dynamically.  Common IDs/names across Microsoft login:
+                #      - #i0116  (email input on standard MS login)
+                #      - input[name="loginfmt"]
+                #      - input[type="email"]
+                #      - #signInName  (B2C custom policies)
+                log.info("Waiting for email input field...")
                 email_input = page.wait_for_selector(
-                    'input[name="loginfmt"], input[type="email"], '
-                    'input[name="signInName"], input[id="signInName"]',
+                    '#i0116, input[name="loginfmt"], input[type="email"], '
+                    '#signInName, input[name="signInName"]',
                     state="visible",
-                    timeout=15000,
+                    timeout=30000,
                 )
                 if not email_input:
+                    self._dump_debug(page, "email-field-not-found")
                     raise RuntimeError(
                         f"Email input not found on login page. URL: {page.url}"
                     )
 
                 # 3. Fill email and click Next
-                log.info("Filling email address...")
+                log.info("Found email field, filling...")
                 email_input.fill(self._email)
-                page.keyboard.press("Enter")
+
+                # Click the "Next" button — try known MS login button IDs
+                next_btn = page.query_selector(
+                    '#idSIButton9, input[type="submit"]#next, '
+                    'button[type="submit"]'
+                )
+                if next_btn and next_btn.is_visible():
+                    next_btn.click()
+                else:
+                    page.keyboard.press("Enter")
 
                 # 4. Wait for password field (appears after email validation)
                 log.info("Waiting for password field...")
                 password_input = page.wait_for_selector(
-                    'input[name="passwd"], input[type="password"], '
-                    'input[name="password"], input[id="password"]',
+                    '#i0118, input[name="passwd"], input[type="password"], '
+                    '#password, input[name="password"]',
                     state="visible",
                     timeout=15000,
                 )
                 if not password_input:
+                    self._dump_debug(page, "password-field-not-found")
                     raise RuntimeError(
                         f"Password field not found. URL: {page.url}"
                     )
@@ -219,6 +238,7 @@ class FranceGalopAuth:
                         raise RuntimeError(
                             f"Login failed: {error_text}. URL: {page.url}"
                         )
+                    self._dump_debug(page, "redirect-timeout")
                     raise RuntimeError(
                         f"Login timed out waiting for redirect. "
                         f"Current URL: {page.url}"
@@ -254,6 +274,34 @@ class FranceGalopAuth:
             "Built requests.Session with %d cookies", len(playwright_cookies)
         )
         return session
+
+    @staticmethod
+    def _dump_debug(page, label: str):
+        """Log page state for debugging login failures."""
+        log.error("=== DEBUG DUMP: %s ===", label)
+        log.error("URL: %s", page.url)
+        # Log all visible input elements on the page
+        inputs = page.query_selector_all("input")
+        for inp in inputs:
+            try:
+                visible = inp.is_visible()
+                attrs = inp.evaluate(
+                    "el => ({id: el.id, name: el.name, type: el.type, "
+                    "placeholder: el.placeholder})"
+                )
+                log.error(
+                    "  <input id=%s name=%s type=%s placeholder=%s visible=%s>",
+                    attrs.get("id"), attrs.get("name"),
+                    attrs.get("type"), attrs.get("placeholder"), visible,
+                )
+            except Exception:
+                pass
+        # Save screenshot
+        try:
+            page.screenshot(path=f"/tmp/fg_debug_{label}.png")
+            log.error("Screenshot saved: /tmp/fg_debug_%s.png", label)
+        except Exception:
+            pass
 
 
 def check_authenticated(session: requests.Session) -> bool:
