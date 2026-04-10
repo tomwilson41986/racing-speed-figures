@@ -149,6 +149,7 @@ class FranceGalopAuth:
                 #    so we can dump debug info if nothing matches.
                 log.info("Waiting for email input field...")
                 email_selector = (
+                    'input[name="username"], '
                     '#i0116, input[name="loginfmt"], input[type="email"], '
                     '#signInName, input[name="signInName"], '
                     '#email, input[name="email"]'
@@ -181,8 +182,8 @@ class FranceGalopAuth:
                 log.info("Waiting for password field...")
                 try:
                     password_input = page.wait_for_selector(
-                        '#i0118, input[name="passwd"], input[type="password"], '
-                        '#password, input[name="password"]',
+                        'input[name="password"], input[type="password"], '
+                        '#i0118, input[name="passwd"], #password',
                         state="visible", timeout=15000,
                     )
                 except PWTimeout:
