@@ -247,13 +247,40 @@ class FranceGalopAuth:
                         f"Current URL: {page.url}"
                     )
 
-                log.info("Login successful! URL: %s", page.url[:120])
+                log.info("SSO callback URL: %s", page.url[:120])
 
-                # 8. Extract all cookies from the browser
+                # 8. The SSO callback (/openid-connect/sso?code=...) will
+                #    exchange the code for a session cookie and redirect
+                #    to the originally requested page.  Wait for that
+                #    redirect chain to finish — the final URL should NOT
+                #    contain "openid-connect/sso".
+                page.wait_for_load_state("networkidle", timeout=15000)
+                log.info("Page settled. Final URL: %s", page.url[:120])
+
+                # If still on the SSO callback, navigate to a protected
+                # page to trigger the session cookie to be fully set.
+                if "openid-connect" in page.url:
+                    log.info("Still on SSO callback, navigating to courses...")
+                    page.goto(
+                        f"{SITE_BASE}/fr/courses/hier",
+                        wait_until="networkidle",
+                        timeout=15000,
+                    )
+                    log.info("Final URL after navigation: %s", page.url[:120])
+
+                # 9. Extract all cookies from the browser
                 cookies = context.cookies()
                 log.info("Extracted %d cookies from browser", len(cookies))
+                fg_cookies = [
+                    c for c in cookies
+                    if "france-galop" in c.get("domain", "")
+                ]
+                log.info(
+                    "France-galop cookies: %s",
+                    [(c["name"], c["domain"]) for c in fg_cookies],
+                )
 
-                # 9. Build a requests.Session with these cookies
+                # 10. Build a requests.Session with these cookies
                 session = self._build_session(cookies)
                 return session
 
