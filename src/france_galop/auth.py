@@ -2,15 +2,18 @@
 
 France Galop uses Microsoft CIAM (Azure AD) for authentication.  The login
 page is a JavaScript SPA that cannot be replicated with plain HTTP requests.
-Playwright drives a headless Chromium browser to complete the login, then
-extracts session cookies and injects them into a requests.Session for
-efficient subsequent page scraping.
+
+Playwright drives a headless Chromium browser to complete the login.  After
+authentication, the Playwright browser context is kept alive and its
+built-in APIRequestContext is used for all subsequent HTTP requests — this
+shares the browser's cookie jar automatically, avoiding fragile cookie
+transfer to a requests.Session.
 
 Usage:
     from src.france_galop.auth import FranceGalopAuth
 
     auth = FranceGalopAuth(email="...", password="...")
-    session = auth.login()  # returns a requests.Session with auth cookies
+    ctx = auth.login()  # returns a PlaywrightSession wrapping the context
 """
 
 import glob
@@ -19,13 +22,11 @@ import os
 import shutil
 from typing import Optional
 
-import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 log = logging.getLogger(__name__)
 
 SITE_BASE = "https://www.france-galop.com"
-# Use the French URL — avoids language redirects
 LOGIN_TRIGGER_URL = f"{SITE_BASE}/fr/courses/hier"
 
 CHROME_USER_AGENT = (
@@ -36,15 +37,10 @@ CHROME_USER_AGENT = (
 
 
 def _find_chromium_executable(default_path: str) -> str:
-    """Return a working chromium executable path.
-
-    Checks the Playwright default first, then searches /opt/pw-browsers/
-    for any installed chromium revision.
-    """
+    """Return a working chromium executable path."""
     if os.path.exists(default_path):
         return default_path
 
-    # Search for any chromium revision under /opt/pw-browsers/
     for pattern in [
         "/opt/pw-browsers/chromium-*/chrome-linux/chrome",
         "/opt/pw-browsers/chromium-*/chrome-linux64/chrome",
@@ -54,7 +50,6 @@ def _find_chromium_executable(default_path: str) -> str:
             log.info("Found chromium fallback: %s", matches[0])
             return matches[0]
 
-    # Check PATH
     system_chromium = shutil.which("chromium") or shutil.which("chromium-browser")
     if system_chromium:
         return system_chromium
@@ -63,12 +58,60 @@ def _find_chromium_executable(default_path: str) -> str:
     return default_path
 
 
+class PlaywrightSession:
+    """Wraps a Playwright browser context to provide an HTTP-request interface.
+
+    Uses Playwright's APIRequestContext which shares cookies with the
+    browser, avoiding the need to transfer cookies to requests.Session.
+    """
+
+    def __init__(self, playwright, browser, context):
+        self._playwright = playwright
+        self._browser = browser
+        self._context = context
+        self._api = context.request
+
+    def get(self, url: str, **kwargs) -> "PlaywrightResponse":
+        """GET request using the browser's cookie jar."""
+        timeout = kwargs.pop("timeout", 30) * 1000  # convert s → ms
+        resp = self._api.get(url, timeout=timeout)
+        return PlaywrightResponse(resp)
+
+    def close(self):
+        """Clean up browser resources."""
+        try:
+            self._browser.close()
+        except Exception:
+            pass
+        try:
+            self._playwright.stop()
+        except Exception:
+            pass
+
+    @property
+    def cookies(self):
+        """Return cookies from the browser context (for debugging)."""
+        return self._context.cookies()
+
+
+class PlaywrightResponse:
+    """Thin wrapper so PlaywrightSession.get() returns a requests-like object."""
+
+    def __init__(self, api_response):
+        self._resp = api_response
+        self.status_code = api_response.status
+        self.url = api_response.url
+        self.headers = dict(api_response.headers)
+        self.content = api_response.body()
+        self.text = self.content.decode("utf-8", errors="replace")
+
+    @property
+    def ok(self):
+        return 200 <= self.status_code < 400
+
+
 class FranceGalopAuth:
     """Handles authentication with France Galop via Playwright.
-
-    Launches a headless Chromium browser, navigates to a page that requires
-    login, completes the Microsoft CIAM OAuth flow, extracts cookies, and
-    transfers them to a requests.Session.
 
     Parameters
     ----------
@@ -101,253 +144,179 @@ class FranceGalopAuth:
         wait=wait_exponential(multiplier=2, min=2, max=30),
         reraise=True,
     )
-    def login(self) -> requests.Session:
-        """Perform OAuth login and return a requests.Session with auth cookies.
+    def login(self) -> PlaywrightSession:
+        """Perform OAuth login and return a PlaywrightSession.
+
+        The PlaywrightSession wraps the browser context so that
+        subsequent HTTP requests use the browser's cookie jar.
 
         Returns
         -------
-        requests.Session
-            Session with authentication cookies set.
-
-        Raises
-        ------
-        RuntimeError
-            If login fails after retries.
+        PlaywrightSession
+            Session that shares cookies with the authenticated browser.
         """
         from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
         log.info("Starting Playwright login to France Galop...")
 
-        with sync_playwright() as p:
-            launch_kwargs = {"headless": self._headless}
-            executable = _find_chromium_executable(p.chromium.executable_path)
-            if executable != p.chromium.executable_path:
-                log.info("Using chromium at: %s", executable)
-                launch_kwargs["executable_path"] = executable
+        pw = sync_playwright().start()
+        launch_kwargs = {"headless": self._headless}
+        executable = _find_chromium_executable(pw.chromium.executable_path)
+        if executable != pw.chromium.executable_path:
+            log.info("Using chromium at: %s", executable)
+            launch_kwargs["executable_path"] = executable
 
-            browser = p.chromium.launch(**launch_kwargs)
-            context = browser.new_context(
-                user_agent=CHROME_USER_AGENT,
-                locale="en-US",
+        browser = pw.chromium.launch(**launch_kwargs)
+        context = browser.new_context(
+            user_agent=CHROME_USER_AGENT,
+            locale="en-US",
+        )
+        page = context.new_page()
+
+        try:
+            # 1. Navigate to a protected page to trigger OAuth redirect
+            log.info("Navigating to %s", LOGIN_TRIGGER_URL)
+            page.goto(LOGIN_TRIGGER_URL, wait_until="load", timeout=30000)
+            page.wait_for_load_state("networkidle", timeout=15000)
+            log.info("Page loaded. URL: %s", page.url[:120])
+
+            # If already authenticated, skip login
+            if "france-galop.com" in page.url and "ciamlogin" not in page.url:
+                log.info("Already authenticated — no OAuth redirect.")
+                return PlaywrightSession(pw, browser, context)
+
+            # 2. Wait for the CIAM login form
+            log.info("Waiting for email input field...")
+            email_selector = (
+                'input[name="username"], '
+                '#i0116, input[name="loginfmt"], input[type="email"], '
+                '#signInName, input[name="signInName"]'
             )
-            page = context.new_page()
-
             try:
-                # 1. Navigate to a protected page to trigger OAuth redirect.
-                log.info("Navigating to %s", LOGIN_TRIGGER_URL)
-                page.goto(LOGIN_TRIGGER_URL, wait_until="load", timeout=30000)
-
-                # Wait for JS to execute (may redirect to OAuth)
-                page.wait_for_load_state("networkidle", timeout=15000)
-                log.info("Page loaded. URL: %s", page.url[:120])
-
-                # Check if we were redirected to OAuth or stayed on FG
-                if "france-galop.com" in page.url and "ciamlogin" not in page.url:
-                    log.info("Already authenticated — no OAuth redirect.")
-                    cookies = context.cookies()
-                    session = self._build_session(cookies)
-                    return session
-
-                # 2. Wait for the Microsoft CIAM login form to render.
-                #    The page is a JS SPA; form elements are created by JS.
-                #    We try a broad set of selectors and catch the timeout
-                #    so we can dump debug info if nothing matches.
-                log.info("Waiting for email input field...")
-                email_selector = (
-                    'input[name="username"], '
-                    '#i0116, input[name="loginfmt"], input[type="email"], '
-                    '#signInName, input[name="signInName"], '
-                    '#email, input[name="email"]'
+                email_input = page.wait_for_selector(
+                    email_selector, state="visible", timeout=30000,
                 )
-                try:
-                    email_input = page.wait_for_selector(
-                        email_selector, state="visible", timeout=30000,
-                    )
-                except PWTimeout:
-                    self._dump_debug(page, "email-field-timeout")
-                    raise RuntimeError(
-                        f"Email input not found after 30s. URL: {page.url}"
-                    )
-
-                # 3. Fill email and click Next
-                log.info("Found email field, filling...")
-                email_input.fill(self._email)
-
-                # Click the "Next" button — try known MS login button IDs
-                next_btn = page.query_selector(
-                    '#idSIButton9, input[type="submit"]#next, '
-                    'button[type="submit"]'
+            except PWTimeout:
+                self._dump_debug(page, "email-field-timeout")
+                raise RuntimeError(
+                    f"Email input not found after 30s. URL: {page.url}"
                 )
-                if next_btn and next_btn.is_visible():
-                    next_btn.click()
-                else:
-                    page.keyboard.press("Enter")
 
-                # 4. Wait for password field (appears after email validation)
-                log.info("Waiting for password field...")
-                try:
-                    password_input = page.wait_for_selector(
-                        'input[name="password"], input[type="password"], '
-                        '#i0118, input[name="passwd"], #password',
-                        state="visible", timeout=15000,
-                    )
-                except PWTimeout:
-                    self._dump_debug(page, "password-field-timeout")
-                    raise RuntimeError(
-                        f"Password field not found after 15s. URL: {page.url}"
-                    )
-
-                # 5. Fill password and submit
-                log.info("Filling password and submitting...")
-                password_input.fill(self._password)
+            # 3. Fill email and submit
+            log.info("Found email field, filling...")
+            email_input.fill(self._email)
+            next_btn = page.query_selector(
+                '#idSIButton9, input[type="submit"]#next, '
+                'button[type="submit"]'
+            )
+            if next_btn and next_btn.is_visible():
+                next_btn.click()
+            else:
                 page.keyboard.press("Enter")
 
-                # 6. Handle "Stay signed in?" prompt if it appears
-                try:
-                    stay_signed_in = page.wait_for_selector(
-                        '#idBtn_Back, #idSIButton9, '
-                        'button:has-text("No"), button:has-text("Yes")',
-                        state="visible",
-                        timeout=5000,
-                    )
-                    if stay_signed_in:
-                        yes_btn = page.query_selector(
-                            '#idSIButton9, button:has-text("Yes")'
-                        )
-                        if yes_btn and yes_btn.is_visible():
-                            log.info("Clicking 'Yes' on 'Stay signed in' prompt")
-                            yes_btn.click()
-                        else:
-                            # Click "No" as fallback
-                            no_btn = page.query_selector(
-                                '#idBtn_Back, button:has-text("No")'
-                            )
-                            if no_btn:
-                                log.info("Clicking 'No' on 'Stay signed in' prompt")
-                                no_btn.click()
-                except PWTimeout:
-                    log.debug("No 'Stay signed in' prompt appeared.")
-
-                # 7. Wait for redirect back to france-galop.com
-                log.info("Waiting for redirect back to france-galop.com...")
-                try:
-                    page.wait_for_url(
-                        "https://www.france-galop.com/**",
-                        timeout=30000,
-                    )
-                except PWTimeout:
-                    # Check if there's an error message on the page
-                    error_el = page.query_selector(
-                        '#usernameError, #passwordError, '
-                        '.alert-error, [role="alert"]'
-                    )
-                    if error_el:
-                        error_text = error_el.inner_text()
-                        raise RuntimeError(
-                            f"Login failed: {error_text}. URL: {page.url}"
-                        )
-                    self._dump_debug(page, "redirect-timeout")
-                    raise RuntimeError(
-                        f"Login timed out waiting for redirect. "
-                        f"Current URL: {page.url}"
-                    )
-
-                log.info("SSO callback URL: %s", page.url[:120])
-
-                # 8. The SSO callback (/openid-connect/sso?code=...) will
-                #    exchange the code for a session cookie and redirect
-                #    to the originally requested page.  Wait for that
-                #    redirect chain to finish — the final URL should NOT
-                #    contain "openid-connect/sso".
-                page.wait_for_load_state("networkidle", timeout=15000)
-                log.info("Page settled. Final URL: %s", page.url[:120])
-
-                # If still on the SSO callback, navigate to a protected
-                # page to trigger the session cookie to be fully set.
-                if "openid-connect" in page.url:
-                    log.info("Still on SSO callback, navigating to courses...")
-                    page.goto(
-                        f"{SITE_BASE}/fr/courses/hier",
-                        wait_until="networkidle",
-                        timeout=15000,
-                    )
-                    log.info("Final URL after navigation: %s", page.url[:120])
-
-                # 9. Extract all cookies from the browser
-                cookies = context.cookies()
-                log.info("Extracted %d cookies from browser", len(cookies))
-                fg_cookies = [
-                    c for c in cookies
-                    if "france-galop" in c.get("domain", "")
-                ]
-                log.info(
-                    "France-galop cookies: %s",
-                    [(c["name"], c["domain"]) for c in fg_cookies],
+            # 4. Wait for password field
+            log.info("Waiting for password field...")
+            try:
+                password_input = page.wait_for_selector(
+                    'input[name="password"], input[type="password"], '
+                    '#i0118, input[name="passwd"]',
+                    state="visible", timeout=15000,
+                )
+            except PWTimeout:
+                self._dump_debug(page, "password-field-timeout")
+                raise RuntimeError(
+                    f"Password field not found after 15s. URL: {page.url}"
                 )
 
-                # 10. Build a requests.Session with these cookies
-                session = self._build_session(cookies)
-                return session
+            # 5. Fill password and submit
+            log.info("Filling password and submitting...")
+            password_input.fill(self._password)
+            page.keyboard.press("Enter")
 
-            finally:
-                browser.close()
+            # 6. Handle "Stay signed in?" prompt
+            try:
+                page.wait_for_selector(
+                    '#idBtn_Back, #idSIButton9, '
+                    'button:has-text("No"), button:has-text("Yes")',
+                    state="visible", timeout=5000,
+                )
+                yes_btn = page.query_selector(
+                    '#idSIButton9, button:has-text("Yes")'
+                )
+                if yes_btn and yes_btn.is_visible():
+                    log.info("Clicking 'Yes' on 'Stay signed in' prompt")
+                    yes_btn.click()
+                else:
+                    no_btn = page.query_selector(
+                        '#idBtn_Back, button:has-text("No")'
+                    )
+                    if no_btn:
+                        log.info("Clicking 'No' on 'Stay signed in' prompt")
+                        no_btn.click()
+            except PWTimeout:
+                log.debug("No 'Stay signed in' prompt appeared.")
 
-    def _build_session(self, playwright_cookies: list[dict]) -> requests.Session:
-        """Convert Playwright cookies into a requests.Session.
+            # 7. Wait for redirect back to france-galop.com
+            log.info("Waiting for redirect back to france-galop.com...")
+            try:
+                page.wait_for_url(
+                    "https://www.france-galop.com/**", timeout=30000,
+                )
+            except PWTimeout:
+                error_el = page.query_selector(
+                    '#usernameError, #passwordError, '
+                    '.alert-error, [role="alert"]'
+                )
+                if error_el:
+                    error_text = error_el.inner_text()
+                    raise RuntimeError(
+                        f"Login failed: {error_text}. URL: {page.url}"
+                    )
+                self._dump_debug(page, "redirect-timeout")
+                raise RuntimeError(
+                    f"Login timed out. Current URL: {page.url}"
+                )
 
-        Uses http.cookiejar for proper cookie handling — Playwright's
-        cookie format needs careful mapping to requests' internal jar.
-        """
-        import http.cookiejar
+            log.info("SSO callback URL: %s", page.url[:120])
 
-        session = requests.Session()
-        session.headers.update({"User-Agent": CHROME_USER_AGENT})
+            # 8. Wait for SSO to complete and navigate to actual content
+            page.wait_for_load_state("networkidle", timeout=15000)
 
-        for cookie in playwright_cookies:
-            domain = cookie.get("domain", "")
-            # Skip cookies for non-france-galop domains
-            if "france-galop" not in domain and "france_galop" not in domain:
-                log.debug("  Skipping cookie %s (domain=%s)", cookie["name"], domain)
-                continue
-
-            # Create a proper cookie via http.cookiejar
-            c = http.cookiejar.Cookie(
-                version=0,
-                name=cookie["name"],
-                value=cookie["value"],
-                port=None,
-                port_specified=False,
-                domain=domain,
-                domain_specified=bool(domain),
-                domain_initial_dot=domain.startswith("."),
-                path=cookie.get("path", "/"),
-                path_specified=bool(cookie.get("path")),
-                secure=cookie.get("secure", False),
-                expires=int(cookie.get("expires", 0)) or None,
-                discard=not cookie.get("expires"),
-                comment=None,
-                comment_url=None,
-                rest={"HttpOnly": ""} if cookie.get("httpOnly") else {},
+            # Navigate to the content page to fully establish the session
+            page.goto(
+                f"{SITE_BASE}/fr/courses/hier",
+                wait_until="load", timeout=30000,
             )
-            session.cookies.set_cookie(c)
-            log.debug(
-                "  Cookie: %s domain=%s path=%s secure=%s",
-                cookie["name"], domain, cookie.get("path", "/"),
-                cookie.get("secure", False),
-            )
+            page.wait_for_load_state("networkidle", timeout=15000)
+            log.info("Final URL: %s", page.url[:120])
 
-        log.info(
-            "Built requests.Session with %d france-galop cookies",
-            len(session.cookies),
-        )
-        return session
+            # 9. Verify authentication using the browser's own request API
+            api = context.request
+            check = api.get(f"{SITE_BASE}/fr/courses/hier", timeout=15000)
+            if check.status == 200 and "ciamlogin" not in check.url:
+                log.info(
+                    "Auth verified via Playwright API. Status=%d URL=%s",
+                    check.status, check.url[:120],
+                )
+            else:
+                log.warning(
+                    "Auth check returned status=%d URL=%s",
+                    check.status, check.url[:120],
+                )
+
+            return PlaywrightSession(pw, browser, context)
+
+        except Exception:
+            # Clean up on failure
+            browser.close()
+            pw.stop()
+            raise
 
     @staticmethod
     def _dump_debug(page, label: str):
         """Log page state for debugging login failures."""
         log.error("=== DEBUG DUMP: %s ===", label)
         log.error("URL: %s", page.url)
-        # Log all visible input elements on the page
         inputs = page.query_selector_all("input")
         for inp in inputs:
             try:
@@ -363,7 +332,6 @@ class FranceGalopAuth:
                 )
             except Exception:
                 pass
-        # Save screenshot
         try:
             page.screenshot(path=f"/tmp/fg_debug_{label}.png")
             log.error("Screenshot saved: /tmp/fg_debug_%s.png", label)
@@ -371,32 +339,17 @@ class FranceGalopAuth:
             pass
 
 
-def check_authenticated(session: requests.Session) -> bool:
-    """Verify that the session is still authenticated with France Galop.
-
-    Follows redirects and checks whether the final URL is on
-    france-galop.com (authenticated) or ciamlogin (not authenticated).
-    """
+def check_authenticated(pw_session: PlaywrightSession) -> bool:
+    """Verify the PlaywrightSession is authenticated with France Galop."""
     try:
-        resp = session.get(
-            f"{SITE_BASE}/fr/courses/hier",
-            allow_redirects=True,
-            timeout=15,
-        )
-        final_url = resp.url
-        log.debug("Auth check: status=%d, final URL=%s", resp.status_code, final_url[:120])
-
-        # If we end up on ciamlogin, we're not authenticated
-        if "ciamlogin" in final_url:
+        resp = pw_session.get(f"{SITE_BASE}/fr/courses/hier", timeout=15)
+        if "ciamlogin" in resp.url:
             log.debug("Not authenticated — redirected to OAuth.")
             return False
-
-        # If we're still on france-galop.com, we're authenticated
-        if "france-galop.com" in final_url:
+        if "france-galop.com" in resp.url and resp.status_code == 200:
             return True
-
-        log.debug("Auth check: unexpected final URL: %s", final_url[:120])
+        log.debug("Auth check: status=%d, URL=%s", resp.status_code, resp.url[:120])
         return False
-    except requests.RequestException as e:
+    except Exception as e:
         log.warning("Auth check failed: %s", e)
         return False
