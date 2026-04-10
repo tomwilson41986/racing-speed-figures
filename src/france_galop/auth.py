@@ -261,16 +261,35 @@ class FranceGalopAuth:
                 browser.close()
 
     def _build_session(self, playwright_cookies: list[dict]) -> requests.Session:
-        """Convert Playwright cookies into a requests.Session."""
+        """Convert Playwright cookies into a requests.Session.
+
+        Playwright cookies have domain like "www.france-galop.com" while
+        requests needs ".france-galop.com" for the cookie to be sent on
+        all subdomains.  We normalize domains to ensure proper matching.
+        """
         session = requests.Session()
         session.headers.update({"User-Agent": CHROME_USER_AGENT})
 
         for cookie in playwright_cookies:
-            session.cookies.set(
-                name=cookie["name"],
-                value=cookie["value"],
-                domain=cookie.get("domain", ""),
-                path=cookie.get("path", "/"),
+            domain = cookie.get("domain", "")
+            # Ensure domain has leading dot for wildcard matching
+            if domain and not domain.startswith("."):
+                domain = "." + domain
+
+            kwargs = {
+                "name": cookie["name"],
+                "value": cookie["value"],
+                "domain": domain,
+                "path": cookie.get("path", "/"),
+            }
+            # Preserve secure/httpOnly flags
+            if cookie.get("secure"):
+                kwargs["secure"] = True
+
+            session.cookies.set(**kwargs)
+            log.debug(
+                "  Cookie: %s=%s... domain=%s",
+                cookie["name"], cookie["value"][:20], domain,
             )
 
         log.info(
@@ -310,27 +329,28 @@ class FranceGalopAuth:
 def check_authenticated(session: requests.Session) -> bool:
     """Verify that the session is still authenticated with France Galop.
 
-    Makes a request to a protected page and checks whether we get
-    the actual content or a redirect to the OAuth login page.
+    Follows redirects and checks whether the final URL is on
+    france-galop.com (authenticated) or ciamlogin (not authenticated).
     """
     try:
         resp = session.get(
             f"{SITE_BASE}/fr/courses/hier",
-            allow_redirects=False,
+            allow_redirects=True,
             timeout=15,
         )
-        # Authenticated: 200 with race content
-        # Not authenticated: 302/303 redirect to ciamlogin
-        if resp.status_code == 200:
+        final_url = resp.url
+        log.debug("Auth check: status=%d, final URL=%s", resp.status_code, final_url[:120])
+
+        # If we end up on ciamlogin, we're not authenticated
+        if "ciamlogin" in final_url:
+            log.debug("Not authenticated — redirected to OAuth.")
+            return False
+
+        # If we're still on france-galop.com, we're authenticated
+        if "france-galop.com" in final_url:
             return True
-        if resp.status_code in (302, 303):
-            location = resp.headers.get("Location", "")
-            if "ciamlogin" in location:
-                log.debug("Not authenticated — redirected to OAuth.")
-                return False
-            # Redirect within france-galop.com is OK
-            return True
-        log.debug("Auth check: unexpected status %d", resp.status_code)
+
+        log.debug("Auth check: unexpected final URL: %s", final_url[:120])
         return False
     except requests.RequestException as e:
         log.warning("Auth check failed: %s", e)
