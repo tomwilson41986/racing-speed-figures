@@ -263,37 +263,50 @@ class FranceGalopAuth:
     def _build_session(self, playwright_cookies: list[dict]) -> requests.Session:
         """Convert Playwright cookies into a requests.Session.
 
-        Playwright cookies have domain like "www.france-galop.com" while
-        requests needs ".france-galop.com" for the cookie to be sent on
-        all subdomains.  We normalize domains to ensure proper matching.
+        Uses http.cookiejar for proper cookie handling — Playwright's
+        cookie format needs careful mapping to requests' internal jar.
         """
+        import http.cookiejar
+
         session = requests.Session()
         session.headers.update({"User-Agent": CHROME_USER_AGENT})
 
         for cookie in playwright_cookies:
             domain = cookie.get("domain", "")
-            # Ensure domain has leading dot for wildcard matching
-            if domain and not domain.startswith("."):
-                domain = "." + domain
+            # Skip cookies for non-france-galop domains
+            if "france-galop" not in domain and "france_galop" not in domain:
+                log.debug("  Skipping cookie %s (domain=%s)", cookie["name"], domain)
+                continue
 
-            kwargs = {
-                "name": cookie["name"],
-                "value": cookie["value"],
-                "domain": domain,
-                "path": cookie.get("path", "/"),
-            }
-            # Preserve secure/httpOnly flags
-            if cookie.get("secure"):
-                kwargs["secure"] = True
-
-            session.cookies.set(**kwargs)
+            # Create a proper cookie via http.cookiejar
+            c = http.cookiejar.Cookie(
+                version=0,
+                name=cookie["name"],
+                value=cookie["value"],
+                port=None,
+                port_specified=False,
+                domain=domain,
+                domain_specified=bool(domain),
+                domain_initial_dot=domain.startswith("."),
+                path=cookie.get("path", "/"),
+                path_specified=bool(cookie.get("path")),
+                secure=cookie.get("secure", False),
+                expires=int(cookie.get("expires", 0)) or None,
+                discard=not cookie.get("expires"),
+                comment=None,
+                comment_url=None,
+                rest={"HttpOnly": ""} if cookie.get("httpOnly") else {},
+            )
+            session.cookies.jar.set_cookie(c)
             log.debug(
-                "  Cookie: %s=%s... domain=%s",
-                cookie["name"], cookie["value"][:20], domain,
+                "  Cookie: %s domain=%s path=%s secure=%s",
+                cookie["name"], domain, cookie.get("path", "/"),
+                cookie.get("secure", False),
             )
 
         log.info(
-            "Built requests.Session with %d cookies", len(playwright_cookies)
+            "Built requests.Session with %d france-galop cookies",
+            len(session.cookies),
         )
         return session
 
