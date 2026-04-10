@@ -31,7 +31,7 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-from .auth import FranceGalopAuth, check_authenticated
+from .auth import FranceGalopAuth, PlaywrightSession, check_authenticated
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ class FranceGalopClient:
         self.delay = delay_between_requests
         self._headless = headless
         self._last_request_time: float = 0.0
-        self.session: Optional[requests.Session] = None
+        self.session: Optional[PlaywrightSession] = None
         self._authenticated = False
 
     # ---- Authentication ----------------------------------------------------
@@ -123,12 +123,12 @@ class FranceGalopClient:
             time.sleep(self.delay - elapsed)
 
     @retry(
-        retry=retry_if_exception_type(requests.exceptions.RequestException),
+        retry=retry_if_exception_type(Exception),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
-    def _get(self, url: str) -> requests.Response:
+    def _get(self, url: str):
         """Perform a GET request with rate limiting and retry."""
         self._rate_limit()
         log.debug("GET %s", url)
@@ -140,7 +140,7 @@ class FranceGalopClient:
         """Fetch a page and return parsed HTML, or None on failure."""
         try:
             resp = self._get(url)
-        except requests.exceptions.RequestException:
+        except Exception:
             log.error("Request failed after retries: %s", url)
             return None
 
@@ -436,7 +436,7 @@ class FranceGalopClient:
 
         try:
             resp = self._get(pdf_url)
-        except requests.exceptions.RequestException:
+        except Exception:
             log.error("PDF download failed after retries: %s", pdf_url)
             return False
 
@@ -462,7 +462,7 @@ class FranceGalopClient:
         _jittered_sleep(self.delay)
         try:
             resp = self._get(pdf_url)
-        except requests.exceptions.RequestException:
+        except Exception:
             log.error("PDF download failed: %s", pdf_url)
             return None
 
