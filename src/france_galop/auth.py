@@ -134,14 +134,19 @@ class FranceGalopAuth:
 
             try:
                 # 1. Navigate to a protected page to trigger OAuth redirect.
-                #    Use "commit" — lightest wait; we handle readiness below.
                 log.info("Navigating to %s", LOGIN_TRIGGER_URL)
-                page.goto(LOGIN_TRIGGER_URL, wait_until="commit", timeout=30000)
+                page.goto(LOGIN_TRIGGER_URL, wait_until="load", timeout=30000)
 
-                # Give the CIAM SPA time to bootstrap and render.
-                # The page does multiple internal navigations/redirects.
-                page.wait_for_load_state("domcontentloaded", timeout=30000)
+                # Wait for JS to execute (may redirect to OAuth)
+                page.wait_for_load_state("networkidle", timeout=15000)
                 log.info("Page loaded. URL: %s", page.url[:120])
+
+                # Check if we were redirected to OAuth or stayed on FG
+                if "france-galop.com" in page.url and "ciamlogin" not in page.url:
+                    log.info("Already authenticated — no OAuth redirect.")
+                    cookies = context.cookies()
+                    session = self._build_session(cookies)
+                    return session
 
                 # 2. Wait for the Microsoft CIAM login form to render.
                 #    The page is a JS SPA; form elements are created by JS.
