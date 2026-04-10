@@ -46,7 +46,7 @@ class FGPDFDownloader:
     s3_bucket : str, optional
         S3 bucket for PDF storage.
     s3_prefix : str
-        S3 key prefix for PDFs (default: france_galop_pdfs/).
+        S3 key prefix for PDFs (default: francegalop_pdfs/).
     """
 
     def __init__(
@@ -55,7 +55,7 @@ class FGPDFDownloader:
         db_session: Session,
         pdf_dir: Path = PDF_BASE_DIR,
         s3_bucket: Optional[str] = None,
-        s3_prefix: str = "france_galop_pdfs",
+        s3_prefix: str = "francegalop_pdfs",
     ):
         self.client = client
         self.session = db_session
