@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       date:
-        description: 'Target date (YYYY-MM-DD), leave empty for today'
+        description: 'Target date (YYYY-MM-DD), leave empty for yesterday'
         required: false
         default: ''
 
@@ -30,8 +30,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Install Playwright browser
-        run: playwright install chromium --with-deps
+      - name: Install Playwright Chromium
+        run: python -m playwright install chromium --with-deps
 
       - name: Download france.db from S3
         env:
@@ -52,9 +52,11 @@ jobs:
         run: |
           DATE_ARG="${{ github.event.inputs.date }}"
           if [ -n "$DATE_ARG" ]; then
-            python -m src.france_galop.cli download-date --date "$DATE_ARG"
+            python -m src.france_galop.cli download-date --date "$DATE_ARG" -v
           else
-            python -m src.france_galop.cli download-today
+            # Default to yesterday (results are typically available next day)
+            YESTERDAY=$(date -u -d "yesterday" +%Y-%m-%d)
+            python -m src.france_galop.cli download-date --date "$YESTERDAY" -v
           fi
 
       - name: Upload updated DB to S3
@@ -69,6 +71,7 @@ jobs:
             --s3-bucket "$S3_BUCKET" --s3-key "$S3_KEY"
 
       - name: Show download summary
+        if: always()
         run: python -m src.france_galop.cli status
 
       - name: Upload PDFs as artifact
@@ -78,3 +81,4 @@ jobs:
           name: france-galop-pdfs-${{ github.run_id }}
           path: data/france_galop_pdfs/
           retention-days: 90
+          if-no-files-found: ignore
