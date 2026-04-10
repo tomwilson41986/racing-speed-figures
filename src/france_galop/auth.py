@@ -61,21 +61,23 @@ def _find_chromium_executable(default_path: str) -> str:
 class PlaywrightSession:
     """Wraps a Playwright browser context to provide an HTTP-request interface.
 
-    Uses Playwright's APIRequestContext which shares cookies with the
-    browser, avoiding the need to transfer cookies to requests.Session.
+    Uses Playwright's Page for navigation.  The Drupal session cookie is
+    managed by the browser — the page.goto() method carries the session
+    automatically.
     """
 
-    def __init__(self, playwright, browser, context):
+    def __init__(self, playwright, browser, context, page):
         self._playwright = playwright
         self._browser = browser
         self._context = context
-        self._api = context.request
+        self._page = page
 
     def get(self, url: str, **kwargs) -> "PlaywrightResponse":
-        """GET request using the browser's cookie jar."""
+        """GET request using the browser page (carries session cookies)."""
         timeout = kwargs.pop("timeout", 30) * 1000  # convert s → ms
-        resp = self._api.get(url, timeout=timeout)
-        return PlaywrightResponse(resp)
+        self._page.goto(url, wait_until="load", timeout=timeout)
+        self._page.wait_for_load_state("networkidle", timeout=min(timeout, 15000))
+        return PlaywrightResponse(self._page)
 
     def close(self):
         """Clean up browser resources."""
@@ -97,13 +99,12 @@ class PlaywrightSession:
 class PlaywrightResponse:
     """Thin wrapper so PlaywrightSession.get() returns a requests-like object."""
 
-    def __init__(self, api_response):
-        self._resp = api_response
-        self.status_code = api_response.status
-        self.url = api_response.url
-        self.headers = dict(api_response.headers)
-        self.content = api_response.body()
-        self.text = self.content.decode("utf-8", errors="replace")
+    def __init__(self, page):
+        self.url = page.url
+        self.status_code = 200  # page.goto succeeded
+        self.text = page.content()
+        self.content = self.text.encode("utf-8")
+        self.headers = {}
 
     @property
     def ok(self):
@@ -256,24 +257,16 @@ class FranceGalopAuth:
             except PWTimeout:
                 log.debug("No 'Stay signed in' prompt appeared.")
 
-            # 7. Wait for the FULL redirect chain to complete.
-            #    The chain is: CIAM → SSO callback → actual content page.
-            #    wait_for_url("france-galop.com/**") matches the SSO
-            #    callback too early (it IS on france-galop.com).
-            #    Instead, wait for a URL that is on france-galop.com
-            #    but NOT the openid-connect/sso callback.
-            log.info("Waiting for login redirect chain to complete...")
+            # 7. Wait for redirect back to france-galop.com.
+            #    The SSO callback (/openid-connect/sso?code=...) processes
+            #    the auth code and renders the page content directly at
+            #    that URL (Drupal does NOT redirect to a different URL).
+            log.info("Waiting for redirect back to france-galop.com...")
             try:
                 page.wait_for_url(
-                    lambda url: (
-                        "france-galop.com" in url
-                        and "openid-connect" not in url
-                    ),
-                    timeout=30000,
+                    "https://www.france-galop.com/**", timeout=30000,
                 )
             except PWTimeout:
-                # Maybe we're stuck on the SSO callback or login page
-                log.error("Redirect chain did not complete. URL: %s", page.url)
                 error_el = page.query_selector(
                     '#usernameError, #passwordError, '
                     '.alert-error, [role="alert"]'
@@ -288,24 +281,12 @@ class FranceGalopAuth:
                     f"Login timed out. Current URL: {page.url}"
                 )
 
+            # 8. Wait for the page to fully render
             page.wait_for_load_state("networkidle", timeout=15000)
-            log.info("Login complete! Final URL: %s", page.url[:120])
+            log.info("Login complete! URL: %s", page.url[:120])
 
             # 8. Verify authentication using the browser's own request API
-            api = context.request
-            check = api.get(f"{SITE_BASE}/fr/courses/hier", timeout=15000)
-            if check.status == 200 and "ciamlogin" not in check.url:
-                log.info(
-                    "Auth verified via Playwright API. Status=%d URL=%s",
-                    check.status, check.url[:120],
-                )
-            else:
-                log.warning(
-                    "Auth check returned status=%d URL=%s",
-                    check.status, check.url[:120],
-                )
-
-            return PlaywrightSession(pw, browser, context)
+            return PlaywrightSession(pw, browser, context, page)
 
         except Exception:
             # Clean up on failure
@@ -341,15 +322,22 @@ class FranceGalopAuth:
 
 
 def check_authenticated(pw_session: PlaywrightSession) -> bool:
-    """Verify the PlaywrightSession is authenticated with France Galop."""
+    """Verify the PlaywrightSession is authenticated with France Galop.
+
+    Navigates to a protected page and checks if we get content
+    (authenticated) or the OAuth login page (not authenticated).
+    """
     try:
         resp = pw_session.get(f"{SITE_BASE}/fr/courses/hier", timeout=15)
         if "ciamlogin" in resp.url:
             log.debug("Not authenticated — redirected to OAuth.")
             return False
-        if "france-galop.com" in resp.url and resp.status_code == 200:
-            return True
-        log.debug("Auth check: status=%d, URL=%s", resp.status_code, resp.url[:120])
+        # If we're on france-galop.com, check for authenticated content
+        if "france-galop.com" in resp.url:
+            # Look for site elements that only appear when logged in
+            if "Cherchez un cheval" in resp.text or "courses" in resp.url:
+                return True
+        log.debug("Auth check: URL=%s", resp.url[:120])
         return False
     except Exception as e:
         log.warning("Auth check failed: %s", e)
