@@ -1,9 +1,10 @@
 """Playwright-based OAuth authentication for France Galop.
 
-France Galop uses Azure AD B2C (CIAM) for authentication, which involves
-JavaScript-heavy OAuth flows.  Playwright drives a headless Chromium browser
-to complete the login, then extracts session cookies and injects them into
-a requests.Session for efficient subsequent page scraping.
+France Galop uses Microsoft CIAM (Azure AD) for authentication.  The login
+page is a JavaScript SPA that cannot be replicated with plain HTTP requests.
+Playwright drives a headless Chromium browser to complete the login, then
+extracts session cookies and injects them into a requests.Session for
+efficient subsequent page scraping.
 
 Usage:
     from src.france_galop.auth import FranceGalopAuth
@@ -12,8 +13,10 @@ Usage:
     session = auth.login()  # returns a requests.Session with auth cookies
 """
 
+import glob
 import logging
 import os
+import shutil
 from typing import Optional
 
 import requests
@@ -22,7 +25,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 log = logging.getLogger(__name__)
 
 SITE_BASE = "https://www.france-galop.com"
-LOGIN_URL = f"{SITE_BASE}/en/racing/yesterday"
+# Use the French URL — avoids language redirects
+LOGIN_TRIGGER_URL = f"{SITE_BASE}/fr/courses/hier"
 
 CHROME_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -40,21 +44,17 @@ def _find_chromium_executable(default_path: str) -> str:
     if os.path.exists(default_path):
         return default_path
 
-    import glob
-
     # Search for any chromium revision under /opt/pw-browsers/
-    patterns = [
+    for pattern in [
         "/opt/pw-browsers/chromium-*/chrome-linux/chrome",
         "/opt/pw-browsers/chromium-*/chrome-linux64/chrome",
-    ]
-    for pattern in patterns:
+    ]:
         matches = sorted(glob.glob(pattern), reverse=True)
         if matches:
             log.info("Found chromium fallback: %s", matches[0])
             return matches[0]
 
-    # Last resort: check PATH
-    import shutil
+    # Check PATH
     system_chromium = shutil.which("chromium") or shutil.which("chromium-browser")
     if system_chromium:
         return system_chromium
@@ -66,9 +66,9 @@ def _find_chromium_executable(default_path: str) -> str:
 class FranceGalopAuth:
     """Handles authentication with France Galop via Playwright.
 
-    Launches a headless Chromium browser, navigates to the login page,
-    fills credentials, waits for redirect, then transfers cookies to
-    a requests.Session for all subsequent HTTP calls.
+    Launches a headless Chromium browser, navigates to a page that requires
+    login, completes the Microsoft CIAM OAuth flow, extracts cookies, and
+    transfers them to a requests.Session.
 
     Parameters
     ----------
@@ -104,10 +104,6 @@ class FranceGalopAuth:
     def login(self) -> requests.Session:
         """Perform OAuth login and return a requests.Session with auth cookies.
 
-        Launches headless Chromium, navigates to France Galop, handles the
-        Azure AD B2C login flow, extracts cookies, and returns an authenticated
-        requests.Session.
-
         Returns
         -------
         requests.Session
@@ -118,153 +114,128 @@ class FranceGalopAuth:
         RuntimeError
             If login fails after retries.
         """
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
         log.info("Starting Playwright login to France Galop...")
 
         with sync_playwright() as p:
             launch_kwargs = {"headless": self._headless}
-
-            # Resolve chromium executable.  Playwright's bundled version
-            # may not match the system-installed revision, so we search
-            # common paths if the default is missing.
             executable = _find_chromium_executable(p.chromium.executable_path)
             if executable != p.chromium.executable_path:
                 log.info("Using chromium at: %s", executable)
                 launch_kwargs["executable_path"] = executable
 
             browser = p.chromium.launch(**launch_kwargs)
-            context = browser.new_context(user_agent=CHROME_USER_AGENT)
+            context = browser.new_context(
+                user_agent=CHROME_USER_AGENT,
+                locale="en-US",
+            )
             page = context.new_page()
 
             try:
-                # Navigate to a page that requires authentication.
-                # This triggers the OAuth redirect to Azure AD B2C.
-                log.debug("Navigating to %s", LOGIN_URL)
-                page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
+                # 1. Navigate to a protected page to trigger OAuth redirect
+                log.info("Navigating to %s", LOGIN_TRIGGER_URL)
+                page.goto(LOGIN_TRIGGER_URL, wait_until="networkidle", timeout=30000)
+                log.info("Redirected to: %s", page.url[:120])
 
-                # The page should redirect to the Azure AD B2C login form.
-                # Wait for the email input field to appear.
-                log.debug("Current URL: %s", page.url)
-
-                # Azure AD B2C login form: try common field selectors
-                email_selector = self._find_input_selector(
-                    page,
-                    [
-                        'input[type="email"]',
-                        'input[name="loginfmt"]',
-                        'input[name="signInName"]',
-                        'input[id="signInName"]',
-                        'input[id="email"]',
-                        'input[name="email"]',
-                    ],
+                # 2. We should now be on the Microsoft CIAM login page.
+                #    Wait for the email/username input to appear.
+                email_input = page.wait_for_selector(
+                    'input[name="loginfmt"], input[type="email"], '
+                    'input[name="signInName"], input[id="signInName"]',
+                    state="visible",
+                    timeout=15000,
                 )
-                if not email_selector:
-                    # Dump page content for debugging
-                    log.error(
-                        "Could not find email input field. Page URL: %s",
-                        page.url,
-                    )
+                if not email_input:
                     raise RuntimeError(
-                        f"Login form not found. Current URL: {page.url}"
+                        f"Email input not found on login page. URL: {page.url}"
                     )
 
-                log.debug("Found email field: %s", email_selector)
-                page.fill(email_selector, self._email)
+                # 3. Fill email and click Next
+                log.info("Filling email address...")
+                email_input.fill(self._email)
+                page.keyboard.press("Enter")
 
-                # Some Azure B2C flows have a "Next" button before password
-                next_button = self._find_button(
-                    page,
-                    [
-                        'input[type="submit"][id="next"]',
-                        'button[type="submit"]#next',
-                        'button:has-text("Next")',
-                    ],
+                # 4. Wait for password field (appears after email validation)
+                log.info("Waiting for password field...")
+                password_input = page.wait_for_selector(
+                    'input[name="passwd"], input[type="password"], '
+                    'input[name="password"], input[id="password"]',
+                    state="visible",
+                    timeout=15000,
                 )
-                if next_button:
-                    log.debug("Clicking 'Next' button")
-                    page.click(next_button)
-                    page.wait_for_load_state("networkidle", timeout=10000)
-
-                # Fill password
-                password_selector = self._find_input_selector(
-                    page,
-                    [
-                        'input[type="password"]',
-                        'input[name="passwd"]',
-                        'input[name="password"]',
-                        'input[id="password"]',
-                    ],
-                )
-                if not password_selector:
+                if not password_input:
                     raise RuntimeError(
-                        f"Password field not found. Current URL: {page.url}"
+                        f"Password field not found. URL: {page.url}"
                     )
 
-                log.debug("Found password field: %s", password_selector)
-                page.fill(password_selector, self._password)
+                # 5. Fill password and submit
+                log.info("Filling password and submitting...")
+                password_input.fill(self._password)
+                page.keyboard.press("Enter")
 
-                # Click sign-in / submit button
-                submit_selector = self._find_button(
-                    page,
-                    [
-                        'button[type="submit"]#next',
-                        'input[type="submit"]#next',
-                        'button[type="submit"]',
-                        'input[type="submit"]',
-                        'button:has-text("Sign in")',
-                        'button:has-text("Log in")',
-                        'button:has-text("Se connecter")',
-                    ],
-                )
-                if not submit_selector:
+                # 6. Handle "Stay signed in?" prompt if it appears
+                try:
+                    stay_signed_in = page.wait_for_selector(
+                        '#idBtn_Back, #idSIButton9, '
+                        'button:has-text("No"), button:has-text("Yes")',
+                        state="visible",
+                        timeout=5000,
+                    )
+                    if stay_signed_in:
+                        # Click "Yes" to stay signed in (longer session)
+                        yes_btn = page.query_selector(
+                            '#idSIButton9, button:has-text("Yes")'
+                        )
+                        if yes_btn and yes_btn.is_visible():
+                            log.info("Clicking 'Yes' on 'Stay signed in' prompt")
+                            yes_btn.click()
+                        else:
+                            # Click "No" as fallback
+                            no_btn = page.query_selector(
+                                '#idBtn_Back, button:has-text("No")'
+                            )
+                            if no_btn:
+                                log.info("Clicking 'No' on 'Stay signed in' prompt")
+                                no_btn.click()
+                except PWTimeout:
+                    log.debug("No 'Stay signed in' prompt appeared.")
+
+                # 7. Wait for redirect back to france-galop.com
+                log.info("Waiting for redirect back to france-galop.com...")
+                try:
+                    page.wait_for_url(
+                        "https://www.france-galop.com/**",
+                        timeout=30000,
+                    )
+                except PWTimeout:
+                    # Check if there's an error message on the page
+                    error_el = page.query_selector(
+                        '#usernameError, #passwordError, '
+                        '.alert-error, [role="alert"]'
+                    )
+                    if error_el:
+                        error_text = error_el.inner_text()
+                        raise RuntimeError(
+                            f"Login failed: {error_text}. URL: {page.url}"
+                        )
                     raise RuntimeError(
-                        f"Submit button not found. Current URL: {page.url}"
+                        f"Login timed out waiting for redirect. "
+                        f"Current URL: {page.url}"
                     )
 
-                log.debug("Clicking submit button: %s", submit_selector)
-                page.click(submit_selector)
+                log.info("Login successful! URL: %s", page.url[:120])
 
-                # Wait for redirect back to france-galop.com
-                log.debug("Waiting for redirect back to france-galop.com...")
-                page.wait_for_url(
-                    f"{SITE_BASE}/**",
-                    timeout=30000,
-                )
-                log.info("Login successful. URL: %s", page.url)
-
-                # Extract cookies from the browser context
+                # 8. Extract all cookies from the browser
                 cookies = context.cookies()
-                log.debug("Extracted %d cookies", len(cookies))
+                log.info("Extracted %d cookies from browser", len(cookies))
 
-                # Build a requests.Session with the auth cookies
+                # 9. Build a requests.Session with these cookies
                 session = self._build_session(cookies)
                 return session
 
             finally:
                 browser.close()
-
-    def _find_input_selector(self, page, selectors: list[str]) -> Optional[str]:
-        """Try multiple selectors, return the first one that matches a visible element."""
-        for selector in selectors:
-            try:
-                el = page.query_selector(selector)
-                if el and el.is_visible():
-                    return selector
-            except Exception:
-                continue
-        return None
-
-    def _find_button(self, page, selectors: list[str]) -> Optional[str]:
-        """Try multiple button selectors, return the first visible match."""
-        for selector in selectors:
-            try:
-                el = page.query_selector(selector)
-                if el and el.is_visible():
-                    return selector
-            except Exception:
-                continue
-        return None
 
     def _build_session(self, playwright_cookies: list[dict]) -> requests.Session:
         """Convert Playwright cookies into a requests.Session."""
@@ -288,23 +259,27 @@ class FranceGalopAuth:
 def check_authenticated(session: requests.Session) -> bool:
     """Verify that the session is still authenticated with France Galop.
 
-    Makes a lightweight request to a page requiring auth and checks
-    whether we get redirected to the login page.
+    Makes a request to a protected page and checks whether we get
+    the actual content or a redirect to the OAuth login page.
     """
     try:
         resp = session.get(
-            f"{SITE_BASE}/en/racing/yesterday",
+            f"{SITE_BASE}/fr/courses/hier",
             allow_redirects=False,
             timeout=15,
         )
-        # If authenticated, we get 200; if not, we get a 302 to the OAuth endpoint
+        # Authenticated: 200 with race content
+        # Not authenticated: 302/303 redirect to ciamlogin
         if resp.status_code == 200:
             return True
-        log.debug(
-            "Auth check: status=%d, location=%s",
-            resp.status_code,
-            resp.headers.get("Location", ""),
-        )
+        if resp.status_code in (302, 303):
+            location = resp.headers.get("Location", "")
+            if "ciamlogin" in location:
+                log.debug("Not authenticated — redirected to OAuth.")
+                return False
+            # Redirect within france-galop.com is OK
+            return True
+        log.debug("Auth check: unexpected status %d", resp.status_code)
         return False
     except requests.RequestException as e:
         log.warning("Auth check failed: %s", e)
