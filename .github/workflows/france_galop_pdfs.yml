@@ -52,11 +52,11 @@ jobs:
         run: |
           DATE_ARG="${{ github.event.inputs.date }}"
           if [ -n "$DATE_ARG" ]; then
-            python -m src.france_galop.cli download-date --date "$DATE_ARG" -v
+            python -m src.france_galop.cli -v download-date --date "$DATE_ARG"
           else
             # Default to yesterday (results are typically available next day)
             YESTERDAY=$(date -u -d "yesterday" +%Y-%m-%d)
-            python -m src.france_galop.cli download-date --date "$YESTERDAY" -v
+            python -m src.france_galop.cli -v download-date --date "$YESTERDAY"
           fi
 
       - name: Upload updated DB to S3
