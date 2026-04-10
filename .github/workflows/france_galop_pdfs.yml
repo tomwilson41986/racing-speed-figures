@@ -1,0 +1,80 @@
+name: France Galop PDF Download
+
+on:
+  schedule:
+    # 20:00 UTC = 21:00 CET / 22:00 CEST (after racing finishes, before daily ratings at 21:00)
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Target date (YYYY-MM-DD), leave empty for today'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  download-pdfs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browser
+        run: playwright install chromium --with-deps
+
+      - name: Download france.db from S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          S3_BUCKET: frenchspeedfigures
+          S3_KEY: france.db
+        run: |
+          python -m src.france.cli s3-download \
+            --s3-bucket "$S3_BUCKET" --s3-key "$S3_KEY"
+
+      - name: Download France Galop PDFs
+        env:
+          FG_EMAIL: ${{ secrets.FG_EMAIL }}
+          FG_PASSWORD: ${{ secrets.FG_PASSWORD }}
+          S3_BUCKET: frenchspeedfigures
+        run: |
+          DATE_ARG="${{ github.event.inputs.date }}"
+          if [ -n "$DATE_ARG" ]; then
+            python -m src.france_galop.cli download-date --date "$DATE_ARG"
+          else
+            python -m src.france_galop.cli download-today
+          fi
+
+      - name: Upload updated DB to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          S3_BUCKET: frenchspeedfigures
+          S3_KEY: france.db
+        run: |
+          python -m src.france.cli s3-upload \
+            --s3-bucket "$S3_BUCKET" --s3-key "$S3_KEY"
+
+      - name: Show download summary
+        run: python -m src.france_galop.cli status
+
+      - name: Upload PDFs as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: france-galop-pdfs-${{ github.run_id }}
+          path: data/france_galop_pdfs/
+          retention-days: 90
