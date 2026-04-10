@@ -134,30 +134,33 @@ class FranceGalopAuth:
 
             try:
                 # 1. Navigate to a protected page to trigger OAuth redirect.
-                #    Use "load" instead of "networkidle" — the CIAM SPA
-                #    keeps polling and networkidle may never fire.
+                #    Use "commit" — lightest wait; we handle readiness below.
                 log.info("Navigating to %s", LOGIN_TRIGGER_URL)
-                page.goto(LOGIN_TRIGGER_URL, wait_until="load", timeout=30000)
-                log.info("Redirected to: %s", page.url[:120])
+                page.goto(LOGIN_TRIGGER_URL, wait_until="commit", timeout=30000)
+
+                # Give the CIAM SPA time to bootstrap and render.
+                # The page does multiple internal navigations/redirects.
+                page.wait_for_load_state("domcontentloaded", timeout=30000)
+                log.info("Page loaded. URL: %s", page.url[:120])
 
                 # 2. Wait for the Microsoft CIAM login form to render.
-                #    The page is a JS SPA; the form elements are created
-                #    dynamically.  Common IDs/names across Microsoft login:
-                #      - #i0116  (email input on standard MS login)
-                #      - input[name="loginfmt"]
-                #      - input[type="email"]
-                #      - #signInName  (B2C custom policies)
+                #    The page is a JS SPA; form elements are created by JS.
+                #    We try a broad set of selectors and catch the timeout
+                #    so we can dump debug info if nothing matches.
                 log.info("Waiting for email input field...")
-                email_input = page.wait_for_selector(
+                email_selector = (
                     '#i0116, input[name="loginfmt"], input[type="email"], '
-                    '#signInName, input[name="signInName"]',
-                    state="visible",
-                    timeout=30000,
+                    '#signInName, input[name="signInName"], '
+                    '#email, input[name="email"]'
                 )
-                if not email_input:
-                    self._dump_debug(page, "email-field-not-found")
+                try:
+                    email_input = page.wait_for_selector(
+                        email_selector, state="visible", timeout=30000,
+                    )
+                except PWTimeout:
+                    self._dump_debug(page, "email-field-timeout")
                     raise RuntimeError(
-                        f"Email input not found on login page. URL: {page.url}"
+                        f"Email input not found after 30s. URL: {page.url}"
                     )
 
                 # 3. Fill email and click Next
@@ -176,16 +179,16 @@ class FranceGalopAuth:
 
                 # 4. Wait for password field (appears after email validation)
                 log.info("Waiting for password field...")
-                password_input = page.wait_for_selector(
-                    '#i0118, input[name="passwd"], input[type="password"], '
-                    '#password, input[name="password"]',
-                    state="visible",
-                    timeout=15000,
-                )
-                if not password_input:
-                    self._dump_debug(page, "password-field-not-found")
+                try:
+                    password_input = page.wait_for_selector(
+                        '#i0118, input[name="passwd"], input[type="password"], '
+                        '#password, input[name="password"]',
+                        state="visible", timeout=15000,
+                    )
+                except PWTimeout:
+                    self._dump_debug(page, "password-field-timeout")
                     raise RuntimeError(
-                        f"Password field not found. URL: {page.url}"
+                        f"Password field not found after 15s. URL: {page.url}"
                     )
 
                 # 5. Fill password and submit
@@ -202,7 +205,6 @@ class FranceGalopAuth:
                         timeout=5000,
                     )
                     if stay_signed_in:
-                        # Click "Yes" to stay signed in (longer session)
                         yes_btn = page.query_selector(
                             '#idSIButton9, button:has-text("Yes")'
                         )
