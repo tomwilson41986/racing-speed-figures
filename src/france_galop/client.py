@@ -163,8 +163,8 @@ class FranceGalopClient:
         """Discover race meetings on a given date from France Galop.
 
         Uses Playwright click-navigation to preserve the session.
-        After login, the SSO callback page has the site navigation;
-        clicking "Hier"/"Aujourd'hui" etc. navigates within the session.
+        After login via the English site, navigates to results pages
+        using English nav links.
 
         Returns list of dicts:
             [{'meeting_url': str, 'venue': str, 'date': date, 'meeting_fg_id': str}, ...]
@@ -175,15 +175,15 @@ class FranceGalopClient:
         yesterday = today - datetime.timedelta(days=1)
         tomorrow = today + datetime.timedelta(days=1)
 
-        # Navigate via click on the nav link (preserves Drupal session)
+        # Navigate via click on the English nav link (preserves session)
         page = self.session._page
 
         if date == yesterday:
-            nav_text = "Hier"
+            nav_text = "Yesterday"
         elif date == today:
-            nav_text = "Aujourd'hui"
+            nav_text = "Today"
         elif date == tomorrow:
-            nav_text = "Demain"
+            nav_text = "Tomorrow"
         else:
             nav_text = None
 
@@ -196,12 +196,17 @@ class FranceGalopClient:
                     page.wait_for_load_state("networkidle", timeout=15000)
                     log.info("Navigated. URL: %s", page.url[:120])
                 else:
-                    log.warning("'%s' link not found on page", nav_text)
+                    log.warning("'%s' link not found, trying direct URL...", nav_text)
+                    # Fallback: try direct English URL
+                    slug = {"Yesterday": "yesterday", "Today": "today", "Tomorrow": "tomorrow"}[nav_text]
+                    page.goto(f"{SITE_BASE}/en/racing/{slug}", wait_until="load", timeout=30000)
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                    log.info("Direct nav. URL: %s", page.url[:120])
             except Exception as e:
                 log.warning("Click navigation failed: %s", e)
         else:
             # For other dates, navigate directly
-            url = f"{SITE_BASE}/fr/courses/autres-dates/{date.isoformat()}"
+            url = f"{SITE_BASE}/en/racing/other-dates/{date.isoformat()}"
             log.info("Navigating to %s", url)
             page.goto(url, wait_until="load", timeout=30000)
             page.wait_for_load_state("networkidle", timeout=15000)

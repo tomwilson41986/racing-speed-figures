@@ -27,7 +27,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 log = logging.getLogger(__name__)
 
 SITE_BASE = "https://www.france-galop.com"
-LOGIN_TRIGGER_URL = f"{SITE_BASE}/fr/courses/hier"
+LOGIN_TRIGGER_URL = f"{SITE_BASE}/en/racing/yesterday"
 
 CHROME_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
