@@ -1,0 +1,58 @@
+France Speed Figures — Calculation Logic QA
+Date: 2026-04-15   Run source: workflow
+Generated: 2026-04-15T21:48:38Z
+================================================================================
+
+FORMULA REFERENCE
+----------------------------------------
+  BASE_RATING          = 100
+  BASE_WEIGHT_LBS      = 126
+  SECONDS_PER_LENGTH   = 0.2
+  BL_ATTENUATION_THRESH= 20.0
+  BL_ATTENUATION_FACTOR= 0.5
+
+  corrected_time       = finishingTime - (going_allowance * distance)
+  deviation_seconds    = corrected_time - standard_time
+  deviation_lengths    = deviation_seconds / SECONDS_PER_LENGTH
+  deviation_lbs        = deviation_lengths * lpl
+  raw_figure (winner)  = BASE_RATING - deviation_lbs
+  raw_figure (others)  = winner_figure - lbs_behind
+  figure_after_weight  = raw_figure + (weightCarried - BASE_WEIGHT_LBS)
+  figure_after_wfa     = figure_after_weight + wfa_adj
+  figure_calibrated    = figure_after_wfa * scale + shift
+  figure_final         = figure_calibrated
+
+================================================================================
+RACE: EVX Race 1  (id=2026-04-15_EVX_1)
+  Distance: 1800m  Going: Souple  Surface: Turf  Class: 6
+  ** QC: impossible finishing time (bad source data) **
+
+================================================================================
+RACE: EVX Race 2  (id=2026-04-15_EVX_2)
+  Distance: 1200m  Going: Souple  Surface: Turf  Class: 5
+  ** QC: likely Arabian/non-TB race (winner >10% slower than standard) **
+
+================================================================================
+RACE: EVX Race 3  (id=2026-04-15_EVX_3)
+  Distance: 1200m  Going: Souple  Surface: Turf  Class: 6
+  ** QC: likely Arabian/non-TB race (winner >10% slower than standard) **
+
+================================================================================
+RACE: EVX Race 4  (id=2026-04-15_EVX_4)
+  Distance: 2500m  Going: Souple  Surface: Turf  Class: 6
+  ** QC: impossible finishing time (bad source data) **
+
+================================================================================
+RACE: EVX Race 5  (id=2026-04-15_EVX_5)
+  Distance: 2500m  Going: Souple  Surface: Turf  Class: 5
+  ** QC: impossible finishing time (bad source data) **
+
+================================================================================
+RACE: EVX Race 6  (id=2026-04-15_EVX_6)
+  Distance: 2500m  Going: Souple  Surface: Turf  Class: 5
+  ** QC: impossible finishing time (bad source data) **
+
+================================================================================
+RACE: EVX Race 8  (id=2026-04-15_EVX_8)
+  Distance: 2500m  Going: Souple  Surface: Turf  Class: 6
+  ** QC: likely Arabian/non-TB race (winner >10% slower than standard) **
