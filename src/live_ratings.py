@@ -210,6 +210,154 @@ def fetch_results(target_date):
     return None
 
 
+HRB_LOGIN_URL = "https://www.horseracebase.com/horseracebase_login.php"
+HRB_MEMBER_URL = "https://www.horseracebase.com/myhrb.php"
+
+
+def _hrb_discover_login_form(session, login_url=HRB_LOGIN_URL):
+    """Fetch the HRB login page and introspect the login form.
+
+    Returns a dict {action, user_field, pass_field, hidden} describing the
+    form to POST credentials to, or None if no form with a password input is
+    present (e.g. JS-rendered login).
+    """
+    from bs4 import BeautifulSoup
+    from urllib.parse import urljoin
+
+    resp = session.get(login_url, timeout=15)
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    for form in soup.find_all("form"):
+        pwd = form.find("input", {"type": "password"})
+        if not pwd or not pwd.get("name"):
+            continue
+
+        # Find the first text/email (or untyped) named input preceding the
+        # password field — that's the username/email box.
+        user_field = None
+        for inp in form.find_all("input"):
+            if inp is pwd:
+                break
+            itype = (inp.get("type") or "").lower()
+            if itype in ("", "text", "email") and inp.get("name"):
+                user_field = inp.get("name")
+        if not user_field:
+            continue
+
+        hidden = {
+            inp.get("name"): inp.get("value", "")
+            for inp in form.find_all("input")
+            if (inp.get("type") or "").lower() == "hidden" and inp.get("name")
+        }
+        action = urljoin(login_url, form.get("action") or login_url)
+        return {
+            "action": action,
+            "user_field": user_field,
+            "pass_field": pwd.get("name"),
+            "hidden": hidden,
+        }
+
+    return None
+
+
+def _hrb_verify_authenticated(session, member_url=HRB_MEMBER_URL):
+    """Return True only if `session` is an authenticated HRB session.
+
+    Conservative: any ambiguity (password form visible, redirected back to
+    login, "please log in" text) returns False.
+    """
+    try:
+        resp = session.get(member_url, timeout=15, allow_redirects=True)
+    except Exception as e:
+        log.error(f"  HRB auth verification request failed: {e}")
+        return False
+
+    final_url = (resp.url or "").lower()
+    body = resp.text.lower()
+
+    if "horseracebase_login" in final_url:
+        return False
+    if "please log in" in body or "please login" in body:
+        return False
+    if '<input type="password"' in body or "<input type='password'" in body:
+        return False
+    if "log out" in body or "logout.php" in body:
+        return True
+    return False
+
+
+def _hrb_login(session, hrb_user, hrb_pass):
+    """Log `session` into HorseRaceBase. Returns True on verified success.
+
+    Supports an `HRB_COOKIE` env-var escape hatch: if set, it is loaded into
+    the session as a raw `k=v; k=v` cookie string, bypassing automated login.
+    """
+    import requests
+
+    cookie_str = os.environ.get("HRB_COOKIE", "").strip()
+    if cookie_str:
+        log.info("  Using HRB_COOKIE from environment (bypassing login)")
+        cookies = {}
+        for piece in cookie_str.split(";"):
+            if "=" in piece:
+                k, v = piece.split("=", 1)
+                cookies[k.strip()] = v.strip()
+        session.cookies.update(
+            requests.utils.cookiejar_from_dict(cookies)
+        )
+        if _hrb_verify_authenticated(session):
+            return True
+        log.error(
+            "  HRB_COOKIE did not produce an authenticated session. "
+            "The cookie may have expired — grab a fresh one from "
+            "your browser's devtools."
+        )
+        return False
+
+    form = _hrb_discover_login_form(session)
+    if not form:
+        log.error(
+            f"  Could not locate the HRB login form at {HRB_LOGIN_URL}. "
+            "The page structure may have changed. As a workaround, set "
+            "HRB_COOKIE (a 'k=v; k=v' cookie string from a logged-in "
+            "browser session) as a GitHub secret."
+        )
+        return False
+
+    log.info(
+        f"  Posting credentials to {form['action']} "
+        f"(user_field={form['user_field']!r}, hidden={list(form['hidden'])})"
+    )
+    payload = {
+        form["user_field"]: hrb_user,
+        form["pass_field"]: hrb_pass,
+        **form["hidden"],
+    }
+    try:
+        login_resp = session.post(
+            form["action"], data=payload, timeout=15, allow_redirects=True
+        )
+    except Exception as e:
+        log.error(f"  HRB login POST failed: {e}")
+        return False
+
+    if login_resp.status_code != 200:
+        log.error(f"  HRB login returned HTTP {login_resp.status_code}")
+        return False
+
+    if _hrb_verify_authenticated(session):
+        return True
+
+    snippet = login_resp.text[:500].replace("\n", " ")
+    log.error(
+        "  HRB login appeared to complete but the session is not "
+        "authenticated. Check HRB_USER / HRB_PASS secrets. "
+        f"Cookies: {list(session.cookies.keys())}. "
+        f"Response snippet: {snippet}"
+    )
+    return False
+
+
 def _fetch_from_hrb(target_date):
     """Download results CSV from HorseRaceBase for a specific date."""
     try:
@@ -239,74 +387,10 @@ def _fetch_from_hrb(target_date):
     try:
         import re
 
-        # Step 1: Get CSRF token from multiple pages
         log.info("Logging into HorseRaceBase...")
-
-        csrf = ""
-        for page_url in [
-            "https://www.horseracebase.com/horse-racing-results.php",
-            "https://www.horseracebase.com/horsebase1.php",
-            "https://www.horseracebase.com/",
-        ]:
-            resp = session.get(page_url, timeout=15)
-            soup = BeautifulSoup(resp.text, "html.parser")
-            csrf_input = soup.find("input", {"name": "CSRFtoken"})
-            if csrf_input:
-                csrf = csrf_input["value"]
-                log.info(f"  CSRF token found on {page_url}")
-                break
-
-        if not csrf:
-            # Try extracting from raw HTML via regex (JS-rendered forms)
-            match = re.search(
-                r'name=["\']CSRFtoken["\']\s+value=["\']([^"\']+)',
-                resp.text,
-            )
-            if match:
-                csrf = match.group(1)
-                log.info("  CSRF token found via regex")
-            else:
-                log.warning(
-                    "  No CSRF token found — login may fail. "
-                    "Attempting without it."
-                )
-
-        # Step 2: Login
-        login_resp = session.post(
-            "https://www.horseracebase.com/horsebase1.php",
-            data={
-                "login": hrb_user,
-                "password": hrb_pass,
-                "CSRFtoken": csrf,
-            },
-            timeout=15,
-        )
-        if login_resp.status_code != 200:
-            log.error(f"HRB login returned HTTP {login_resp.status_code}")
+        if not _hrb_login(session, hrb_user, hrb_pass):
             return None
-
-        # Verify login succeeded
-        login_ok = "log out" in login_resp.text.lower()
-        if not login_ok:
-            # Check for other success indicators
-            login_ok = (
-                "my horseracebase" in login_resp.text.lower()
-                or "welcome" in login_resp.text.lower()
-            )
-
-        if not login_ok:
-            log.error(
-                "HRB login FAILED — 'log out' not found in response. "
-                "Check HRB_USER and HRB_PASS secrets are correct. "
-                f"Response length: {len(login_resp.text)} chars, "
-                f"cookies: {list(session.cookies.keys())}"
-            )
-            # Show a snippet of the response for debugging
-            snippet = login_resp.text[:500].replace("\n", " ")
-            log.error(f"Response snippet: {snippet}")
-            return None
-
-        log.info("  Login successful")
+        log.info("  Login verified (authenticated session established)")
 
         # Step 3: Get the results page for the target date and parse
         # the CSV download form to extract the correct parameters
@@ -353,7 +437,6 @@ def _fetch_from_hrb(target_date):
             # Search across multiple pages for patterns containing user ID
             log.info("  HRB_USER_ID not set — attempting auto-detection...")
             search_pages = [
-                ("login response", login_resp.text),
                 ("results page", results_resp.text),
             ]
             for page_name, page_url in [
