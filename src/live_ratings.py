@@ -260,30 +260,38 @@ def _hrb_discover_login_form(session, login_url=HRB_LOGIN_URL):
     return None
 
 
-def _hrb_verify_authenticated(session, member_url=HRB_MEMBER_URL):
-    """Return True only if `session` is an authenticated HRB session.
+def _hrb_response_is_authenticated(resp):
+    """Return True if a response body looks like an authenticated HRB page.
 
-    Conservative: any ambiguity (password form visible, redirected back to
-    login, "please log in" text) returns False.
+    Body-only check using positive signals (logout link, member-dashboard
+    markers). Callers should separately verify the response URL if a
+    redirect back to the login page would invalidate the signal.
     """
+    if resp is None:
+        return False
+    body = resp.text.lower()
+    if "logout.php" in body or "log out" in body or ">logout<" in body:
+        return True
+    # The authenticated member dashboard's <title> contains
+    # "my horseracebase" — a reliable positive signal not present on the
+    # public login page.
+    if "my horseracebase" in body:
+        return True
+    return False
+
+
+def _hrb_verify_authenticated(session, member_url=HRB_MEMBER_URL):
+    """Return True only if `session` is an authenticated HRB session."""
     try:
         resp = session.get(member_url, timeout=15, allow_redirects=True)
     except Exception as e:
         log.error(f"  HRB auth verification request failed: {e}")
         return False
-
-    final_url = (resp.url or "").lower()
-    body = resp.text.lower()
-
-    if "horseracebase_login" in final_url:
+    # If the GET to the member page redirected back to the login page,
+    # we are not authenticated regardless of body content.
+    if "horseracebase_login" in (resp.url or "").lower():
         return False
-    if "please log in" in body or "please login" in body:
-        return False
-    if '<input type="password"' in body or "<input type='password'" in body:
-        return False
-    if "log out" in body or "logout.php" in body:
-        return True
-    return False
+    return _hrb_response_is_authenticated(resp)
 
 
 def _hrb_login(session, hrb_user, hrb_pass):
@@ -344,6 +352,12 @@ def _hrb_login(session, hrb_user, hrb_pass):
     if login_resp.status_code != 200:
         log.error(f"  HRB login returned HTTP {login_resp.status_code}")
         return False
+
+    # HRB's login POST response is the member dashboard itself when
+    # credentials are accepted — check that first to avoid an extra
+    # round-trip (and sidestep any quirks on myhrb.php).
+    if _hrb_response_is_authenticated(login_resp):
+        return True
 
     if _hrb_verify_authenticated(session):
         return True
