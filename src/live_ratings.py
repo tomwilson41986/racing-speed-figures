@@ -1598,11 +1598,27 @@ class LiteRatingEngine:
                 )
                 cal_vals += going_grp.map(going_offsets).fillna(0).values
 
-            # Continuous GA coefficient
+            # Continuous GA coefficient (linear piece)
             ga_coeff = params.get("ga_coeff", 0.0)
             if ga_coeff != 0 and "going_allowance" in df.columns:
                 ga_vals = df.loc[mask, "going_allowance"].fillna(0).values
                 cal_vals += ga_coeff * ga_vals
+
+            # Non-linear GA term: sign(ga) * max(|ga|-threshold, 0)^2
+            # Corrects extreme-ground residuals that the linear piece
+            # under-fits.  Clip at |1.0| to match the fit.
+            ga_nl_coeff = params.get("ga_nonlin_coeff", 0.0)
+            ga_nl_thr = params.get("ga_nonlin_threshold", 0.30)
+            if ga_nl_coeff != 0 and "going_allowance" in df.columns:
+                ga_vals_all = (
+                    df.loc[mask, "going_allowance"].fillna(0).values
+                )
+                ga_clip = np.clip(ga_vals_all, -1.0, 1.0)
+                ga_nl = (
+                    np.sign(ga_clip)
+                    * np.maximum(np.abs(ga_clip) - ga_nl_thr, 0.0) ** 2
+                )
+                cal_vals += ga_nl_coeff * ga_nl
 
             # Beaten-length band offsets
             bl_offsets = params.get("bl_offsets", {})
@@ -1661,13 +1677,14 @@ class LiteRatingEngine:
             "figure_calibrated", "figure_final", "raceClass",
             "distance", "horseAge", "positionOfficial",
             "weightCarried", "ga_value", "going_num", "course_freq",
-            "numberOfRunners", "draw",
+            "numberOfRunners", "draw", "country_num",
         ]
 
         # Temporary feature columns
         df["going_num"] = df["going"].map(GOING_ORDINAL).fillna(3)
         df["course_freq"] = df["courseName"].map(course_freq).fillna(0)
         df["ga_value"] = df["going_allowance"].fillna(0)
+        df["country_num"] = df["courseName"].isin(IRE_COURSES).astype(int)
 
         for surface, gbr in gbr_models.items():
             mask = (
@@ -1691,7 +1708,7 @@ class LiteRatingEngine:
             log.info(f"  {surface}: GBR applied to {mask.sum()} runners")
 
         df.drop(
-            columns=["going_num", "course_freq", "ga_value"],
+            columns=["going_num", "course_freq", "ga_value", "country_num"],
             errors="ignore",
             inplace=True,
         )

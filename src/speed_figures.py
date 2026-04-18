@@ -32,6 +32,12 @@ try:
 except ImportError:
     HAS_SKLEARN = False
 
+try:
+    import xgboost as xgb
+    HAS_XGBOOST = True
+except ImportError:
+    HAS_XGBOOST = False
+
 warnings.filterwarnings("ignore", category=pd.errors.DtypeWarning)
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1405,7 +1411,10 @@ def calibrate_figures(df):
             df.loc[surf_mask, "figure_calibrated"] = df.loc[
                 surf_mask, "figure_final"
             ]
-            cal_params[surface] = (1.0, 0.0, 0.0, 0.0, {}, {}, {}, 0.0, {}, {})
+            cal_params[surface] = (
+                1.0, 0.0, 0.0, 0.0, {}, {}, {}, 0.0, {}, {},
+                0.0, GA_NONLINEAR_THRESHOLD,
+            )
             continue
 
         x = fit["figure_final"].values
@@ -1564,11 +1573,41 @@ def calibrate_figures(df):
         surf_ga_cont_adj = ga_coeff * all_ga
         df.loc[surf_mask, "figure_calibrated"] += surf_ga_cont_adj
 
+        # Non-linear GA correction for extreme ground.  On Heavy/Soft
+        # (|GA|>0.30 s/f) and Firm the speed–ground relationship is
+        # super-linear: the linear ga_coeff under-corrects, leaving a
+        # systematic bias that survives into the figure band metrics.
+        # Fit a quadratic piece on the residual: sign(ga)*(|ga|-thr)^2
+        # active only beyond the threshold.  Clip GA to |1.0| to avoid
+        # extrapolation into outlier-meeting territory.
+        ga_nl_thr = GA_NONLINEAR_THRESHOLD
+        fit_ga_clip = np.clip(fit_ga, -1.0, 1.0)
+        fit_ga_nl = (
+            np.sign(fit_ga_clip)
+            * np.maximum(np.abs(fit_ga_clip) - ga_nl_thr, 0.0) ** 2
+        )
+        residuals_ga_lin = residuals3a - (ga_coeff * fit_ga)
+        ga_nl_has_value = fit_ga_nl != 0
+        ga_nl_coeff = 0.0
+        if ga_nl_has_value.sum() > 500:
+            ga_nl_coeff = float(
+                np.sum(fit_ga_nl[ga_nl_has_value]
+                       * residuals_ga_lin[ga_nl_has_value])
+                / (np.sum(fit_ga_nl[ga_nl_has_value] ** 2) + 1e-6)
+            )
+
+        all_ga_clip = np.clip(all_ga, -1.0, 1.0)
+        all_ga_nl = (
+            np.sign(all_ga_clip)
+            * np.maximum(np.abs(all_ga_clip) - ga_nl_thr, 0.0) ** 2
+        )
+        df.loc[surf_mask, "figure_calibrated"] += ga_nl_coeff * all_ga_nl
+
         # Per-beaten-length-band residual correction (with shrinkage).
         # Corrects the systematic positive bias that grows with margin:
         # horses beaten further are consistently over-rated because
         # judge's margin estimates compress at larger distances.
-        residuals4 = residuals3a - (ga_coeff * fit_ga)
+        residuals4 = residuals_ga_lin - (ga_nl_coeff * fit_ga_nl)
         fit_bl = fit["distanceCumulative"].fillna(0).clip(lower=0)
         fit_bl_band = pd.cut(
             fit_bl, bins=[0, 1, 3, 5, 10, 15, 20],
@@ -1622,6 +1661,7 @@ def calibrate_figures(df):
         cal_params[surface] = (
             a, b, a2, x_mean, class_offset_dict, course_dist_offset_dict,
             going_offset_dict, ga_coeff, bl_offset_dict, age_offset_dict,
+            ga_nl_coeff, ga_nl_thr,
         )
         if class_offset_dict:
             offsets_str = ", ".join(
@@ -1641,6 +1681,10 @@ def calibrate_figures(df):
         )
         print(f"      going offsets: {going_str}")
         print(f"      continuous GA coeff: {ga_coeff:+.2f} lbs per s/f")
+        print(
+            f"      non-linear GA coeff: {ga_nl_coeff:+.2f} "
+            f"(threshold={ga_nl_thr:.2f} s/f, quadratic past threshold)"
+        )
         bl_str = ", ".join(
             f"{k}:{v:+.1f}" for k, v in sorted(
                 bl_offset_dict.items()
@@ -1683,21 +1727,30 @@ def enhance_with_gbr(df):
     """
     Stage 10: Stacked GBR enhancement of calibrated figures.
 
-    Trains a Gradient Boosted Regression model per surface that uses
+    Trains a gradient-boosted model per surface that uses
     figure_calibrated as the primary feature (~92% importance) plus
-    auxiliary features (race class, distance, going, etc.) to reduce
-    residual bias — particularly in the 70-130 figure range where the
-    linear calibration under-predicts by +5 lbs.
+    auxiliary features (race class, distance, going, country, etc.) to
+    reduce residual bias — particularly in the 70-130 figure range where
+    the linear calibration under-predicts by +5 lbs.
 
-    Analysis showed this reduces:
-      Turf:  overall MAE 8.82→8.08 (-8%), 70-130 MAE 9.39→7.32 (-22%)
-      AW:    overall MAE 6.46→6.22 (-4%), 70-130 MAE 6.86→6.09 (-11%)
+    Implementation uses xgboost with a monotonic non-decreasing constraint
+    on `figure_calibrated` (falls back to sklearn GBR if xgboost is
+    unavailable).  The constraint guarantees the ML layer never reverses
+    the rank order of the calibrated figure — which fixes the regression-
+    to-mean tail clipping that previously left the 100+ band under-rated
+    by 7-8 lbs.  The `country` feature (UK vs IRE) lets the trees learn
+    Ireland-specific patterns (ground variability, sparser timing) without
+    a separate regional model.
     """
-    if not HAS_SKLEARN:
-        print("    scikit-learn not available — skipping GBR enhancement")
+    if not HAS_SKLEARN and not HAS_XGBOOST:
+        print("    No ML library available — skipping GBR enhancement")
         return df, {}
 
-    print("\n  Training stacked GBR per surface...")
+    use_xgb = HAS_XGBOOST
+    print(
+        f"\n  Training stacked {'xgboost' if use_xgb else 'sklearn'} "
+        f"GBR per surface..."
+    )
 
     # ── Feature engineering ──
     # Ordinal going encoding (firm=1 .. heavy=6)
@@ -1731,11 +1784,17 @@ def enhance_with_gbr(df):
         df["draw"] = 0
     df["draw"] = pd.to_numeric(df["draw"], errors="coerce").fillna(0)
 
+    # Country feature: 0 = UK, 1 = IRE.  Irish Turf has +1 lb MAE gap
+    # vs UK Turf driven by sparse timing and rapidly-changing ground;
+    # giving the trees an explicit country split lets them learn IRE-
+    # specific leaves without a separate regional model.
+    df["country_num"] = df["courseName"].isin(IRE_COURSES).astype(int)
+
     FEATURES = [
         "figure_calibrated", "figure_final", "raceClass",
         "distance", "horseAge", "positionOfficial",
         "weightCarried", "ga_value", "going_num", "course_freq",
-        "numberOfRunners", "draw",
+        "numberOfRunners", "draw", "country_num",
     ]
 
     mask = (
@@ -1773,14 +1832,37 @@ def enhance_with_gbr(df):
         X_fit = fit[FEATURES].values
         y_fit = fit["timefigure"].values
 
-        gbr = GradientBoostingRegressor(
-            n_estimators=300,
-            max_depth=6,
-            learning_rate=0.08,
-            subsample=0.8,
-            min_samples_leaf=50,
-            random_state=42,
-        )
+        if use_xgb:
+            # Monotone non-decreasing in figure_calibrated (the primary
+            # input).  All other features unconstrained (0).  This makes
+            # it impossible for the ML layer to invert the rank order of
+            # the calibrated figure — which previously caused regression-
+            # to-mean clipping that under-rated 100+ horses by ~8 lbs.
+            mono = [0] * len(FEATURES)
+            mono[FEATURES.index("figure_calibrated")] = 1
+            gbr = xgb.XGBRegressor(
+                n_estimators=400,
+                max_depth=6,
+                learning_rate=0.07,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                min_child_weight=50,
+                reg_lambda=1.0,
+                monotone_constraints=tuple(mono),
+                tree_method="hist",
+                random_state=42,
+                n_jobs=-1,
+                verbosity=0,
+            )
+        else:
+            gbr = GradientBoostingRegressor(
+                n_estimators=300,
+                max_depth=6,
+                learning_rate=0.08,
+                subsample=0.8,
+                min_samples_leaf=50,
+                random_state=42,
+            )
         gbr.fit(X_fit, y_fit)
         gbr_models[surface] = gbr
 
@@ -1820,7 +1902,11 @@ def enhance_with_gbr(df):
         print(f"    {'':15}  fit MAE={fit_mae:.2f}, corr={fit_corr:.4f}")
 
     # Clean up temporary columns
-    df.drop(columns=["going_num", "course_freq"], inplace=True)
+    df.drop(
+        columns=["going_num", "course_freq", "country_num"],
+        errors="ignore",
+        inplace=True,
+    )
 
     return df, gbr_models
 
@@ -2409,7 +2495,7 @@ def run_pipeline():
     cal_artifacts = {}
     for surface, params in cal_params.items():
         (a, b, a2, x_mean, cls_off, cd_off, go_off,
-         ga_c, bl_off, age_off) = params
+         ga_c, bl_off, age_off, ga_nl_c, ga_nl_t) = params
         cal_artifacts[surface] = {
             "a": float(a), "b": float(b), "a2": float(a2),
             "x_mean": float(x_mean),
@@ -2419,6 +2505,8 @@ def run_pipeline():
             },
             "going_offsets": {str(k): float(v) for k, v in go_off.items()},
             "ga_coeff": float(ga_c),
+            "ga_nonlin_coeff": float(ga_nl_c),
+            "ga_nonlin_threshold": float(ga_nl_t),
             "bl_offsets": {str(k): float(v) for k, v in bl_off.items()},
             "age_offsets": {str(k): float(v) for k, v in age_off.items()},
         }
