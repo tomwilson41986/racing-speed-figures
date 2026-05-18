@@ -1,0 +1,2785 @@
+UK Speed Figures — Calculation Logic Audit
+Date: 2026-05-18   Run source: live
+Generated: 2026-05-18T19:32:29+00:00
+================================================================================
+
+FORMULA REFERENCE
+----------------------------------------
+  BASE_RATING          = 100
+  BASE_WEIGHT_LBS      = 126
+  SECONDS_PER_LENGTH   = 0.2
+  LBS_PER_SECOND_5F    = 20
+  BENCHMARK_FURLONGS   = 5.0
+
+  corrected_time       = finishingTime - (going_allowance * distance)
+  deviation_seconds    = corrected_time - standard_time
+  deviation_lengths    = deviation_seconds / SECONDS_PER_LENGTH
+  deviation_lbs        = deviation_lengths * lpl
+  raw_figure (winner)  = BASE_RATING - deviation_lbs
+  raw_figure (others)  = winner_figure - lbs_behind
+  after_weight         = raw_figure + (weightCarried - BASE_WEIGHT_LBS)
+  figure_final         = after_weight + wfa_adj
+  figure_calibrated    = calibration(figure_final)  [surface-specific]
+
+SUMMARY
+----------------------------------------
+  Total runners: 269
+  Runners rated: 250
+  Races: 7
+  Courses: CARLISLE, LINGFIELD PARK, REDCAR, WINDSOR
+  Figure range: -21 to 99
+  Figure mean:  53.6
+
+================================================================================
+RACE: CARLISLE Race 1  (id=2026-05-18_CARLISLE_1)
+  Distance: 5.0f  Going: Good  Surface: Turf  Class: 2.0
+  standard_time=63.6640s  going_allowance=1.111560 s/f  lpl=3.9060 lbs/L
+------------------------------------------------------------
+  WINNER: Wild Blossom (IRE)
+    finishingTime        = 65.3300s
+    corrected_time       = 65.3300 - (1.1116 * 5.0000) = 59.7722
+    deviation_seconds    = 59.7722 - 63.6640 = -3.8918
+    deviation_lengths    = -3.8918 / 0.2 = -19.4588
+    deviation_lbs        = -19.4588 * 3.9060 = -76.0054
+    raw_figure           = 100 - -76.0054 = 179.9944
+    weight_adj           = 2.0000
+    wfa_adj              = 19.0000
+    sex_allowance        = 3
+    figure_final         = 198.9944
+    figure_calibrated    = 45.4000
+
+     2. Crownbreaker (IRE)
+    beaten_lengths       = 10.0000L
+    lbs_behind           = 10.0000 * 3.9060 = N/A
+    raw_figure           = N/A - N/A = 140.9348
+    weight_adj           = 2.0000
+    wfa_adj              = 19.0000
+    sex_allowance        = 3
+    figure_final         = 159.9348
+    figure_calibrated    = 8.5000
+
+     3. Miss Havisham (IRE)
+    beaten_lengths       = 14.2500L
+    lbs_behind           = 14.2500 * 3.9060 = N/A
+    raw_figure           = N/A - N/A = 130.4716
+    weight_adj           = 2.0000
+    wfa_adj              = 19.0000
+    sex_allowance        = 3
+    figure_final         = 149.4716
+    figure_calibrated    = -10.5000
+
+     4. Calef (IRE)
+    beaten_lengths       = 17.0000L
+    lbs_behind           = 17.0000 * 3.9060 = N/A
+    raw_figure           = N/A - N/A = 125.1009
+    weight_adj           = 2.0000
+    wfa_adj              = 19.0000
+    sex_allowance        = 3
+    figure_final         = 144.1009
+    figure_calibrated    = -20.8000
+
+
+================================================================================
+RACE: CARLISLE Race 2  (id=2026-05-18_CARLISLE_2)
+  Distance: 5.0f  Going: Good  Surface: Turf  Class: 5.0
+  standard_time=63.6640s  going_allowance=1.111560 s/f  lpl=3.9495 lbs/L
+------------------------------------------------------------
+  WINNER: Harb
+    finishingTime        = 64.6100s
+    corrected_time       = 64.6100 - (1.1116 * 5.0000) = 59.0522
+    deviation_seconds    = 59.0522 - 63.6640 = -4.6118
+    deviation_lengths    = -4.6118 / 0.2 = -23.0588
+    deviation_lbs        = -23.0588 * 3.9495 = -91.0705
+    raw_figure           = 100 - -91.0705 = 188.4238
+    weight_adj           = -4.0000
+    wfa_adj              = -1.0000
+    figure_final         = 187.4238
+    figure_calibrated    = 57.9000
+
+   DNF. Acrisius
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 3.9495 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Fierce (IRE)
+    beaten_lengths       = 0.7500L
+    lbs_behind           = 0.7500 * 3.9495 = N/A
+    raw_figure           = N/A - N/A = 191.4617
+    weight_adj           = 2.0000
+    wfa_adj              = 0.0000
+    figure_final         = 191.4617
+    figure_calibrated    = 60.9000
+
+     3. Wen Moon (IRE)
+    beaten_lengths       = 1.2500L
+    lbs_behind           = 1.2500 * 3.9495 = N/A
+    raw_figure           = N/A - N/A = 191.4870
+    weight_adj           = 4.0000
+    wfa_adj              = 0.0000
+    figure_final         = 191.4870
+    figure_calibrated    = 59.2000
+
+     4. Keldeo
+    beaten_lengths       = 6.7500L
+    lbs_behind           = 6.7500 * 3.9495 = N/A
+    raw_figure           = N/A - N/A = 171.7648
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 171.7648
+    figure_calibrated    = 49.7000
+
+     5. Harry Mole
+    beaten_lengths       = 6.9000L
+    lbs_behind           = 6.9000 * 3.9495 = N/A
+    raw_figure           = N/A - N/A = 156.1723
+    weight_adj           = -9.0000
+    wfa_adj              = 0.0000
+    figure_final         = 156.1723
+    figure_calibrated    = 34.1000
+
+     6. Dc Cogent
+    beaten_lengths       = 7.4000L
+    lbs_behind           = 7.4000 * 3.9495 = N/A
+    raw_figure           = N/A - N/A = 163.1976
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = 163.1976
+    figure_calibrated    = 40.1000
+
+     7. Speeding Bullet (IRE)
+    beaten_lengths       = 7.5500L
+    lbs_behind           = 7.5500 * 3.9495 = N/A
+    raw_figure           = N/A - N/A = 165.6052
+    weight_adj           = 3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 165.6052
+    figure_calibrated    = 40.4000
+
+     8. Imperial Guard (IRE)
+    beaten_lengths       = 8.0500L
+    lbs_behind           = 8.0500 * 3.9495 = N/A
+    raw_figure           = N/A - N/A = 161.6304
+    weight_adj           = 1.0000
+    wfa_adj              = 0.0000
+    figure_final         = 161.6304
+    figure_calibrated    = 34.7000
+
+     9. Hurt You Never (IRE)
+    beaten_lengths       = 10.3000L
+    lbs_behind           = 10.3000 * 3.9495 = N/A
+    raw_figure           = N/A - N/A = 154.7441
+    weight_adj           = 3.0000
+    wfa_adj              = -1.0000
+    sex_allowance        = 3
+    figure_final         = 153.7441
+    figure_calibrated    = 24.6000
+
+    10. Blue Lakota (IRE)
+    beaten_lengths       = 21.3000L
+    lbs_behind           = 21.3000 * 3.9495 = N/A
+    raw_figure           = N/A - N/A = 126.4273
+    weight_adj           = -2.0000
+    wfa_adj              = 0.0000
+    figure_final         = 126.4273
+    figure_calibrated    = 16.1000
+
+
+================================================================================
+RACE: CARLISLE Race 3  (id=2026-05-18_CARLISLE_3)
+  Distance: 5.8f  Going: Good To Soft  Surface: Turf  Class: 5.0
+  standard_time=73.4960s  going_allowance=1.111560 s/f  lpl=3.3540 lbs/L
+------------------------------------------------------------
+  WINNER: Call Me Betty (IRE)
+    finishingTime        = 77.4600s
+    corrected_time       = 77.4600 - (1.1116 * 5.8273) = 70.9826
+    deviation_seconds    = 70.9826 - 73.4960 = -2.5133
+    deviation_lengths    = -2.5133 / 0.2 = -12.5666
+    deviation_lbs        = -12.5666 * 3.3540 = -42.1486
+    raw_figure           = 100 - -42.1486 = 153.4219
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 153.4219
+    figure_calibrated    = 63.9000
+
+   DNF. Magic Boy (GER)
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 3.3540 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Fan Mail
+    beaten_lengths       = 0.1500L
+    lbs_behind           = 0.1500 * 3.3540 = N/A
+    raw_figure           = N/A - N/A = 140.9188
+    weight_adj           = -3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 140.9188
+    figure_calibrated    = 52.5000
+
+     3. Surprised
+    beaten_lengths       = 0.6500L
+    lbs_behind           = 0.6500 * 3.3540 = N/A
+    raw_figure           = N/A - N/A = 148.2418
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 148.2418
+    figure_calibrated    = 59.0000
+
+     4. Raft Up (IRE)
+    beaten_lengths       = 0.7500L
+    lbs_behind           = 0.7500 * 3.3540 = N/A
+    raw_figure           = N/A - N/A = 147.9064
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    figure_final         = 147.9064
+    figure_calibrated    = 58.0000
+
+     5. Ran Amok (IRE)
+    beaten_lengths       = 2.0000L
+    lbs_behind           = 2.0000 * 3.3540 = N/A
+    raw_figure           = N/A - N/A = 144.7139
+    weight_adj           = 7.0000
+    wfa_adj              = 0.0000
+    figure_final         = 144.7139
+    figure_calibrated    = 55.6000
+
+     6. Impressor (IRE)
+    beaten_lengths       = 4.5000L
+    lbs_behind           = 4.5000 * 3.3540 = N/A
+    raw_figure           = N/A - N/A = 133.3289
+    weight_adj           = 4.0000
+    wfa_adj              = -2.0000
+    figure_final         = 131.3289
+    figure_calibrated    = 43.7000
+
+     7. Mr Dreamseller
+    beaten_lengths       = 4.6000L
+    lbs_behind           = 4.6000 * 3.3540 = N/A
+    raw_figure           = N/A - N/A = 135.9935
+    weight_adj           = 7.0000
+    wfa_adj              = 0.0000
+    figure_final         = 135.9935
+    figure_calibrated    = 46.4000
+
+     8. Mount Ruapehu (IRE)
+    beaten_lengths       = 5.6000L
+    lbs_behind           = 5.6000 * 3.3540 = N/A
+    raw_figure           = N/A - N/A = 129.6394
+    weight_adj           = 4.0000
+    wfa_adj              = 0.0000
+    figure_final         = 129.6394
+    figure_calibrated    = 37.2000
+
+     9. Lightning Galaxy (IRE)
+    beaten_lengths       = 7.1000L
+    lbs_behind           = 7.1000 * 3.3540 = N/A
+    raw_figure           = N/A - N/A = 119.6084
+    weight_adj           = -1.0000
+    wfa_adj              = 0.0000
+    figure_final         = 119.6084
+    figure_calibrated    = 27.0000
+
+    10. Iris Dancer
+    beaten_lengths       = 7.6000L
+    lbs_behind           = 7.6000 * 3.3540 = N/A
+    raw_figure           = N/A - N/A = 114.9314
+    weight_adj           = -4.0000
+    wfa_adj              = -1.5000
+    sex_allowance        = 3
+    figure_final         = 113.4314
+    figure_calibrated    = 17.5000
+
+    11. Invincible Ruby (IRE)
+    beaten_lengths       = 8.1000L
+    lbs_behind           = 8.1000 * 3.3540 = N/A
+    raw_figure           = N/A - N/A = 118.2544
+    weight_adj           = 1.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 118.2544
+    figure_calibrated    = 24.8000
+
+    12. Counting Cards
+    beaten_lengths       = 9.1000L
+    lbs_behind           = 9.1000 * 3.3540 = N/A
+    raw_figure           = N/A - N/A = 119.9004
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    figure_final         = 119.9004
+    figure_calibrated    = 27.9000
+
+
+================================================================================
+RACE: CARLISLE Race 4  (id=2026-05-18_CARLISLE_4)
+  Distance: 14.1f  Going: Soft  Surface: Turf  Class: 5.0
+  standard_time=197.6443s  going_allowance=1.111560 s/f  lpl=1.4336 lbs/L
+------------------------------------------------------------
+  WINNER: Loki (GER)
+    finishingTime        = 197.6300s
+    corrected_time       = 197.6300 - (1.1116 * 14.1455) = 181.9065
+    deviation_seconds    = 181.9065 - 197.6443 = -15.7378
+    deviation_lengths    = -15.7378 / 0.2 = -78.6892
+    deviation_lbs        = -78.6892 * 1.4336 = -112.8073
+    raw_figure           = 100 - -112.8073 = 221.7991
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    figure_final         = 221.7991
+    figure_calibrated    = 66.7000
+
+     2. Cascade Hall (IRE)
+    beaten_lengths       = 0.1500L
+    lbs_behind           = 0.1500 * 1.4336 = N/A
+    raw_figure           = N/A - N/A = 202.5841
+    weight_adj           = -10.0000
+    wfa_adj              = -1.0000
+    figure_final         = 201.5841
+    figure_calibrated    = 50.8000
+
+     3. As Fast As Wind (IRE)
+    beaten_lengths       = 4.1500L
+    lbs_behind           = 4.1500 * 1.4336 = N/A
+    raw_figure           = N/A - N/A = 206.8497
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 206.8497
+    figure_calibrated    = 55.2000
+
+     4. Billy No Mates (IRE)
+    beaten_lengths       = 6.1500L
+    lbs_behind           = 6.1500 * 1.4336 = N/A
+    raw_figure           = N/A - N/A = 196.9826
+    weight_adj           = -7.0000
+    wfa_adj              = -2.5000
+    figure_final         = 194.4826
+    figure_calibrated    = 42.0000
+
+     5. Haarar
+    beaten_lengths       = 6.2500L
+    lbs_behind           = 6.2500 * 1.4336 = N/A
+    raw_figure           = N/A - N/A = 205.8392
+    weight_adj           = 2.0000
+    wfa_adj              = -1.0000
+    figure_final         = 204.8392
+    figure_calibrated    = 48.3000
+
+     6. Charlie Darling (FR)
+    beaten_lengths       = 7.2500L
+    lbs_behind           = 7.2500 * 1.4336 = N/A
+    raw_figure           = N/A - N/A = 199.4056
+    weight_adj           = -3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 199.4056
+    figure_calibrated    = 43.5000
+
+     7. Lord (GER)
+    beaten_lengths       = 25.2500L
+    lbs_behind           = 25.2500 * 1.4336 = N/A
+    raw_figure           = N/A - N/A = 194.7384
+    weight_adj           = 8.0000
+    wfa_adj              = 0.0000
+    figure_final         = 194.7384
+    figure_calibrated    = 50.3000
+
+     8. Swinging London (IRE)
+    beaten_lengths       = 25.7500L
+    lbs_behind           = 25.7500 * 1.4336 = N/A
+    raw_figure           = N/A - N/A = 190.3800
+    weight_adj           = 4.0000
+    wfa_adj              = -1.5000
+    figure_final         = 188.8800
+    figure_calibrated    = 45.9000
+
+     9. Ashdown Forest (IRE)
+    beaten_lengths       = 69.7500L
+    lbs_behind           = 69.7500 * 1.4336 = N/A
+    raw_figure           = N/A - N/A = 156.8412
+    weight_adj           = 2.0000
+    wfa_adj              = 0.0000
+    figure_final         = 156.8412
+    figure_calibrated    = 24.4000
+
+
+================================================================================
+RACE: CARLISLE Race 5  (id=2026-05-18_CARLISLE_5)
+  Distance: 6.9f  Going: Soft  Surface: Turf  Class: 4.0
+  standard_time=88.8175s  going_allowance=1.111560 s/f  lpl=2.8591 lbs/L
+------------------------------------------------------------
+  WINNER: Freddie Steady Go
+    finishingTime        = 92.7500s
+    corrected_time       = 92.7500 - (1.1116 * 6.8864) = 85.0954
+    deviation_seconds    = 85.0954 - 88.8175 = -3.7221
+    deviation_lengths    = -3.7221 / 0.2 = -18.6104
+    deviation_lbs        = -18.6104 * 2.8591 = -53.2083
+    raw_figure           = 100 - -53.2083 = 170.5642
+    weight_adj           = 15.0000
+    wfa_adj              = 0.0000
+    figure_final         = 170.5642
+    figure_calibrated    = 64.5000
+
+     2. Wezzeer (IRE)
+    beaten_lengths       = 0.7500L
+    lbs_behind           = 0.7500 * 2.8591 = N/A
+    raw_figure           = N/A - N/A = 164.4199
+    weight_adj           = 11.0000
+    wfa_adj              = 10.0000
+    figure_final         = 174.4199
+    figure_calibrated    = 65.6000
+
+     3. Dark Sovereign (IRE)
+    beaten_lengths       = 4.0000L
+    lbs_behind           = 4.0000 * 2.8591 = N/A
+    raw_figure           = N/A - N/A = 148.1279
+    weight_adj           = 4.0000
+    wfa_adj              = 10.0000
+    figure_final         = 158.1279
+    figure_calibrated    = 52.5000
+
+     4. Blue Boy Junior (IRE)
+    beaten_lengths       = 4.5000L
+    lbs_behind           = 4.5000 * 2.8591 = N/A
+    raw_figure           = N/A - N/A = 146.6984
+    weight_adj           = 4.0000
+    wfa_adj              = 10.0000
+    figure_final         = 156.6984
+    figure_calibrated    = 53.2000
+
+     5. Lunar Melody
+    beaten_lengths       = 5.0000L
+    lbs_behind           = 5.0000 * 2.8591 = N/A
+    raw_figure           = N/A - N/A = 140.2689
+    weight_adj           = -1.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 150.2689
+    figure_calibrated    = 45.8000
+
+     6. Bee Farmer
+    beaten_lengths       = 13.5000L
+    lbs_behind           = 13.5000 * 2.8591 = N/A
+    raw_figure           = N/A - N/A = 124.3869
+    weight_adj           = 4.0000
+    wfa_adj              = 10.0000
+    figure_final         = 134.3869
+    figure_calibrated    = 34.1000
+
+     7. Albemagic
+    beaten_lengths       = 21.5000L
+    lbs_behind           = 21.5000 * 2.8591 = N/A
+    raw_figure           = N/A - N/A = 112.9507
+    weight_adj           = 4.0000
+    wfa_adj              = 10.0000
+    figure_final         = 122.9507
+    figure_calibrated    = 33.8000
+
+     8. Great Profit (IRE)
+    beaten_lengths       = 23.0000L
+    lbs_behind           = 23.0000 * 2.8591 = N/A
+    raw_figure           = N/A - N/A = 110.8064
+    weight_adj           = 4.0000
+    wfa_adj              = 10.0000
+    figure_final         = 120.8064
+    figure_calibrated    = 30.7000
+
+     9. Golden Harvest
+    beaten_lengths       = 29.0000L
+    lbs_behind           = 29.0000 * 2.8591 = N/A
+    raw_figure           = N/A - N/A = 102.2292
+    weight_adj           = 4.0000
+    wfa_adj              = 10.0000
+    figure_final         = 112.2292
+    figure_calibrated    = 18.9000
+
+    10. Royal Sizzler
+    beaten_lengths       = 35.5000L
+    lbs_behind           = 35.5000 * 2.8591 = N/A
+    raw_figure           = N/A - N/A = 87.9372
+    weight_adj           = -1.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 97.9372
+    figure_calibrated    = 5.4000
+
+    11. Tzarmaggedon
+    beaten_lengths       = 51.5000L
+    lbs_behind           = 51.5000 * 2.8591 = N/A
+    raw_figure           = N/A - N/A = 70.0647
+    weight_adj           = 4.0000
+    wfa_adj              = 10.0000
+    figure_final         = 80.0647
+    figure_calibrated    = -4.9000
+
+
+================================================================================
+RACE: CARLISLE Race 6  (id=2026-05-18_CARLISLE_6)
+  Distance: 7.8f  Going: Soft  Surface: Turf  Class: 6.0
+  standard_time=100.7070s  going_allowance=1.111560 s/f  lpl=2.4971 lbs/L
+------------------------------------------------------------
+  WINNER: Mereside Princess (IRE)
+    finishingTime        = 107.2500s
+    corrected_time       = 107.2500 - (1.1116 * 7.7864) = 98.5950
+    deviation_seconds    = 98.5950 - 100.7070 = -2.1120
+    deviation_lengths    = -2.1120 / 0.2 = -10.5598
+    deviation_lbs        = -10.5598 * 2.4971 = -26.3688
+    raw_figure           = 100 - -26.3688 = 126.0820
+    weight_adj           = -2.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 136.0820
+    figure_calibrated    = 53.0000
+
+     2. Hatamoto
+    beaten_lengths       = 1.5000L
+    lbs_behind           = 1.5000 * 2.4971 = N/A
+    raw_figure           = N/A - N/A = 128.3364
+    weight_adj           = 4.0000
+    wfa_adj              = 10.0000
+    figure_final         = 138.3364
+    figure_calibrated    = 53.3000
+
+     3. Cobalt Comet
+    beaten_lengths       = 1.6500L
+    lbs_behind           = 1.6500 * 2.4971 = N/A
+    raw_figure           = N/A - N/A = 130.9618
+    weight_adj           = 7.0000
+    wfa_adj              = 10.0000
+    figure_final         = 140.9618
+    figure_calibrated    = 55.7000
+
+     4. Royal Baroness
+    beaten_lengths       = 3.1500L
+    lbs_behind           = 3.1500 * 2.4971 = N/A
+    raw_figure           = N/A - N/A = 115.2162
+    weight_adj           = -5.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 125.2162
+    figure_calibrated    = 42.5000
+
+     5. Too Darn Spicy
+    beaten_lengths       = 12.1500L
+    lbs_behind           = 12.1500 * 2.4971 = N/A
+    raw_figure           = N/A - N/A = 108.0439
+    weight_adj           = 9.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 118.0439
+    figure_calibrated    = 36.9000
+
+     6. Thankfully Simmy
+    beaten_lengths       = 13.1500L
+    lbs_behind           = 13.1500 * 2.4971 = N/A
+    raw_figure           = N/A - N/A = 106.7954
+    weight_adj           = 9.0000
+    wfa_adj              = 10.0000
+    figure_final         = 116.7954
+    figure_calibrated    = 32.1000
+
+     7. Smoker Bellamy (IRE)
+    beaten_lengths       = 14.1500L
+    lbs_behind           = 14.1500 * 2.4971 = N/A
+    raw_figure           = N/A - N/A = 95.5469
+    weight_adj           = -1.0000
+    wfa_adj              = 10.0000
+    figure_final         = 105.5469
+    figure_calibrated    = 11.8000
+
+     8. Dandy Orton (IRE)
+    beaten_lengths       = 16.4000L
+    lbs_behind           = 16.4000 * 2.4971 = N/A
+    raw_figure           = N/A - N/A = 88.7376
+    weight_adj           = -5.0000
+    wfa_adj              = 10.0000
+    figure_final         = 98.7376
+    figure_calibrated    = -2.2000
+
+     9. The Floors Munky
+    beaten_lengths       = 19.1500L
+    lbs_behind           = 19.1500 * 2.4971 = N/A
+    raw_figure           = N/A - N/A = 86.3041
+    weight_adj           = -4.0000
+    wfa_adj              = 10.0000
+    figure_final         = 96.3041
+    figure_calibrated    = -7.0000
+
+    10. Helios Path (IRE)
+    beaten_lengths       = 19.9000L
+    lbs_behind           = 19.9000 * 2.4971 = N/A
+    raw_figure           = N/A - N/A = 87.3677
+    weight_adj           = -2.0000
+    wfa_adj              = 10.0000
+    figure_final         = 97.3677
+    figure_calibrated    = -6.3000
+
+
+================================================================================
+RACE: CARLISLE Race 7  (id=2026-05-18_CARLISLE_7)
+  Distance: 6.9f  Going: Soft  Surface: Turf  Class: 5.0
+  standard_time=88.8175s  going_allowance=1.111560 s/f  lpl=2.8752 lbs/L
+------------------------------------------------------------
+  WINNER: They All Know Me
+    finishingTime        = 92.2300s
+    corrected_time       = 92.2300 - (1.1116 * 6.8864) = 84.5754
+    deviation_seconds    = 84.5754 - 88.8175 = -4.2421
+    deviation_lengths    = -4.2421 / 0.2 = -21.2104
+    deviation_lbs        = -21.2104 * 2.8752 = -60.9838
+    raw_figure           = 100 - -60.9838 = 171.3269
+    weight_adj           = 8.0000
+    wfa_adj              = 0.0000
+    figure_final         = 171.3269
+    figure_calibrated    = 65.1000
+
+   DNF. This Farh
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 2.8752 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Judicature
+    beaten_lengths       = 0.1000L
+    lbs_behind           = 0.1000 * 2.8752 = N/A
+    raw_figure           = N/A - N/A = 165.0394
+    weight_adj           = 2.0000
+    wfa_adj              = 0.0000
+    figure_final         = 165.0394
+    figure_calibrated    = 58.4000
+
+     3. Green Pursuit (IRE)
+    beaten_lengths       = 0.8500L
+    lbs_behind           = 0.8500 * 2.8752 = N/A
+    raw_figure           = N/A - N/A = 167.8830
+    weight_adj           = 7.0000
+    wfa_adj              = 0.0000
+    figure_final         = 167.8830
+    figure_calibrated    = 61.0000
+
+     4. Black Storm (IRE)
+    beaten_lengths       = 3.6000L
+    lbs_behind           = 3.6000 * 2.8752 = N/A
+    raw_figure           = N/A - N/A = 156.9762
+    weight_adj           = 4.0000
+    wfa_adj              = 0.0000
+    figure_final         = 156.9762
+    figure_calibrated    = 53.2000
+
+     5. Vince Le Prince
+    beaten_lengths       = 4.8500L
+    lbs_behind           = 4.8500 * 2.8752 = N/A
+    raw_figure           = N/A - N/A = 152.3822
+    weight_adj           = 3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 152.3822
+    figure_calibrated    = 48.7000
+
+     6. Native Instinct
+    beaten_lengths       = 6.6000L
+    lbs_behind           = 6.6000 * 2.8752 = N/A
+    raw_figure           = N/A - N/A = 153.3507
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    figure_final         = 153.3507
+    figure_calibrated    = 45.7000
+
+     7. Bay Breeze
+    beaten_lengths       = 9.3500L
+    lbs_behind           = 9.3500 * 2.8752 = N/A
+    raw_figure           = N/A - N/A = 138.4439
+    weight_adj           = 2.0000
+    wfa_adj              = -1.0000
+    figure_final         = 137.4439
+    figure_calibrated    = 33.2000
+
+     8. Wish This
+    beaten_lengths       = 10.3500L
+    lbs_behind           = 10.3500 * 2.8752 = N/A
+    raw_figure           = N/A - N/A = 134.5687
+    weight_adj           = 1.0000
+    wfa_adj              = 0.0000
+    figure_final         = 134.5687
+    figure_calibrated    = 27.8000
+
+     9. William Dewhirst (IRE)
+    beaten_lengths       = 22.3500L
+    lbs_behind           = 22.3500 * 2.8752 = N/A
+    raw_figure           = N/A - N/A = 124.2286
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    figure_final         = 124.2286
+    figure_calibrated    = 31.0000
+
+    10. Detective
+    beaten_lengths       = 26.1000L
+    lbs_behind           = 26.1000 * 2.8752 = N/A
+    raw_figure           = N/A - N/A = 105.8376
+    weight_adj           = -4.0000
+    wfa_adj              = -2.5000
+    figure_final         = 103.3376
+    figure_calibrated    = 7.9000
+
+
+================================================================================
+RACE: LINGFIELD PARK Race 1  (id=2026-05-18_LINGFIELD PARK_1)
+  Distance: 10.0f  Going: Good  Surface: Turf  Class: 5.0
+  standard_time=138.6277s  going_allowance=-0.040634 s/f  lpl=2.1434 lbs/L
+------------------------------------------------------------
+  WINNER: Kings Hand
+    finishingTime        = 128.2100s
+    corrected_time       = 128.2100 - (-0.0406 * 10.0455) = 128.6182
+    deviation_seconds    = 128.6182 - 138.6277 = -10.0095
+    deviation_lengths    = -10.0095 / 0.2 = -50.0476
+    deviation_lbs        = -50.0476 * 2.1434 = -107.2701
+    raw_figure           = 100 - -107.2701 = 202.2089
+    weight_adj           = 3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 202.2089
+    figure_calibrated    = 76.8000
+
+     2. Dancing Tiger (IRE)
+    beaten_lengths       = 0.7500L
+    lbs_behind           = 0.7500 * 2.1434 = N/A
+    raw_figure           = N/A - N/A = 203.6014
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    figure_final         = 203.6014
+    figure_calibrated    = 76.1000
+
+     3. Bobacious
+    beaten_lengths       = 0.9000L
+    lbs_behind           = 0.9000 * 2.1434 = N/A
+    raw_figure           = N/A - N/A = 197.2799
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = 197.2799
+    figure_calibrated    = 71.4000
+
+     4. Oman (IRE)
+    beaten_lengths       = 2.1500L
+    lbs_behind           = 2.1500 * 2.1434 = N/A
+    raw_figure           = N/A - N/A = 199.6007
+    weight_adj           = 5.0000
+    wfa_adj              = -1.5000
+    figure_final         = 198.1007
+    figure_calibrated    = 71.9000
+
+     5. Celestias Comet (IRE)
+    beaten_lengths       = 4.4000L
+    lbs_behind           = 4.4000 * 2.1434 = N/A
+    raw_figure           = N/A - N/A = 196.7781
+    weight_adj           = 7.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 196.7781
+    figure_calibrated    = 70.0000
+
+     6. Primo Lara (IRE)
+    beaten_lengths       = 6.4000L
+    lbs_behind           = 6.4000 * 2.1434 = N/A
+    raw_figure           = N/A - N/A = 194.4914
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    figure_final         = 194.4914
+    figure_calibrated    = 65.8000
+
+     7. Premier (FR)
+    beaten_lengths       = 6.5000L
+    lbs_behind           = 6.5000 * 2.1434 = N/A
+    raw_figure           = N/A - N/A = 188.2770
+    weight_adj           = 3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 188.2770
+    figure_calibrated    = 61.5000
+
+     8. Panama Black (IRE)
+    beaten_lengths       = 9.2500L
+    lbs_behind           = 9.2500 * 2.1434 = N/A
+    raw_figure           = N/A - N/A = 176.3828
+    weight_adj           = -3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 176.3828
+    figure_calibrated    = 53.2000
+
+
+================================================================================
+RACE: LINGFIELD PARK Race 2  (id=2026-05-18_LINGFIELD PARK_2)
+  Distance: 16.4f  Going: Good  Surface: Turf  Class: 6.0
+  standard_time=230.0101s  going_allowance=-0.040634 s/f  lpl=1.3141 lbs/L
+------------------------------------------------------------
+  WINNER: Rogue Empire
+    finishingTime        = 215.8000s
+    corrected_time       = 215.8000 - (-0.0406 * 16.3545) = 216.4646
+    deviation_seconds    = 216.4646 - 230.0101 = -13.5456
+    deviation_lengths    = -13.5456 / 0.2 = -67.7279
+    deviation_lbs        = -67.7279 * 1.3141 = -89.0032
+    raw_figure           = 100 - -89.0032 = 191.5046
+    weight_adj           = 8.0000
+    wfa_adj              = 0.0000
+    figure_final         = 191.5046
+    figure_calibrated    = 65.5000
+
+   DNF. High Favour (IRE)
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 1.3141 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Balgowan (IRE)
+    beaten_lengths       = 5.5000L
+    lbs_behind           = 5.5000 * 1.3141 = N/A
+    raw_figure           = N/A - N/A = 181.2769
+    weight_adj           = 5.0000
+    wfa_adj              = -1.0000
+    figure_final         = 180.2769
+    figure_calibrated    = 51.0000
+
+     3. Golden Samba
+    beaten_lengths       = 5.6000L
+    lbs_behind           = 5.6000 * 1.3141 = N/A
+    raw_figure           = N/A - N/A = 170.1455
+    weight_adj           = -6.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 170.1455
+    figure_calibrated    = 42.4000
+
+     4. Smokey Malone
+    beaten_lengths       = 13.6000L
+    lbs_behind           = 13.6000 * 1.3141 = N/A
+    raw_figure           = N/A - N/A = 173.6324
+    weight_adj           = 8.0000
+    wfa_adj              = -1.5000
+    figure_final         = 172.1324
+    figure_calibrated    = 42.2000
+
+     5. Regally Blonde
+    beaten_lengths       = 16.6000L
+    lbs_behind           = 16.6000 * 1.3141 = N/A
+    raw_figure           = N/A - N/A = 167.6900
+    weight_adj           = 6.0000
+    wfa_adj              = -1.0000
+    sex_allowance        = 3
+    figure_final         = 166.6900
+    figure_calibrated    = 36.5000
+
+     6. Capone (GER)
+    beaten_lengths       = 17.3500L
+    lbs_behind           = 17.3500 * 1.3141 = N/A
+    raw_figure           = N/A - N/A = 157.7044
+    weight_adj           = -3.0000
+    wfa_adj              = -3.0000
+    figure_final         = 154.7044
+    figure_calibrated    = 30.5000
+
+     7. Lunar Power (IRE)
+    beaten_lengths       = 21.3500L
+    lbs_behind           = 21.3500 * 1.3141 = N/A
+    raw_figure           = N/A - N/A = 165.1214
+    weight_adj           = 9.0000
+    wfa_adj              = -1.5000
+    figure_final         = 163.6214
+    figure_calibrated    = 48.7000
+
+     8. Cherry Cola
+    beaten_lengths       = 21.4000L
+    lbs_behind           = 21.4000 * 1.3141 = N/A
+    raw_figure           = N/A - N/A = 157.0885
+    weight_adj           = 1.0000
+    wfa_adj              = -2.5000
+    sex_allowance        = 3
+    figure_final         = 154.5885
+    figure_calibrated    = 42.9000
+
+     9. Smith (IRE)
+    beaten_lengths       = 23.6500L
+    lbs_behind           = 23.6500 * 1.3141 = N/A
+    raw_figure           = N/A - N/A = 149.6101
+    weight_adj           = -5.0000
+    wfa_adj              = -2.5000
+    figure_final         = 147.1101
+    figure_calibrated    = 32.7000
+
+    10. Charles Morin
+    beaten_lengths       = 24.9000L
+    lbs_behind           = 24.9000 * 1.3141 = N/A
+    raw_figure           = N/A - N/A = 154.7888
+    weight_adj           = 1.0000
+    wfa_adj              = 0.0000
+    figure_final         = 154.7888
+    figure_calibrated    = 43.0000
+
+
+================================================================================
+RACE: LINGFIELD PARK Race 3  (id=2026-05-18_LINGFIELD PARK_3)
+  Distance: 7.0f  Going: Good  Surface: Turf  Class: 3.0
+  standard_time=89.5254s  going_allowance=-0.040634 s/f  lpl=3.2036 lbs/L
+------------------------------------------------------------
+  WINNER: Notable Dream (IRE)
+    finishingTime        = 82.7300s
+    corrected_time       = 82.7300 - (-0.0406 * 7.0000) = 83.0144
+    deviation_seconds    = 83.0144 - 89.5254 = -6.5109
+    deviation_lengths    = -6.5109 / 0.2 = -32.5546
+    deviation_lbs        = -32.5546 * 3.2036 = -104.2905
+    raw_figure           = 100 - -104.2905 = 203.3744
+    weight_adj           = 7.0000
+    wfa_adj              = 12.0000
+    figure_final         = 215.3744
+    figure_calibrated    = 80.4000
+
+     2. Encounter (IRE)
+    beaten_lengths       = 6.0000L
+    lbs_behind           = 6.0000 * 3.2036 = N/A
+    raw_figure           = N/A - N/A = 184.1531
+    weight_adj           = 7.0000
+    wfa_adj              = 12.0000
+    figure_final         = 196.1531
+    figure_calibrated    = 60.4000
+
+     3. Bin Waary (IRE)
+    beaten_lengths       = 10.0000L
+    lbs_behind           = 10.0000 * 3.2036 = N/A
+    raw_figure           = N/A - N/A = 171.3389
+    weight_adj           = 7.0000
+    wfa_adj              = 12.0000
+    figure_final         = 183.3389
+    figure_calibrated    = 53.6000
+
+     4. Rafes da Man
+    beaten_lengths       = 17.0000L
+    lbs_behind           = 17.0000 * 3.2036 = N/A
+    raw_figure           = N/A - N/A = 148.9140
+    weight_adj           = 7.0000
+    wfa_adj              = 12.0000
+    figure_final         = 160.9140
+    figure_calibrated    = 28.5000
+
+     5. Theheatison
+    beaten_lengths       = 17.7500L
+    lbs_behind           = 17.7500 * 3.2036 = N/A
+    raw_figure           = N/A - N/A = 146.5113
+    weight_adj           = 7.0000
+    wfa_adj              = 12.0000
+    figure_final         = 158.5113
+    figure_calibrated    = 25.7000
+
+     6. Dashing Digger
+    beaten_lengths       = 17.9000L
+    lbs_behind           = 17.9000 * 3.2036 = N/A
+    raw_figure           = N/A - N/A = 146.0308
+    weight_adj           = 7.0000
+    wfa_adj              = 12.0000
+    figure_final         = 158.0308
+    figure_calibrated    = 25.7000
+
+
+================================================================================
+RACE: LINGFIELD PARK Race 4  (id=2026-05-18_LINGFIELD PARK_4)
+  Distance: 6.0f  Going: Good  Surface: Turf  Class: 4.0
+  standard_time=76.2168s  going_allowance=-0.040634 s/f  lpl=3.7595 lbs/L
+------------------------------------------------------------
+  WINNER: Behike (IRE)
+    finishingTime        = 69.0500s
+    corrected_time       = 69.0500 - (-0.0406 * 6.0000) = 69.2938
+    deviation_seconds    = 69.2938 - 76.2168 = -6.9230
+    deviation_lengths    = -6.9230 / 0.2 = -34.6150
+    deviation_lbs        = -34.6150 * 3.7595 = -130.1350
+    raw_figure           = 100 - -130.1350 = 228.8982
+    weight_adj           = 11.0000
+    wfa_adj              = 10.0000
+    figure_final         = 238.8982
+    figure_calibrated    = 86.5000
+
+   DNF. Elite Approach
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 3.7595 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 10.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Ray Mon Dough
+    beaten_lengths       = 2.7500L
+    lbs_behind           = 2.7500 * 3.7595 = N/A
+    raw_figure           = N/A - N/A = 218.5596
+    weight_adj           = 11.0000
+    wfa_adj              = 10.0000
+    figure_final         = 228.5596
+    figure_calibrated    = 90.7000
+
+     3. Railwayman (IRE)
+    beaten_lengths       = 7.7500L
+    lbs_behind           = 7.7500 * 3.7595 = N/A
+    raw_figure           = N/A - N/A = 199.7621
+    weight_adj           = 11.0000
+    wfa_adj              = 10.0000
+    figure_final         = 209.7621
+    figure_calibrated    = 74.7000
+
+     4. Rianka
+    beaten_lengths       = 22.7500L
+    lbs_behind           = 22.7500 * 3.7595 = N/A
+    raw_figure           = N/A - N/A = 135.9280
+    weight_adj           = -1.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 145.9280
+    figure_calibrated    = 38.0000
+
+     5. Wayward Queen
+    beaten_lengths       = 30.7500L
+    lbs_behind           = 30.7500 * 3.7595 = N/A
+    raw_figure           = N/A - N/A = 120.8900
+    weight_adj           = -1.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 130.8900
+    figure_calibrated    = 25.0000
+
+     6. Jeans Boy (IRE)
+    beaten_lengths       = 37.2500L
+    lbs_behind           = 37.2500 * 3.7595 = N/A
+    raw_figure           = N/A - N/A = 113.6716
+    weight_adj           = 4.0000
+    wfa_adj              = 10.0000
+    figure_final         = 123.6716
+    figure_calibrated    = 17.6000
+
+
+================================================================================
+RACE: LINGFIELD PARK Race 5  (id=2026-05-18_LINGFIELD PARK_5)
+  Distance: 6.0f  Going: Good  Surface: Turf  Class: 5.0
+  standard_time=76.2168s  going_allowance=-0.040634 s/f  lpl=3.6974 lbs/L
+------------------------------------------------------------
+  WINNER: Twilight Jet (IRE)
+    finishingTime        = 70.2100s
+    corrected_time       = 70.2100 - (-0.0406 * 6.0000) = 70.4538
+    deviation_seconds    = 70.4538 - 76.2168 = -5.7630
+    deviation_lengths    = -5.7630 / 0.2 = -28.8150
+    deviation_lbs        = -28.8150 * 3.6974 = -106.5402
+    raw_figure           = 100 - -106.5402 = 207.1435
+    weight_adj           = 9.0000
+    wfa_adj              = -1.0000
+    figure_final         = 206.1435
+    figure_calibrated    = 79.1000
+
+   DNF. Hedge Fund (IRE)
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 3.6974 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+   DNF. Invincible Speed (IRE)
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 3.6974 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Travel Agent (IRE)
+    beaten_lengths       = 0.5000L
+    lbs_behind           = 0.5000 * 3.6974 = N/A
+    raw_figure           = N/A - N/A = 202.2948
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    figure_final         = 202.2948
+    figure_calibrated    = 75.9000
+
+     3. Spendmore Lane
+    beaten_lengths       = 0.6500L
+    lbs_behind           = 0.6500 * 3.6974 = N/A
+    raw_figure           = N/A - N/A = 204.7402
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 204.7402
+    figure_calibrated    = 75.8000
+
+     4. No Return (IRE)
+    beaten_lengths       = 3.1500L
+    lbs_behind           = 3.1500 * 3.6974 = N/A
+    raw_figure           = N/A - N/A = 193.4968
+    weight_adj           = 7.0000
+    wfa_adj              = 0.0000
+    figure_final         = 193.4968
+    figure_calibrated    = 67.4000
+
+     5. Whenthedealinsdone
+    beaten_lengths       = 4.9000L
+    lbs_behind           = 4.9000 * 3.6974 = N/A
+    raw_figure           = N/A - N/A = 189.0263
+    weight_adj           = 9.0000
+    wfa_adj              = -1.5000
+    figure_final         = 187.5263
+    figure_calibrated    = 62.8000
+
+     6. Recon Mission (IRE)
+    beaten_lengths       = 8.1500L
+    lbs_behind           = 8.1500 * 3.6974 = N/A
+    raw_figure           = N/A - N/A = 164.0099
+    weight_adj           = -4.0000
+    wfa_adj              = -2.5000
+    figure_final         = 161.5099
+    figure_calibrated    = 42.3000
+
+     7. Profit Street (IRE)
+    beaten_lengths       = 8.2500L
+    lbs_behind           = 8.2500 * 3.6974 = N/A
+    raw_figure           = N/A - N/A = 170.6401
+    weight_adj           = 3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 170.6401
+    figure_calibrated    = 48.8000
+
+
+================================================================================
+RACE: LINGFIELD PARK Race 6  (id=2026-05-18_LINGFIELD PARK_6)
+  Distance: 5.0f  Going: Good  Surface: Turf  Class: 5.0
+  standard_time=62.2707s  going_allowance=-0.040634 s/f  lpl=4.4163 lbs/L
+------------------------------------------------------------
+  WINNER: Adalida
+    finishingTime        = 57.7800s
+    corrected_time       = 57.7800 - (-0.0406 * 4.9864) = 57.9826
+    deviation_seconds    = 57.9826 - 62.2707 = -4.2881
+    deviation_lengths    = -4.2881 / 0.2 = -21.4405
+    deviation_lbs        = -21.4405 * 4.4163 = -94.6888
+    raw_figure           = 100 - -94.6888 = 188.8602
+    weight_adj           = 1.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 198.8602
+    figure_calibrated    = 75.7000
+
+   DNF. Enter Sandman (IRE)
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 4.4163 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 10.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+   DNF. Tie Fighter (IRE)
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 4.4163 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 10.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Red Snapper
+    beaten_lengths       = 2.0000L
+    lbs_behind           = 2.0000 * 4.4163 = N/A
+    raw_figure           = N/A - N/A = 183.0275
+    weight_adj           = 4.0000
+    wfa_adj              = 10.0000
+    figure_final         = 193.0275
+    figure_calibrated    = 71.6000
+
+     3. Life After Love
+    beaten_lengths       = 2.1500L
+    lbs_behind           = 2.1500 * 4.4163 = N/A
+    raw_figure           = N/A - N/A = 185.3651
+    weight_adj           = 7.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 195.3651
+    figure_calibrated    = 71.5000
+
+     4. Solar Invincible (IRE)
+    beaten_lengths       = 2.6500L
+    lbs_behind           = 2.6500 * 4.4163 = N/A
+    raw_figure           = N/A - N/A = 181.1569
+    weight_adj           = 5.0000
+    wfa_adj              = 10.0000
+    figure_final         = 191.1569
+    figure_calibrated    = 68.0000
+
+     5. Bessie Wallis (IRE)
+    beaten_lengths       = 3.4000L
+    lbs_behind           = 3.4000 * 4.4163 = N/A
+    raw_figure           = N/A - N/A = 179.8447
+    weight_adj           = 7.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 189.8447
+    figure_calibrated    = 65.1000
+
+     6. Yes Waliim (IRE)
+    beaten_lengths       = 3.9000L
+    lbs_behind           = 3.9000 * 4.4163 = N/A
+    raw_figure           = N/A - N/A = 173.6365
+    weight_adj           = 3.0000
+    wfa_adj              = 10.0000
+    figure_final         = 183.6365
+    figure_calibrated    = 60.3000
+
+     7. Viking Glory (IRE)
+    beaten_lengths       = 5.9000L
+    lbs_behind           = 5.9000 * 4.4163 = N/A
+    raw_figure           = N/A - N/A = 166.8038
+    weight_adj           = 5.0000
+    wfa_adj              = 10.0000
+    figure_final         = 176.8038
+    figure_calibrated    = 54.1000
+
+     8. Beach Partee
+    beaten_lengths       = 6.9000L
+    lbs_behind           = 6.9000 * 4.4163 = N/A
+    raw_figure           = N/A - N/A = 159.3875
+    weight_adj           = 2.0000
+    wfa_adj              = 10.0000
+    figure_final         = 169.3875
+    figure_calibrated    = 47.2000
+
+
+================================================================================
+RACE: REDCAR Race 1  (id=2026-05-18_REDCAR_1)
+  Distance: 6.0f  Going: Good  Surface: Turf  Class: 5.0
+  standard_time=75.7861s  going_allowance=-0.011174 s/f  lpl=3.6893 lbs/L
+------------------------------------------------------------
+  WINNER: Kodiak Breeze (IRE)
+    finishingTime        = 70.3800s
+    corrected_time       = 70.3800 - (-0.0112 * 5.9864) = 70.4469
+    deviation_seconds    = 70.4469 - 75.7861 = -5.3392
+    deviation_lengths    = -5.3392 / 0.2 = -26.6959
+    deviation_lbs        = -26.6959 * 3.6893 = -98.4903
+    raw_figure           = 100 - -98.4903 = 198.4647
+    weight_adj           = 7.0000
+    wfa_adj              = 21.9591
+    figure_final         = 220.4238
+    figure_calibrated    = 84.7000
+
+   DNF. Formby George
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 3.6893 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 21.9591
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+   DNF. Kach Above
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 3.6893 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 21.9591
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Arenite
+    beaten_lengths       = 3.2500L
+    lbs_behind           = 3.2500 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 181.4743
+    weight_adj           = 2.0000
+    wfa_adj              = 21.9591
+    sex_allowance        = 3
+    figure_final         = 203.4334
+    figure_calibrated    = 72.0000
+
+     3. Crystal Kraken
+    beaten_lengths       = 3.7500L
+    lbs_behind           = 3.7500 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 179.6297
+    weight_adj           = 2.0000
+    wfa_adj              = 21.9591
+    sex_allowance        = 3
+    figure_final         = 201.5887
+    figure_calibrated    = 70.0000
+
+     4. Baila Morena
+    beaten_lengths       = 4.2500L
+    lbs_behind           = 4.2500 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 177.7850
+    weight_adj           = 2.0000
+    wfa_adj              = 21.9591
+    sex_allowance        = 3
+    figure_final         = 199.7441
+    figure_calibrated    = 68.0000
+
+     5. Eighteenth Smiles (IRE)
+    beaten_lengths       = 5.5000L
+    lbs_behind           = 5.5000 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 178.1733
+    weight_adj           = 7.0000
+    wfa_adj              = 21.9591
+    figure_final         = 200.1324
+    figure_calibrated    = 65.6000
+
+     6. Bluestone Lady (IRE)
+    beaten_lengths       = 8.7500L
+    lbs_behind           = 8.7500 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 161.1829
+    weight_adj           = 2.0000
+    wfa_adj              = 21.9591
+    sex_allowance        = 3
+    figure_final         = 183.1420
+    figure_calibrated    = 56.8000
+
+     7. Cest Lui (IRE)
+    beaten_lengths       = 10.5000L
+    lbs_behind           = 10.5000 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 159.7266
+    weight_adj           = 7.0000
+    wfa_adj              = 21.9591
+    figure_final         = 181.6857
+    figure_calibrated    = 50.1000
+
+     8. Carry On Chaos (IRE)
+    beaten_lengths       = 10.6500L
+    lbs_behind           = 10.6500 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 159.1732
+    weight_adj           = 7.0000
+    wfa_adj              = 21.9591
+    figure_final         = 181.1323
+    figure_calibrated    = 49.0000
+
+     9. Tiger In The Tree
+    beaten_lengths       = 11.6500L
+    lbs_behind           = 11.6500 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 150.4839
+    weight_adj           = 2.0000
+    wfa_adj              = 21.9591
+    sex_allowance        = 3
+    figure_final         = 172.4429
+    figure_calibrated    = 43.5000
+
+    10. Wells Fargo Stage
+    beaten_lengths       = 12.6500L
+    lbs_behind           = 12.6500 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 146.7945
+    weight_adj           = 2.0000
+    wfa_adj              = 21.9591
+    sex_allowance        = 3
+    figure_final         = 168.7536
+    figure_calibrated    = 40.4000
+
+    11. Needin U
+    beaten_lengths       = 12.7500L
+    lbs_behind           = 12.7500 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 146.4256
+    weight_adj           = 2.0000
+    wfa_adj              = 21.9591
+    sex_allowance        = 3
+    figure_final         = 168.3847
+    figure_calibrated    = 39.9000
+
+    12. Givendale
+    beaten_lengths       = 12.7800L
+    lbs_behind           = 12.7800 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 146.3149
+    weight_adj           = 2.0000
+    wfa_adj              = 21.9591
+    sex_allowance        = 3
+    figure_final         = 168.2740
+    figure_calibrated    = 39.3000
+
+    13. Daves Matey (IRE)
+    beaten_lengths       = 13.2800L
+    lbs_behind           = 13.2800 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 149.4702
+    weight_adj           = 7.0000
+    wfa_adj              = 21.9591
+    figure_final         = 171.4293
+    figure_calibrated    = 41.9000
+
+    14. Sloequelle (IRE)
+    beaten_lengths       = 13.7800L
+    lbs_behind           = 13.7800 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 142.6256
+    weight_adj           = 2.0000
+    wfa_adj              = 21.9591
+    sex_allowance        = 3
+    figure_final         = 164.5847
+    figure_calibrated    = 36.7000
+
+    15. Peggys Lad (IRE)
+    beaten_lengths       = 29.7800L
+    lbs_behind           = 29.7800 * 3.6893 = N/A
+    raw_figure           = N/A - N/A = 106.4721
+    weight_adj           = 7.0000
+    wfa_adj              = 21.9591
+    figure_final         = 128.4312
+    figure_calibrated    = 24.4000
+
+
+================================================================================
+RACE: REDCAR Race 2  (id=2026-05-18_REDCAR_2)
+  Distance: 7.0f  Going: Good  Surface: Turf  Class: 3.0
+  standard_time=89.8117s  going_allowance=-0.011174 s/f  lpl=3.1835 lbs/L
+------------------------------------------------------------
+  WINNER: Revels
+    finishingTime        = 83.2500s
+    corrected_time       = 83.2500 - (-0.0112 * 7.0000) = 83.3282
+    deviation_seconds    = 83.3282 - 89.8117 = -6.4835
+    deviation_lengths    = -6.4835 / 0.2 = -32.4176
+    deviation_lbs        = -32.4176 * 3.1835 = -103.2028
+    raw_figure           = 100 - -103.2028 = 202.6627
+    weight_adj           = 7.0000
+    wfa_adj              = 12.0000
+    figure_final         = 214.6627
+    figure_calibrated    = 73.6000
+
+     2. Dont Stop Movin
+    beaten_lengths       = 3.0000L
+    lbs_behind           = 3.0000 * 3.1835 = N/A
+    raw_figure           = N/A - N/A = 193.1121
+    weight_adj           = 7.0000
+    wfa_adj              = 12.0000
+    figure_final         = 205.1121
+    figure_calibrated    = 65.0000
+
+     3. Sword Salute (USA)
+    beaten_lengths       = 4.2500L
+    lbs_behind           = 4.2500 * 3.1835 = N/A
+    raw_figure           = N/A - N/A = 189.1326
+    weight_adj           = 7.0000
+    wfa_adj              = 12.0000
+    figure_final         = 201.1326
+    figure_calibrated    = 60.9000
+
+     4. Mottaret
+    beaten_lengths       = 5.7500L
+    lbs_behind           = 5.7500 * 3.1835 = N/A
+    raw_figure           = N/A - N/A = 184.3573
+    weight_adj           = 7.0000
+    wfa_adj              = 12.0000
+    figure_final         = 196.3573
+    figure_calibrated    = 54.8000
+
+     5. Souwester
+    beaten_lengths       = 5.9000L
+    lbs_behind           = 5.9000 * 3.1835 = N/A
+    raw_figure           = N/A - N/A = 183.8798
+    weight_adj           = 7.0000
+    wfa_adj              = 12.0000
+    figure_final         = 195.8798
+    figure_calibrated    = 53.7000
+
+     6. Farndale
+    beaten_lengths       = 8.6500L
+    lbs_behind           = 8.6500 * 3.1835 = N/A
+    raw_figure           = N/A - N/A = 170.1250
+    weight_adj           = 2.0000
+    wfa_adj              = 12.0000
+    sex_allowance        = 3
+    figure_final         = 182.1250
+    figure_calibrated    = 43.7000
+
+     7. Hickos Lad
+    beaten_lengths       = 10.1500L
+    lbs_behind           = 10.1500 * 3.1835 = N/A
+    raw_figure           = N/A - N/A = 170.3497
+    weight_adj           = 7.0000
+    wfa_adj              = 12.0000
+    figure_final         = 182.3497
+    figure_calibrated    = 41.0000
+
+
+================================================================================
+RACE: REDCAR Race 3  (id=2026-05-18_REDCAR_3)
+  Distance: 8.0f  Going: Good  Surface: Turf  Class: 5.0
+  standard_time=103.4737s  going_allowance=-0.011174 s/f  lpl=2.7966 lbs/L
+------------------------------------------------------------
+  WINNER: Kiss Me My Love (IRE)
+    finishingTime        = 95.7000s
+    corrected_time       = 95.7000 - (-0.0112 * 7.9955) = 95.7893
+    deviation_seconds    = 95.7893 - 103.4737 = -7.6844
+    deviation_lengths    = -7.6844 / 0.2 = -38.4220
+    deviation_lbs        = -38.4220 * 2.7966 = -107.4510
+    raw_figure           = 100 - -107.4510 = 201.3784
+    weight_adj           = 2.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 201.3784
+    figure_calibrated    = 73.8000
+
+   DNF. Chuzzlewit
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 2.7966 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Straight A
+    beaten_lengths       = 0.0300L
+    lbs_behind           = 0.0300 * 2.7966 = N/A
+    raw_figure           = N/A - N/A = 208.2945
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    figure_final         = 208.2945
+    figure_calibrated    = 76.8000
+
+     3. Hachiman
+    beaten_lengths       = 3.7800L
+    lbs_behind           = 3.7800 * 2.7966 = N/A
+    raw_figure           = N/A - N/A = 188.8073
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = 188.8073
+    figure_calibrated    = 63.0000
+
+     4. The Sweet Escape
+    beaten_lengths       = 4.2800L
+    lbs_behind           = 4.2800 * 2.7966 = N/A
+    raw_figure           = N/A - N/A = 190.4090
+    weight_adj           = 3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 190.4090
+    figure_calibrated    = 64.4000
+
+     5. Weve Got This (IRE)
+    beaten_lengths       = 6.0300L
+    lbs_behind           = 6.0300 * 2.7966 = N/A
+    raw_figure           = N/A - N/A = 187.5149
+    weight_adj           = 5.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 187.5149
+    figure_calibrated    = 60.2000
+
+     6. Up The Jazz (IRE)
+    beaten_lengths       = 6.1300L
+    lbs_behind           = 6.1300 * 2.7966 = N/A
+    raw_figure           = N/A - N/A = 187.2353
+    weight_adj           = 5.0000
+    wfa_adj              = 0.0000
+    figure_final         = 187.2353
+    figure_calibrated    = 60.0000
+
+     7. Thats My Boy Luke
+    beaten_lengths       = 7.1300L
+    lbs_behind           = 7.1300 * 2.7966 = N/A
+    raw_figure           = N/A - N/A = 182.4387
+    weight_adj           = 3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 182.4387
+    figure_calibrated    = 56.8000
+
+     8. Mariner (IRE)
+    beaten_lengths       = 8.1300L
+    lbs_behind           = 8.1300 * 2.7966 = N/A
+    raw_figure           = N/A - N/A = 182.6421
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    figure_final         = 182.6421
+    figure_calibrated    = 57.6000
+
+     9. Thequietman
+    beaten_lengths       = 12.6300L
+    lbs_behind           = 12.6300 * 2.7966 = N/A
+    raw_figure           = N/A - N/A = 173.0574
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    figure_final         = 173.0574
+    figure_calibrated    = 46.4000
+
+    10. Electric Lightning
+    beaten_lengths       = 16.1300L
+    lbs_behind           = 16.1300 * 2.7966 = N/A
+    raw_figure           = N/A - N/A = 151.2693
+    weight_adj           = -3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 151.2693
+    figure_calibrated    = 26.8000
+
+    11. Whiskey Pete (IRE)
+    beaten_lengths       = 20.8800L
+    lbs_behind           = 20.8800 * 2.7966 = N/A
+    raw_figure           = N/A - N/A = 145.0909
+    weight_adj           = 3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 145.0909
+    figure_calibrated    = 37.0000
+
+    12. Travis
+    beaten_lengths       = 29.8800L
+    lbs_behind           = 29.8800 * 2.7966 = N/A
+    raw_figure           = N/A - N/A = 132.5063
+    weight_adj           = 3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 132.5063
+    figure_calibrated    = 28.5000
+
+
+================================================================================
+RACE: REDCAR Race 4  (id=2026-05-18_REDCAR_4)
+  Distance: 10.0f  Going: Good  Surface: Turf  Class: 5.0
+  standard_time=135.2866s  going_allowance=-0.011174 s/f  lpl=2.2076 lbs/L
+------------------------------------------------------------
+  WINNER: Ammoony (FR)
+    finishingTime        = 124.3600s
+    corrected_time       = 124.3600 - (-0.0112 * 10.0045) = 124.4718
+    deviation_seconds    = 124.4718 - 135.2866 = -10.8149
+    deviation_lengths    = -10.8149 / 0.2 = -54.0743
+    deviation_lbs        = -54.0743 * 2.2076 = -119.3734
+    raw_figure           = 100 - -119.3734 = 215.7320
+    weight_adj           = 6.0000
+    wfa_adj              = 8.9955
+    sex_allowance        = 3
+    figure_final         = 224.7274
+    figure_calibrated    = 84.7000
+
+   DNF. Clocker
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 2.2076 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 8.9955
+    sex_allowance        = 3
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Fanciulla Del West
+    beaten_lengths       = 1.0000L
+    lbs_behind           = 1.0000 * 2.2076 = N/A
+    raw_figure           = N/A - N/A = 212.5244
+    weight_adj           = 5.0000
+    wfa_adj              = 8.9955
+    sex_allowance        = 3
+    figure_final         = 221.5199
+    figure_calibrated    = 81.6000
+
+     3. Princess Niyla
+    beaten_lengths       = 4.2500L
+    lbs_behind           = 4.2500 * 2.2076 = N/A
+    raw_figure           = N/A - N/A = 216.3498
+    weight_adj           = 16.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 216.3498
+    figure_calibrated    = 74.6000
+
+     4. Myrrh
+    beaten_lengths       = 5.7500L
+    lbs_behind           = 5.7500 * 2.2076 = N/A
+    raw_figure           = N/A - N/A = 204.0384
+    weight_adj           = 7.0000
+    wfa_adj              = 8.9955
+    sex_allowance        = 3
+    figure_final         = 213.0338
+    figure_calibrated    = 71.7000
+
+     5. Fire Eyes (FR)
+    beaten_lengths       = 7.2500L
+    lbs_behind           = 7.2500 * 2.2076 = N/A
+    raw_figure           = N/A - N/A = 207.7270
+    weight_adj           = 14.0000
+    wfa_adj              = -1.5000
+    sex_allowance        = 3
+    figure_final         = 206.2270
+    figure_calibrated    = 65.0000
+
+     6. Eze Sur Mer (IRE)
+    beaten_lengths       = 13.7500L
+    lbs_behind           = 13.7500 * 2.2076 = N/A
+    raw_figure           = N/A - N/A = 183.3777
+    weight_adj           = 4.0000
+    wfa_adj              = 8.9955
+    sex_allowance        = 3
+    figure_final         = 192.3732
+    figure_calibrated    = 54.8000
+
+     7. Letmeseethecolts
+    beaten_lengths       = 13.9000L
+    lbs_behind           = 13.9000 * 2.2076 = N/A
+    raw_figure           = N/A - N/A = 188.0466
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 188.0466
+    figure_calibrated    = 49.6000
+
+     8. Bergamo Gold (IRE)
+    beaten_lengths       = 20.4000L
+    lbs_behind           = 20.4000 * 2.2076 = N/A
+    raw_figure           = N/A - N/A = 166.0402
+    weight_adj           = 1.0000
+    wfa_adj              = 8.9955
+    sex_allowance        = 3
+    figure_final         = 175.0356
+    figure_calibrated    = 52.7000
+
+
+================================================================================
+RACE: REDCAR Race 5  (id=2026-05-18_REDCAR_5)
+  Distance: 6.0f  Going: Good  Surface: Turf  Class: 6.0
+  standard_time=75.7861s  going_allowance=-0.011174 s/f  lpl=3.7280 lbs/L
+------------------------------------------------------------
+  WINNER: Glory Hyde (IRE)
+    finishingTime        = 69.6500s
+    corrected_time       = 69.6500 - (-0.0112 * 5.9864) = 69.7169
+    deviation_seconds    = 69.7169 - 75.7861 = -6.0692
+    deviation_lengths    = -6.0692 / 0.2 = -30.3459
+    deviation_lbs        = -30.3459 * 3.7280 = -113.1298
+    raw_figure           = 100 - -113.1298 = 212.9702
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 212.9702
+    figure_calibrated    = 80.0000
+
+   DNF. Lindoro
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 3.7280 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Taygar (IRE)
+    beaten_lengths       = 0.5000L
+    lbs_behind           = 0.5000 * 3.7280 = N/A
+    raw_figure           = N/A - N/A = 208.1062
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 208.1062
+    figure_calibrated    = 76.4000
+
+     3. Lumenbourg
+    beaten_lengths       = 0.5300L
+    lbs_behind           = 0.5300 * 3.7280 = N/A
+    raw_figure           = N/A - N/A = 207.9944
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    figure_final         = 207.9944
+    figure_calibrated    = 75.6000
+
+     4. Get Up Everybody (IRE)
+    beaten_lengths       = 0.6800L
+    lbs_behind           = 0.6800 * 3.7280 = N/A
+    raw_figure           = N/A - N/A = 206.4352
+    weight_adj           = 5.0000
+    wfa_adj              = 0.0000
+    figure_final         = 206.4352
+    figure_calibrated    = 73.4000
+
+     5. Ishe Worth Agamble
+    beaten_lengths       = 2.1800L
+    lbs_behind           = 2.1800 * 3.7280 = N/A
+    raw_figure           = N/A - N/A = 201.8431
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    figure_final         = 201.8431
+    figure_calibrated    = 70.2000
+
+     6. One Of Our Own
+    beaten_lengths       = 2.9300L
+    lbs_behind           = 2.9300 * 3.7280 = N/A
+    raw_figure           = N/A - N/A = 197.0471
+    weight_adj           = 4.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 197.0471
+    figure_calibrated    = 65.8000
+
+     7. Lord Abama (IRE)
+    beaten_lengths       = 4.9300L
+    lbs_behind           = 4.9300 * 3.7280 = N/A
+    raw_figure           = N/A - N/A = 191.5911
+    weight_adj           = 6.0000
+    wfa_adj              = -1.0000
+    figure_final         = 190.5911
+    figure_calibrated    = 63.0000
+
+     8. Startling
+    beaten_lengths       = 4.9800L
+    lbs_behind           = 4.9800 * 3.7280 = N/A
+    raw_figure           = N/A - N/A = 191.4047
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 191.4047
+    figure_calibrated    = 62.8000
+
+     9. Sergeant Mayer (IRE)
+    beaten_lengths       = 5.1300L
+    lbs_behind           = 5.1300 * 3.7280 = N/A
+    raw_figure           = N/A - N/A = 188.8455
+    weight_adj           = 4.0000
+    wfa_adj              = 0.0000
+    figure_final         = 188.8455
+    figure_calibrated    = 58.2000
+
+    10. Jenni (IRE)
+    beaten_lengths       = 7.1300L
+    lbs_behind           = 7.1300 * 3.7280 = N/A
+    raw_figure           = N/A - N/A = 184.3895
+    weight_adj           = 7.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 184.3895
+    figure_calibrated    = 56.4000
+
+    11. Profiteer (IRE)
+    beaten_lengths       = 15.1300L
+    lbs_behind           = 15.1300 * 3.7280 = N/A
+    raw_figure           = N/A - N/A = 148.5654
+    weight_adj           = 1.0000
+    wfa_adj              = 0.0000
+    figure_final         = 148.5654
+    figure_calibrated    = 25.3000
+
+
+================================================================================
+RACE: REDCAR Race 6  (id=2026-05-18_REDCAR_6)
+  Distance: 7.0f  Going: Good  Surface: Turf  Class: 6.0
+  standard_time=89.8117s  going_allowance=-0.011174 s/f  lpl=3.1608 lbs/L
+------------------------------------------------------------
+  WINNER: Maximum Velocity (IRE)
+    finishingTime        = 83.8500s
+    corrected_time       = 83.8500 - (-0.0112 * 7.0000) = 83.9282
+    deviation_seconds    = 83.9282 - 89.8117 = -5.8835
+    deviation_lengths    = -5.8835 / 0.2 = -29.4176
+    deviation_lbs        = -29.4176 * 3.1608 = -92.9820
+    raw_figure           = 100 - -92.9820 = 192.8098
+    weight_adj           = 6.0000
+    wfa_adj              = 10.0000
+    figure_final         = 202.8098
+    figure_calibrated    = 75.7000
+
+     2. Hey Havana (IRE)
+    beaten_lengths       = 0.5000L
+    lbs_behind           = 0.5000 * 3.1608 = N/A
+    raw_figure           = N/A - N/A = 193.2295
+    weight_adj           = 8.0000
+    wfa_adj              = 10.0000
+    figure_final         = 203.2295
+    figure_calibrated    = 74.1000
+
+     3. Harswell River (IRE)
+    beaten_lengths       = 1.2500L
+    lbs_behind           = 1.2500 * 3.1608 = N/A
+    raw_figure           = N/A - N/A = 182.8589
+    weight_adj           = 0.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 192.8589
+    figure_calibrated    = 65.6000
+
+     4. Only Dream Big
+    beaten_lengths       = 1.4000L
+    lbs_behind           = 1.4000 * 3.1608 = N/A
+    raw_figure           = N/A - N/A = 185.3848
+    weight_adj           = 3.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 195.3848
+    figure_calibrated    = 66.8000
+
+     5. Perfect Ruler
+    beaten_lengths       = 2.1500L
+    lbs_behind           = 2.1500 * 3.1608 = N/A
+    raw_figure           = N/A - N/A = 189.0142
+    weight_adj           = 9.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 199.0142
+    figure_calibrated    = 68.9000
+
+     6. Forever Twenty
+    beaten_lengths       = 4.1500L
+    lbs_behind           = 4.1500 * 3.1608 = N/A
+    raw_figure           = N/A - N/A = 178.6927
+    weight_adj           = 5.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 188.6927
+    figure_calibrated    = 61.3000
+
+     7. Full Gas (IRE)
+    beaten_lengths       = 6.1500L
+    lbs_behind           = 6.1500 * 3.1608 = N/A
+    raw_figure           = N/A - N/A = 174.3712
+    weight_adj           = 7.0000
+    wfa_adj              = 10.0000
+    figure_final         = 184.3712
+    figure_calibrated    = 56.7000
+
+     8. Twilight Serenade
+    beaten_lengths       = 8.9000L
+    lbs_behind           = 8.9000 * 3.1608 = N/A
+    raw_figure           = N/A - N/A = 156.6791
+    weight_adj           = -2.0000
+    wfa_adj              = 10.0000
+    figure_final         = 166.6791
+    figure_calibrated    = 42.2000
+
+     9. Queenies Pal
+    beaten_lengths       = 10.9000L
+    lbs_behind           = 10.9000 * 3.1608 = N/A
+    raw_figure           = N/A - N/A = 152.3575
+    weight_adj           = 0.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 162.3575
+    figure_calibrated    = 36.0000
+
+    10. Go Teejay
+    beaten_lengths       = 14.9000L
+    lbs_behind           = 14.9000 * 3.1608 = N/A
+    raw_figure           = N/A - N/A = 134.7145
+    weight_adj           = -5.0000
+    wfa_adj              = 10.0000
+    figure_final         = 144.7145
+    figure_calibrated    = 24.2000
+
+
+================================================================================
+RACE: REDCAR Race 7  (id=2026-05-18_REDCAR_7)
+  Distance: 7.0f  Going: Good  Surface: Turf  Class: 6.0
+  standard_time=89.8117s  going_allowance=-0.011174 s/f  lpl=3.1357 lbs/L
+------------------------------------------------------------
+  WINNER: Black Rock Beauty (IRE)
+    finishingTime        = 84.5200s
+    corrected_time       = 84.5200 - (-0.0112 * 7.0000) = 84.5982
+    deviation_seconds    = 84.5982 - 89.8117 = -5.2135
+    deviation_lengths    = -5.2135 / 0.2 = -26.0676
+    deviation_lbs        = -26.0676 * 3.1357 = -81.7403
+    raw_figure           = 100 - -81.7403 = 184.9242
+    weight_adj           = 8.0000
+    wfa_adj              = 10.0000
+    figure_final         = 194.9242
+    figure_calibrated    = 70.7000
+
+     2. Long Shot
+    beaten_lengths       = 1.2500L
+    lbs_behind           = 1.2500 * 3.1357 = N/A
+    raw_figure           = N/A - N/A = 174.0045
+    weight_adj           = 1.0000
+    wfa_adj              = 10.0000
+    figure_final         = 184.0045
+    figure_calibrated    = 59.4000
+
+     3. Twilight Dawn
+    beaten_lengths       = 2.2500L
+    lbs_behind           = 2.2500 * 3.1357 = N/A
+    raw_figure           = N/A - N/A = 169.8688
+    weight_adj           = 0.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 179.8688
+    figure_calibrated    = 57.6000
+
+     4. Walk On Walk On (IRE)
+    beaten_lengths       = 2.7500L
+    lbs_behind           = 2.7500 * 3.1357 = N/A
+    raw_figure           = N/A - N/A = 173.3010
+    weight_adj           = 5.0000
+    wfa_adj              = 10.0000
+    figure_final         = 183.3010
+    figure_calibrated    = 61.0000
+
+     5. Enduring Story
+    beaten_lengths       = 4.2500L
+    lbs_behind           = 4.2500 * 3.1357 = N/A
+    raw_figure           = N/A - N/A = 158.5974
+    weight_adj           = -5.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 168.5974
+    figure_calibrated    = 47.0000
+
+     6. Truly Special
+    beaten_lengths       = 4.4000L
+    lbs_behind           = 4.4000 * 3.1357 = N/A
+    raw_figure           = N/A - N/A = 166.1271
+    weight_adj           = 3.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 176.1271
+    figure_calibrated    = 52.2000
+
+     7. Secret Testimony
+    beaten_lengths       = 4.5500L
+    lbs_behind           = 4.5500 * 3.1357 = N/A
+    raw_figure           = N/A - N/A = 171.6567
+    weight_adj           = 9.0000
+    wfa_adj              = 10.0000
+    figure_final         = 181.6567
+    figure_calibrated    = 56.8000
+
+     8. Maybe Soon (IRE)
+    beaten_lengths       = 5.5500L
+    lbs_behind           = 5.5500 * 3.1357 = N/A
+    raw_figure           = N/A - N/A = 165.5210
+    weight_adj           = 6.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 175.5210
+    figure_calibrated    = 49.6000
+
+     9. Realistic Dream (IRE)
+    beaten_lengths       = 15.5500L
+    lbs_behind           = 15.5500 * 3.1357 = N/A
+    raw_figure           = N/A - N/A = 135.1639
+    weight_adj           = 7.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 145.1639
+    figure_calibrated    = 21.7000
+
+
+================================================================================
+RACE: WINDSOR Race 1  (id=2026-05-18_WINDSOR_1)
+  Distance: 6.1f  Going: Good  Surface: Turf  Class: 2.0
+  standard_time=79.0971s  going_allowance=-0.131605 s/f  lpl=3.6008 lbs/L
+------------------------------------------------------------
+  WINNER: Tina Fromtransport
+    finishingTime        = 72.3800s
+    corrected_time       = 72.3800 - (-0.1316 * 6.0545) = 73.1768
+    deviation_seconds    = 73.1768 - 79.0971 = -5.9203
+    deviation_lengths    = -5.9203 / 0.2 = -29.6016
+    deviation_lbs        = -29.6016 * 3.6008 = -106.5883
+    raw_figure           = 100 - -106.5883 = 199.5365
+    weight_adj           = 2.0000
+    wfa_adj              = 21.4545
+    sex_allowance        = 3
+    figure_final         = 220.9911
+    figure_calibrated    = 74.9000
+
+     2. Fire Thunder (IRE)
+    beaten_lengths       = 1.2500L
+    lbs_behind           = 1.2500 * 3.6008 = N/A
+    raw_figure           = N/A - N/A = 195.0356
+    weight_adj           = 2.0000
+    wfa_adj              = 21.4545
+    sex_allowance        = 3
+    figure_final         = 216.4901
+    figure_calibrated    = 70.5000
+
+     3. May Bee In Profit
+    beaten_lengths       = 1.4000L
+    lbs_behind           = 1.4000 * 3.6008 = N/A
+    raw_figure           = N/A - N/A = 194.4955
+    weight_adj           = 2.0000
+    wfa_adj              = 21.4545
+    sex_allowance        = 3
+    figure_final         = 215.9500
+    figure_calibrated    = 69.7000
+
+     4. Top Cote (IRE)
+    beaten_lengths       = 1.5500L
+    lbs_behind           = 1.5500 * 3.6008 = N/A
+    raw_figure           = N/A - N/A = 198.9553
+    weight_adj           = 7.0000
+    wfa_adj              = 21.4545
+    figure_final         = 220.4099
+    figure_calibrated    = 72.5000
+
+     5. Terry O
+    beaten_lengths       = 2.0500L
+    lbs_behind           = 2.0500 * 3.6008 = N/A
+    raw_figure           = N/A - N/A = 197.1550
+    weight_adj           = 7.0000
+    wfa_adj              = 21.4545
+    figure_final         = 218.6095
+    figure_calibrated    = 70.0000
+
+     6. Concert Pitch (IRE)
+    beaten_lengths       = 3.0500L
+    lbs_behind           = 3.0500 * 3.6008 = N/A
+    raw_figure           = N/A - N/A = 193.5542
+    weight_adj           = 7.0000
+    wfa_adj              = 21.4545
+    figure_final         = 215.0087
+    figure_calibrated    = 65.5000
+
+     7. Kach Above
+    beaten_lengths       = 4.0500L
+    lbs_behind           = 4.0500 * 3.6008 = N/A
+    raw_figure           = N/A - N/A = 189.9534
+    weight_adj           = 7.0000
+    wfa_adj              = 21.4545
+    figure_final         = 211.4080
+    figure_calibrated    = 63.5000
+
+     8. Graceful George (IRE)
+    beaten_lengths       = 4.5500L
+    lbs_behind           = 4.5500 * 3.6008 = N/A
+    raw_figure           = N/A - N/A = 188.1531
+    weight_adj           = 7.0000
+    wfa_adj              = 21.4545
+    figure_final         = 209.6076
+    figure_calibrated    = 61.3000
+
+     9. Celtic Charioteer
+    beaten_lengths       = 4.7000L
+    lbs_behind           = 4.7000 * 3.6008 = N/A
+    raw_figure           = N/A - N/A = 187.6129
+    weight_adj           = 7.0000
+    wfa_adj              = 21.4545
+    figure_final         = 209.0675
+    figure_calibrated    = 60.7000
+
+    10. Better Nature
+    beaten_lengths       = 4.7500L
+    lbs_behind           = 4.7500 * 3.6008 = N/A
+    raw_figure           = N/A - N/A = 187.4329
+    weight_adj           = 7.0000
+    wfa_adj              = 21.4545
+    figure_final         = 208.8875
+    figure_calibrated    = 59.8000
+
+    11. Serenity Bay
+    beaten_lengths       = 8.2500L
+    lbs_behind           = 8.2500 * 3.6008 = N/A
+    raw_figure           = N/A - N/A = 169.8303
+    weight_adj           = 2.0000
+    wfa_adj              = 21.4545
+    sex_allowance        = 3
+    figure_final         = 191.2848
+    figure_calibrated    = 46.2000
+
+    12. Velma Dinkley
+    beaten_lengths       = 8.4000L
+    lbs_behind           = 8.4000 * 3.6008 = N/A
+    raw_figure           = N/A - N/A = 169.2901
+    weight_adj           = 2.0000
+    wfa_adj              = 21.4545
+    sex_allowance        = 3
+    figure_final         = 190.7447
+    figure_calibrated    = 45.5000
+
+
+================================================================================
+RACE: WINDSOR Race 2  (id=2026-05-18_WINDSOR_2)
+  Distance: 5.1f  Going: Good  Surface: Turf  Class: 2.0
+  standard_time=66.2730s  going_allowance=-0.131605 s/f  lpl=4.4472 lbs/L
+------------------------------------------------------------
+  WINNER: Redorange
+    finishingTime        = 57.5800s
+    corrected_time       = 57.5800 - (-0.1316 * 5.0955) = 58.2506
+    deviation_seconds    = 58.2506 - 66.2730 = -8.0224
+    deviation_lengths    = -8.0224 / 0.2 = -40.1118
+    deviation_lbs        = -40.1118 * 4.4472 = -178.3852
+    raw_figure           = 100 - -178.3852 = 262.1175
+    weight_adj           = 7.0000
+    wfa_adj              = 0.0000
+    figure_final         = 262.1175
+    figure_calibrated    = 99.1000
+
+   DNF. Baldomero (IRE)
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 4.4472 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = -1.5000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+   DNF. Desert Cop
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 4.4472 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Regal Envoy (IRE)
+    beaten_lengths       = 1.7500L
+    lbs_behind           = 1.7500 * 4.4472 = N/A
+    raw_figure           = N/A - N/A = 242.3349
+    weight_adj           = -5.0000
+    wfa_adj              = -1.0000
+    figure_final         = 241.3349
+    figure_calibrated    = 72.9000
+
+     3. Rhythm N Hooves
+    beaten_lengths       = 3.2500L
+    lbs_behind           = 3.2500 * 4.4472 = N/A
+    raw_figure           = N/A - N/A = 233.6641
+    weight_adj           = -7.0000
+    wfa_adj              = 0.0000
+    figure_final         = 233.6641
+    figure_calibrated    = 62.6000
+
+     4. Marty Hopkirk (IRE)
+    beaten_lengths       = 3.4000L
+    lbs_behind           = 3.4000 * 4.4472 = N/A
+    raw_figure           = N/A - N/A = 231.9971
+    weight_adj           = -8.0000
+    wfa_adj              = 0.0000
+    figure_final         = 231.9971
+    figure_calibrated    = 58.3000
+
+     5. Gaeli (ITY)
+    beaten_lengths       = 3.4500L
+    lbs_behind           = 3.4500 * 4.4472 = N/A
+    raw_figure           = N/A - N/A = 248.7747
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    figure_final         = 248.7747
+    figure_calibrated    = 78.9000
+
+     6. Democracy Dilemma (IRE)
+    beaten_lengths       = 3.5000L
+    lbs_behind           = 3.5000 * 4.4472 = N/A
+    raw_figure           = N/A - N/A = 247.5523
+    weight_adj           = 8.0000
+    wfa_adj              = 0.0000
+    figure_final         = 247.5523
+    figure_calibrated    = 75.8000
+
+     7. Adrestia
+    beaten_lengths       = 3.6500L
+    lbs_behind           = 3.6500 * 4.4472 = N/A
+    raw_figure           = N/A - N/A = 244.8853
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 244.8853
+    figure_calibrated    = 74.6000
+
+     8. Rogue Enforcer
+    beaten_lengths       = 5.9000L
+    lbs_behind           = 5.9000 * 4.4472 = N/A
+    raw_figure           = N/A - N/A = 230.8791
+    weight_adj           = 2.0000
+    wfa_adj              = 0.0000
+    figure_final         = 230.8791
+    figure_calibrated    = 59.7000
+
+     9. All Ways Glamorous
+    beaten_lengths       = 9.6500L
+    lbs_behind           = 9.6500 * 4.4472 = N/A
+    raw_figure           = N/A - N/A = 205.2021
+    weight_adj           = -7.0000
+    wfa_adj              = 0.0000
+    figure_final         = 205.2021
+    figure_calibrated    = 44.7000
+
+
+================================================================================
+RACE: WINDSOR Race 3  (id=2026-05-18_WINDSOR_3)
+  Distance: 8.3f  Going: Good  Surface: Turf  Class: 2.0
+  standard_time=111.5965s  going_allowance=-0.131605 s/f  lpl=2.5958 lbs/L
+------------------------------------------------------------
+  WINNER: Cap Santa Lucia (FR)
+    finishingTime        = 103.1000s
+    corrected_time       = 103.1000 - (-0.1316 * 8.2591) = 104.1869
+    deviation_seconds    = 104.1869 - 111.5965 = -7.4095
+    deviation_lengths    = -7.4095 / 0.2 = -37.0477
+    deviation_lbs        = -37.0477 * 2.5958 = -96.1673
+    raw_figure           = 100 - -96.1673 = 190.8455
+    weight_adj           = 2.0000
+    wfa_adj              = 9.8705
+    sex_allowance        = 3
+    figure_final         = 200.7159
+    figure_calibrated    = 71.4000
+
+     2. Tahalel (IRE)
+    beaten_lengths       = 1.0000L
+    lbs_behind           = 1.0000 * 2.5958 = N/A
+    raw_figure           = N/A - N/A = 188.2497
+    weight_adj           = 2.0000
+    wfa_adj              = 9.8705
+    sex_allowance        = 3
+    figure_final         = 198.1202
+    figure_calibrated    = 69.1000
+
+     3. Withtearsinmyeyes (IRE)
+    beaten_lengths       = 2.5000L
+    lbs_behind           = 2.5000 * 2.5958 = N/A
+    raw_figure           = N/A - N/A = 184.3561
+    weight_adj           = 2.0000
+    wfa_adj              = 9.8705
+    sex_allowance        = 3
+    figure_final         = 194.2265
+    figure_calibrated    = 65.2000
+
+     4. Quisana (IRE)
+    beaten_lengths       = 2.5500L
+    lbs_behind           = 2.5500 * 2.5958 = N/A
+    raw_figure           = N/A - N/A = 184.2263
+    weight_adj           = 2.0000
+    wfa_adj              = 9.8705
+    sex_allowance        = 3
+    figure_final         = 194.0967
+    figure_calibrated    = 64.6000
+
+     5. Chimes Of Thunder (GER)
+    beaten_lengths       = 2.6000L
+    lbs_behind           = 2.6000 * 2.5958 = N/A
+    raw_figure           = N/A - N/A = 184.0965
+    weight_adj           = 2.0000
+    wfa_adj              = 9.8705
+    sex_allowance        = 3
+    figure_final         = 193.9669
+    figure_calibrated    = 64.3000
+
+     6. Moonlit Surf
+    beaten_lengths       = 4.3500L
+    lbs_behind           = 4.3500 * 2.5958 = N/A
+    raw_figure           = N/A - N/A = 179.5539
+    weight_adj           = 2.0000
+    wfa_adj              = 9.8705
+    sex_allowance        = 3
+    figure_final         = 189.4243
+    figure_calibrated    = 60.0000
+
+     7. Trelissick
+    beaten_lengths       = 5.1000L
+    lbs_behind           = 5.1000 * 2.5958 = N/A
+    raw_figure           = N/A - N/A = 177.6071
+    weight_adj           = 2.0000
+    wfa_adj              = 9.8705
+    sex_allowance        = 3
+    figure_final         = 187.4775
+    figure_calibrated    = 57.1000
+
+     8. Zeriya
+    beaten_lengths       = 6.6000L
+    lbs_behind           = 6.6000 * 2.5958 = N/A
+    raw_figure           = N/A - N/A = 173.7134
+    weight_adj           = 2.0000
+    wfa_adj              = 9.8705
+    sex_allowance        = 3
+    figure_final         = 183.5839
+    figure_calibrated    = 53.8000
+
+     9. Rajwaah
+    beaten_lengths       = 8.3500L
+    lbs_behind           = 8.3500 * 2.5958 = N/A
+    raw_figure           = N/A - N/A = 169.1708
+    weight_adj           = 2.0000
+    wfa_adj              = 9.8705
+    sex_allowance        = 3
+    figure_final         = 179.0413
+    figure_calibrated    = 50.4000
+
+    10. Madame Passant (FR)
+    beaten_lengths       = 20.3500L
+    lbs_behind           = 20.3500 * 2.5958 = N/A
+    raw_figure           = N/A - N/A = 138.0216
+    weight_adj           = 2.0000
+    wfa_adj              = 9.8705
+    sex_allowance        = 3
+    figure_final         = 147.8920
+    figure_calibrated    = 32.3000
+
+
+================================================================================
+RACE: WINDSOR Race 4  (id=2026-05-18_WINDSOR_4)
+  Distance: 5.1f  Going: Good  Surface: Turf  Class: 5.0
+  standard_time=66.2730s  going_allowance=-0.131605 s/f  lpl=4.3675 lbs/L
+------------------------------------------------------------
+  WINNER: Lequinto (IRE)
+    finishingTime        = 58.6800s
+    corrected_time       = 58.6800 - (-0.1316 * 5.0955) = 59.3506
+    deviation_seconds    = 59.3506 - 66.2730 = -6.9224
+    deviation_lengths    = -6.9224 / 0.2 = -34.6118
+    deviation_lbs        = -34.6118 * 4.3675 = -151.1677
+    raw_figure           = 100 - -151.1677 = 236.8483
+    weight_adj           = 3.0000
+    wfa_adj              = -2.0000
+    figure_final         = 234.8483
+    figure_calibrated    = 82.4000
+
+   DNF. Rogue Bullet (IRE)
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 4.3675 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+   DNF. Isle Of Lismore (IRE)
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 4.3675 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = -1.5000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Kiss And Run
+    beaten_lengths       = 0.1500L
+    lbs_behind           = 0.1500 * 4.3675 = N/A
+    raw_figure           = N/A - N/A = 239.1932
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 239.1932
+    figure_calibrated    = 82.6000
+
+     3. Al Barez
+    beaten_lengths       = 0.6500L
+    lbs_behind           = 0.6500 * 4.3675 = N/A
+    raw_figure           = N/A - N/A = 238.0094
+    weight_adj           = 7.0000
+    wfa_adj              = -1.0000
+    figure_final         = 237.0094
+    figure_calibrated    = 80.1000
+
+     4. The Flying Seagull (IRE)
+    beaten_lengths       = 1.9000L
+    lbs_behind           = 1.9000 * 4.3675 = N/A
+    raw_figure           = N/A - N/A = 233.5500
+    weight_adj           = 8.0000
+    wfa_adj              = 0.0000
+    figure_final         = 233.5500
+    figure_calibrated    = 76.4000
+
+     5. Sandscreendeliverd
+    beaten_lengths       = 2.9000L
+    lbs_behind           = 2.9000 * 4.3675 = N/A
+    raw_figure           = N/A - N/A = 229.1825
+    weight_adj           = 8.0000
+    wfa_adj              = 0.0000
+    figure_final         = 229.1825
+    figure_calibrated    = 71.8000
+
+     6. Jax Edge
+    beaten_lengths       = 3.0500L
+    lbs_behind           = 3.0500 * 4.3675 = N/A
+    raw_figure           = N/A - N/A = 228.5274
+    weight_adj           = 8.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 228.5274
+    figure_calibrated    = 69.7000
+
+     7. Maharajas Express
+    beaten_lengths       = 4.5500L
+    lbs_behind           = 4.5500 * 4.3675 = N/A
+    raw_figure           = N/A - N/A = 216.9761
+    weight_adj           = 3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 216.9761
+    figure_calibrated    = 62.4000
+
+     8. Shavkat
+    beaten_lengths       = 5.0500L
+    lbs_behind           = 5.0500 * 4.3675 = N/A
+    raw_figure           = N/A - N/A = 220.7923
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    figure_final         = 220.7923
+    figure_calibrated    = 60.2000
+
+     9. Sarafina Mshairi
+    beaten_lengths       = 7.3000L
+    lbs_behind           = 7.3000 * 4.3675 = N/A
+    raw_figure           = N/A - N/A = 202.9654
+    weight_adj           = 1.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 202.9654
+    figure_calibrated    = 56.2000
+
+    10. General Assembly (IRE)
+    beaten_lengths       = 8.3000L
+    lbs_behind           = 8.3000 * 4.3675 = N/A
+    raw_figure           = N/A - N/A = 202.5979
+    weight_adj           = 5.0000
+    wfa_adj              = 0.0000
+    figure_final         = 202.5979
+    figure_calibrated    = 56.7000
+
+
+================================================================================
+RACE: WINDSOR Race 5  (id=2026-05-18_WINDSOR_5)
+  Distance: 11.6f  Going: Good  Surface: Turf  Class: 5.0
+  standard_time=160.5021s  going_allowance=-0.131605 s/f  lpl=1.8737 lbs/L
+------------------------------------------------------------
+  WINNER: Morbeh
+    finishingTime        = 148.6100s
+    corrected_time       = 148.6100 - (-0.1316 * 11.5682) = 150.1324
+    deviation_seconds    = 150.1324 - 160.5021 = -10.3696
+    deviation_lengths    = -10.3696 / 0.2 = -51.8482
+    deviation_lbs        = -51.8482 * 1.8737 = -97.1494
+    raw_figure           = 100 - -97.1494 = 196.9513
+    weight_adj           = 7.0000
+    wfa_adj              = 7.4318
+    figure_final         = 204.3831
+    figure_calibrated    = 70.0000
+
+     2. Any Which Way
+    beaten_lengths       = 1.2500L
+    lbs_behind           = 1.2500 * 1.8737 = N/A
+    raw_figure           = N/A - N/A = 196.6092
+    weight_adj           = 9.0000
+    wfa_adj              = 7.4318
+    figure_final         = 204.0410
+    figure_calibrated    = 67.1000
+
+     3. King Of Berkshire (IRE)
+    beaten_lengths       = 2.0000L
+    lbs_behind           = 2.0000 * 1.8737 = N/A
+    raw_figure           = N/A - N/A = 195.2039
+    weight_adj           = 9.0000
+    wfa_adj              = 7.4318
+    figure_final         = 202.6357
+    figure_calibrated    = 66.4000
+
+     4. Oh Yes You Do (FR)
+    beaten_lengths       = 2.5000L
+    lbs_behind           = 2.5000 * 1.8737 = N/A
+    raw_figure           = N/A - N/A = 191.2670
+    weight_adj           = 6.0000
+    wfa_adj              = 7.4318
+    sex_allowance        = 3
+    figure_final         = 198.6988
+    figure_calibrated    = 63.5000
+
+     5. Wardlaw (USA)
+    beaten_lengths       = 7.5000L
+    lbs_behind           = 7.5000 * 1.8737 = N/A
+    raw_figure           = N/A - N/A = 181.8984
+    weight_adj           = 6.0000
+    wfa_adj              = 7.4318
+    figure_final         = 189.3302
+    figure_calibrated    = 53.8000
+
+     6. Sir Griflet (IRE)
+    beaten_lengths       = 8.2500L
+    lbs_behind           = 8.2500 * 1.8737 = N/A
+    raw_figure           = N/A - N/A = 177.4931
+    weight_adj           = 3.0000
+    wfa_adj              = 7.4318
+    figure_final         = 184.9249
+    figure_calibrated    = 50.3000
+
+     7. Grey Sands (IRE)
+    beaten_lengths       = 17.7500L
+    lbs_behind           = 17.7500 * 1.8737 = N/A
+    raw_figure           = N/A - N/A = 152.6927
+    weight_adj           = -4.0000
+    wfa_adj              = 7.4318
+    figure_final         = 160.1245
+    figure_calibrated    = 25.0000
+
+
+================================================================================
+RACE: WINDSOR Race 6  (id=2026-05-18_WINDSOR_6)
+  Distance: 11.6f  Going: Good  Surface: Turf  Class: 4.0
+  standard_time=160.5021s  going_allowance=-0.131605 s/f  lpl=1.8836 lbs/L
+------------------------------------------------------------
+  WINNER: Wisper (IRE)
+    finishingTime        = 147.8300s
+    corrected_time       = 147.8300 - (-0.1316 * 11.5682) = 149.3524
+    deviation_seconds    = 149.3524 - 160.5021 = -11.1496
+    deviation_lengths    = -11.1496 / 0.2 = -55.7482
+    deviation_lbs        = -55.7482 * 1.8836 = -105.0081
+    raw_figure           = 100 - -105.0081 = 206.7174
+    weight_adj           = 10.0000
+    wfa_adj              = -1.5000
+    sex_allowance        = 3
+    figure_final         = 205.2174
+    figure_calibrated    = 63.4000
+
+   DNF. Siouxfonic (IRE)
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 1.8836 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Sir William (IRE)
+    beaten_lengths       = 0.7500L
+    lbs_behind           = 0.7500 * 1.8836 = N/A
+    raw_figure           = N/A - N/A = 195.3047
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = 195.3047
+    figure_calibrated    = 57.4000
+
+     3. Son Of Man (IRE)
+    beaten_lengths       = 2.0000L
+    lbs_behind           = 2.0000 * 1.8836 = N/A
+    raw_figure           = N/A - N/A = 201.9502
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    figure_final         = 201.9502
+    figure_calibrated    = 59.8000
+
+     4. Charlies Choice
+    beaten_lengths       = 4.5000L
+    lbs_behind           = 4.5000 * 1.8836 = N/A
+    raw_figure           = N/A - N/A = 190.2412
+    weight_adj           = 2.0000
+    wfa_adj              = 0.0000
+    figure_final         = 190.2412
+    figure_calibrated    = 50.3000
+
+     5. Due To Henry
+    beaten_lengths       = 6.5000L
+    lbs_behind           = 6.5000 * 1.8836 = N/A
+    raw_figure           = N/A - N/A = 186.4739
+    weight_adj           = 2.0000
+    wfa_adj              = 0.0000
+    figure_final         = 186.4739
+    figure_calibrated    = 45.0000
+
+     6. Naval Command
+    beaten_lengths       = 8.2500L
+    lbs_behind           = 8.2500 * 1.8836 = N/A
+    raw_figure           = N/A - N/A = 190.1776
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    figure_final         = 190.1776
+    figure_calibrated    = 49.3000
+
+     7. Don Simon (IRE)
+    beaten_lengths       = 11.0000L
+    lbs_behind           = 11.0000 * 1.8836 = N/A
+    raw_figure           = N/A - N/A = 174.9977
+    weight_adj           = -1.0000
+    wfa_adj              = 0.0000
+    figure_final         = 174.9977
+    figure_calibrated    = 34.3000
+
+
+================================================================================
+RACE: WINDSOR Race 7  (id=2026-05-18_WINDSOR_7)
+  Distance: 6.1f  Going: Good  Surface: Turf  Class: 6.0
+  standard_time=79.0971s  going_allowance=-0.131605 s/f  lpl=3.6497 lbs/L
+------------------------------------------------------------
+  WINNER: Yachtsman
+    finishingTime        = 71.4100s
+    corrected_time       = 71.4100 - (-0.1316 * 6.0545) = 72.2068
+    deviation_seconds    = 72.2068 - 79.0971 = -6.8903
+    deviation_lengths    = -6.8903 / 0.2 = -34.4516
+    deviation_lbs        = -34.4516 * 3.6497 = -125.7370
+    raw_figure           = 100 - -125.7370 = 222.5171
+    weight_adj           = 9.0000
+    wfa_adj              = 10.0000
+    figure_final         = 232.5171
+    figure_calibrated    = 88.2000
+
+     2. Cape Toronada (FR)
+    beaten_lengths       = 1.2500L
+    lbs_behind           = 1.2500 * 3.6497 = N/A
+    raw_figure           = N/A - N/A = 204.9551
+    weight_adj           = -4.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 214.9551
+    figure_calibrated    = 74.4000
+
+     3. Rosieisme Darling
+    beaten_lengths       = 2.7500L
+    lbs_behind           = 2.7500 * 3.6497 = N/A
+    raw_figure           = N/A - N/A = 204.4805
+    weight_adj           = 1.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 214.4805
+    figure_calibrated    = 77.2000
+
+     4. Corniche Girl (IRE)
+    beaten_lengths       = 3.7500L
+    lbs_behind           = 3.7500 * 3.6497 = N/A
+    raw_figure           = N/A - N/A = 205.8309
+    weight_adj           = 6.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 215.8309
+    figure_calibrated    = 77.6000
+
+     5. Marra Donna (IRE)
+    beaten_lengths       = 4.7500L
+    lbs_behind           = 4.7500 * 3.6497 = N/A
+    raw_figure           = N/A - N/A = 203.1812
+    weight_adj           = 7.0000
+    wfa_adj              = 10.0000
+    figure_final         = 213.1812
+    figure_calibrated    = 75.2000
+
+     6. My Dad Tom (IRE)
+    beaten_lengths       = 5.5000L
+    lbs_behind           = 5.5000 * 3.6497 = N/A
+    raw_figure           = N/A - N/A = 197.4440
+    weight_adj           = 4.0000
+    wfa_adj              = 10.0000
+    figure_final         = 207.4440
+    figure_calibrated    = 69.7000
+
+     7. Zoulette (IRE)
+    beaten_lengths       = 5.6000L
+    lbs_behind           = 5.6000 * 3.6497 = N/A
+    raw_figure           = N/A - N/A = 191.0790
+    weight_adj           = -2.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 201.0790
+    figure_calibrated    = 63.7000
+
+     8. Chelio
+    beaten_lengths       = 5.7500L
+    lbs_behind           = 5.7500 * 3.6497 = N/A
+    raw_figure           = N/A - N/A = 199.5315
+    weight_adj           = 7.0000
+    wfa_adj              = 10.0000
+    figure_final         = 209.5315
+    figure_calibrated    = 69.9000
+
+     9. Madman
+    beaten_lengths       = 10.0000L
+    lbs_behind           = 10.0000 * 3.6497 = N/A
+    raw_figure           = N/A - N/A = 182.0204
+    weight_adj           = 5.0000
+    wfa_adj              = 10.0000
+    figure_final         = 192.0204
+    figure_calibrated    = 62.6000
+
+    10. Nzuri
+    beaten_lengths       = 10.5000L
+    lbs_behind           = 10.5000 * 3.6497 = N/A
+    raw_figure           = N/A - N/A = 181.1956
+    weight_adj           = 6.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 191.1956
+    figure_calibrated    = 57.7000
+
+    11. Arvana Belle (IRE)
+    beaten_lengths       = 10.6500L
+    lbs_behind           = 10.6500 * 3.6497 = N/A
+    raw_figure           = N/A - N/A = 170.6481
+    weight_adj           = -4.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 180.6481
+    figure_calibrated    = 47.3000
+
+    12. Stolen
+    beaten_lengths       = 13.4000L
+    lbs_behind           = 13.4000 * 3.6497 = N/A
+    raw_figure           = N/A - N/A = 166.6116
+    weight_adj           = 2.0000
+    wfa_adj              = 10.0000
+    sex_allowance        = 3
+    figure_final         = 176.6116
+    figure_calibrated    = 46.4000
+
