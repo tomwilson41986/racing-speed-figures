@@ -60,6 +60,13 @@ LIVE_DIR = ROOT_DIR / "data" / "france_live"
 # ─── Email configuration ────────────────────────────────────────────
 RECIPIENTS = [
     "racingsquared@gmail.com",
+    "richard@blandfordbloodstock.com",
+    "stuart@blandfordbloodstock.com",
+    "tom.biggs@blandfordbloodstock.com",
+    "fred@blandfordbloodstock.com",
+    "eleanor@risingsunbloodstock.com",
+    "katie@blandfordbloodstock.com",
+    "sophie@wathnan-racing.com",
 ]
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
