@@ -853,7 +853,10 @@ def compute_going_allowances(df, std_times):
       4. Split-card detection: within each meeting, test for a
          significant shift in going between early and late races
          (e.g. rain mid-card).  If detected, split into two segments
-         with separate GAs.
+         with separate GAs.  NOTE: this re-keys ``df["meeting_id"]``
+         IN PLACE for the affected races (``<mid>_early`` /
+         ``<mid>_late``) so that downstream stages pick up the
+         segment-specific GA.
 
       5. Bayesian shrinkage: blend the raw GA toward the going-
          description prior, weighted by card size.  Small cards are
@@ -923,6 +926,8 @@ def compute_going_allowances(df, std_times):
     split_meetings = set()
 
     for mid, group in winners.groupby("meeting_id"):
+        if mid.endswith("_early") or mid.endswith("_late"):
+            continue  # segment from a previous iteration — don't re-split
         if len(group) < 6:
             continue
         ordered = group.sort_values("raceNumber")
@@ -950,6 +955,18 @@ def compute_going_allowances(df, std_times):
             winners.loc[ordered.index[:half], "meeting_id"] = mid + "_early"
             winners.loc[ordered.index[half:], "meeting_id"] = mid + "_late"
             split_meetings.add(mid)
+
+            # Propagate the segment ids to the caller's frame so every
+            # runner at the meeting (not just the winners used here) maps
+            # to the segment GA downstream.  Without this, the segment
+            # keys never match df["meeting_id"] and split meetings would
+            # silently lose their GA (and their figures).
+            boundary = ordered.iloc[half]["raceNumber"]
+            df_mask = df["meeting_id"] == mid
+            df.loc[df_mask & (df["raceNumber"] < boundary),
+                   "meeting_id"] = mid + "_early"
+            df.loc[df_mask & (df["raceNumber"] >= boundary),
+                   "meeting_id"] = mid + "_late"
 
     if split_meetings:
         print(f"    Split-card going detected: {len(split_meetings)} meetings split")
@@ -1025,15 +1042,16 @@ def compute_going_allowances(df, std_times):
     shrunk_dict = {}
     for mid, raw_ga in ga_dict.items():
         n = ga_n.get(mid, MIN_RACES_GOING_ALLOWANCE)
+        # Segment ids exist in df (re-keyed above), so try the exact id
+        # first, then fall back to the unsplit base meeting id.
+        base_mid = mid.replace("_early", "").replace("_late", "")
         going_desc = meeting_going.get(
-            mid.replace("_early", "").replace("_late", ""), "Good"
+            mid, meeting_going.get(base_mid, "Good")
         )
         prior_ga = GOING_GA_PRIOR.get(going_desc, 0.0)
 
         # Irish courses get weaker shrinkage (less trust in official going)
-        course = meeting_course.get(
-            mid.replace("_early", "").replace("_late", ""), ""
-        )
+        course = meeting_course.get(mid, meeting_course.get(base_mid, ""))
         k = GA_SHRINKAGE_K / 2.0 if course in IRE_COURSES else GA_SHRINKAGE_K
 
         shrunk_ga = (n * raw_ga + k * prior_ga) / (n + k)
@@ -1154,10 +1172,10 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict, std_times=None,
     LPL.  Formula: velocity_lpl = lpl_base × (standard_time / winner_time)
 
     Beaten lengths use a soft cap: full precision up to
-    BL_ATTENUATION_THRESHOLD, then reduced beyond that to attenuate
-    noise from eased/tailed-off horses.  The threshold was lowered
-    from 20L to 8L based on empirical analysis showing monotonically
-    rising positive bias from ~5L onwards (scripts/analyse_lpl.py).
+    BL_ATTENUATION_THRESHOLD (going-dependent, base 20L), then each
+    extra length counts BL_ATTENUATION_FACTOR to attenuate noise from
+    eased/tailed-off horses (empirical analysis of margin bias in
+    scripts/analyse_lpl.py).
     """
     print("\n  Extending figures to all runners...")
 
@@ -1950,9 +1968,10 @@ def apply_oos_corrections(df):
     3. Going-group residual bias: Good/Firm ground shows +0.8 lbs
        systematic over-rating that the going offsets don't capture.
 
-    All corrections are learned from in-sample data (2015-2023) and
-    applied to the full dataset. The corrections are regularised with
-    Bayesian shrinkage (k=500) to prevent overfitting.
+    All corrections are learned from in-sample data (up to the adaptive
+    training window end, max_year - 1) and applied to the full dataset.
+    The corrections are regularised with Bayesian shrinkage (k=500) to
+    prevent overfitting.
 
     Validated on 2025-2026 holdout:
       Turf MAE:     8.43 → 8.09 (-0.34)
@@ -2031,9 +2050,13 @@ def apply_oos_corrections(df):
                     residual * n / (n + SHRINKAGE_K)
                 )
 
-        # 3. Temporal drift (use 2022-2023 as the drift signal — these years
-        #    are in-sample but already show the drift pattern)
-        recent = surf_ins[surf_ins["source_year"].isin([2022, 2023])]
+        # 3. Temporal drift (use the two most recent in-sample years as
+        #    the drift signal — they are in-sample but already show the
+        #    drift pattern).  Derived from the adaptive training window
+        #    rather than hardcoded years so the correction tracks recent
+        #    drift as the dataset grows.
+        drift_from_year = oos_train_end - 1
+        recent = surf_ins[surf_ins["source_year"] >= drift_from_year]
         if len(recent) > 500:
             # Remove distance and going effects first
             recent_adj = recent.copy()
@@ -2052,6 +2075,7 @@ def apply_oos_corrections(df):
             "dist_corrections": dist_corrections,
             "going_corrections": going_corrections,
             "temporal_offset": temporal_offset,
+            "temporal_from_year": drift_from_year,
         }
 
         n_dist = sum(1 for v in dist_corrections.values() if abs(v) > 0.2)
@@ -2085,9 +2109,10 @@ def apply_oos_corrections(df):
             params["going_corrections"]
         ).fillna(0)
 
-        # Temporal correction (only for recent data — 2022+)
+        # Temporal correction (only for recent data — drift window onward)
         temporal_adj = np.where(
-            df.loc[surf_mask, "source_year"] >= 2022,
+            df.loc[surf_mask, "source_year"]
+            >= params.get("temporal_from_year", 2022),
             params["temporal_offset"],
             0.0,
         )
@@ -2119,12 +2144,13 @@ def apply_final_rescaling(df):
     high-class figures being systematically under-rated and low-class
     figures over-rated.
 
-    Fix: per-surface linear regression of figure_calibrated vs timefigure
-    to compute slope and intercept.  If the slope deviates from 1.0 by
-    more than 2%, apply a correction:
-        figure_rescaled = (figure - mean_pred) / slope + mean_tf
+    Fix: per-surface OLS regression of timefigure on figure_calibrated.
+    If the slope deviates from 1.0 by more than 2%, apply:
+        figure_rescaled = (figure - mean_pred) * slope + mean_tf
 
-    This restores the correct spread without changing the overall mean.
+    (The OLS slope of truth-on-prediction is the MMSE rescaling factor:
+    slope > 1 expands compressed figures, slope < 1 shrinks over-spread
+    ones.)  This restores the correct spread around the timefigure mean.
     Parameters are saved as artifacts for the live pipeline.
     """
     print("\n  Applying final rescaling (correcting residual compression)...")
