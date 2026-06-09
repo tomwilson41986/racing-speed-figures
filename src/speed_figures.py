@@ -1403,6 +1403,9 @@ def calibrate_figures(df):
         (df["distanceCumulative"].fillna(0) <= 20)
         | (df["positionOfficial"] == 1)
     ) & (df["ga_value"].abs() <= 2.0)
+    # Exclude split-segment GA rows from the FIT (still scored)
+    if "ga_is_segment" in df.columns:
+        fit_mask &= ~df["ga_is_segment"]
 
     df["figure_calibrated"] = np.nan
     cal_params = {}
@@ -1762,6 +1765,9 @@ def enhance_with_gbr(df):
         & df["timefigure"].between(-200, 200)
         & df["figure_calibrated"].notna()
     )
+    # Exclude split-segment GA rows from training (still scored)
+    if "ga_is_segment" in df.columns:
+        mask &= ~df["ga_is_segment"]
 
     # Adaptive training window: all years up to max_year - 1
     max_year = int(df["source_year"].max())
@@ -1891,6 +1897,9 @@ def expand_scale(df):
         & df["figure_calibrated"].notna()
         & (df["source_year"] <= qm_train_end)
     )
+    # Exclude split-segment GA rows from the quantile fit (still mapped)
+    if "ga_is_segment" in df.columns:
+        mask &= ~df["ga_is_segment"]
 
     quantile_levels = np.linspace(0, 100, N_QUANTILES + 1)
     qm_params = {}
@@ -2010,6 +2019,9 @@ def apply_oos_corrections(df):
     oos_train_end = max_year - 1
     print(f"    OOS correction training window: up to {oos_train_end}")
     fit_mask = mask & (df["source_year"] <= oos_train_end)
+    # Exclude split-segment GA rows from the fit (still corrected)
+    if "ga_is_segment" in df.columns:
+        fit_mask &= ~df["ga_is_segment"]
 
     ins = df[fit_mask].copy()
     ins["error"] = ins["figure_calibrated"] - ins["timefigure"]
@@ -2169,6 +2181,9 @@ def apply_final_rescaling(df):
         # Exclude extreme beaten-far runners for cleaner fit
         & (df["distanceCumulative"].fillna(0) <= 20)
     )
+    # Exclude split-segment GA rows from the fit (still rescaled)
+    if "ga_is_segment" in df.columns:
+        mask &= ~df["ga_is_segment"]
 
     rescale_params = {}
 
@@ -2393,12 +2408,28 @@ def run_pipeline():
         all_figs["ga_value"].std() * 0.5  # conservative fallback SE
     )
 
-    # Figure confidence based on going allowance magnitude
+    # Flag rows whose GA comes from a split-card segment.  Segment GAs
+    # are estimated from only ~3-5 winners and are noticeably noisier
+    # than full-card GAs, so these rows are scored but EXCLUDED from
+    # fitting the calibration / GBR / QM / OOS / rescaling layers.
+    all_figs["ga_is_segment"] = all_figs["meeting_id"].str.endswith(
+        ("_early", "_late")
+    )
+    n_seg = all_figs["ga_is_segment"].sum()
+    if n_seg > 0:
+        print(f"\n  Split-segment GA rows (excluded from model fits): {n_seg:,}")
+
+    # Figure confidence based on going allowance magnitude.
+    # Split-segment rows are capped at "medium" (small-sample GA).
     abs_ga = all_figs["ga_value"].abs()
     all_figs["figure_confidence"] = np.where(
         abs_ga <= 0.5, "high",
         np.where(abs_ga <= 1.5, "medium", "low")
     )
+    all_figs.loc[
+        all_figs["ga_is_segment"] & (all_figs["figure_confidence"] == "high"),
+        "figure_confidence",
+    ] = "medium"
     conf_counts = all_figs["figure_confidence"].value_counts()
     print(f"\n  Figure confidence: {dict(conf_counts)}")
 
