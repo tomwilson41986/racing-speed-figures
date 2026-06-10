@@ -1149,11 +1149,12 @@ class LiteRatingEngine:
                     if n < 3:
                         continue
 
-                    # Winsorized median
+                    # Winsorized mean (batch pipeline uses the mean of the
+                    # winsorized deviations, not the median)
                     if n > 2:
                         vals[0] = vals[1]
                         vals[-1] = vals[-2]
-                    raw_ga = float(np.median(vals))
+                    raw_ga = float(np.mean(vals))
 
                     # Bayesian shrinkage toward going-description prior
                     going_desc = meetings.loc[mid, "going"] if mid in meetings.index else "Good"
@@ -1285,9 +1286,13 @@ class LiteRatingEngine:
         w["lpl"] = interpolate_lookup(w, self.lpl_dict)
         missing_lpl = w["lpl"].isna()
         if missing_lpl.any():
-            w.loc[missing_lpl, "lpl"] = w.loc[
-                missing_lpl, "distance"
-            ].apply(generic_lbs_per_length)
+            # Pass the surface so AW gets its LPL multiplier (matches batch)
+            w.loc[missing_lpl, "lpl"] = w.loc[missing_lpl].apply(
+                lambda r: generic_lbs_per_length(
+                    r["distance"], r.get("raceSurfaceName")
+                ),
+                axis=1,
+            )
 
         w["deviation_lbs"] = w["deviation_lengths"] * w["lpl"]
         w["winner_raw_figure"] = BASE_RATING - w["deviation_lbs"]
@@ -1328,9 +1333,13 @@ class LiteRatingEngine:
         df_in["lpl"] = interpolate_lookup(df_in, self.lpl_dict)
         missing = df_in["lpl"].isna()
         if missing.any():
-            df_in.loc[missing, "lpl"] = df_in.loc[
-                missing, "distance"
-            ].apply(generic_lbs_per_length)
+            # Pass the surface so AW gets its LPL multiplier (matches batch)
+            df_in.loc[missing, "lpl"] = df_in.loc[missing].apply(
+                lambda r: generic_lbs_per_length(
+                    r["distance"], r.get("raceSurfaceName")
+                ),
+                axis=1,
+            )
 
         is_winner = df_in["positionOfficial"] == 1
 
@@ -1567,18 +1576,21 @@ class LiteRatingEngine:
             else:
                 cal_vals = a * x + b
 
-            # Class offsets
+            # Class offsets.  Artifact keys are str(raw raceClass) from the
+            # batch pipeline, where raceClass is float (e.g. "4.0") — so
+            # normalise both sides to float for the lookup.  Matching on
+            # int-strings ("4") silently dropped ALL class offsets
+            # (±20 lbs swing between Class 1 and Class 7).
             class_offsets = params.get("class_offsets", {})
             if class_offsets:
-                rc = (
-                    pd.to_numeric(
-                        df.loc[mask, "raceClass"], errors="coerce"
-                    )
-                    .fillna(0)
-                    .astype(int)
-                    .astype(str)
-                )
-                cal_vals += rc.map(class_offsets).fillna(0).values
+                class_off_f = {}
+                for k, v in class_offsets.items():
+                    try:
+                        class_off_f[float(k)] = v
+                    except (TypeError, ValueError):
+                        continue
+                rc = pd.to_numeric(df.loc[mask, "raceClass"], errors="coerce")
+                cal_vals += rc.map(class_off_f).fillna(0).values
 
             # Course x distance offsets
             cd_offsets = params.get("course_dist_offsets", {})
@@ -1622,12 +1634,15 @@ class LiteRatingEngine:
                 )
                 cal_vals += bl_band.map(bl_offsets).fillna(0).values
 
-            # Age offsets
+            # Age offsets.  Batch keys are ages clipped to 2-4 ("2","3","4")
+            # — every horse aged 4+ takes the "4" offset.  Clipping only at
+            # 12 left ages 5+ unmatched (no offset applied).
             age_offsets = params.get("age_offsets", {})
             if age_offsets and "horseAge" in df.columns:
                 age = (
-                    df.loc[mask, "horseAge"]
-                    .clip(upper=12)
+                    pd.to_numeric(df.loc[mask, "horseAge"], errors="coerce")
+                    .fillna(4)
+                    .clip(lower=2, upper=4)
                     .astype(int)
                     .astype(str)
                 )
