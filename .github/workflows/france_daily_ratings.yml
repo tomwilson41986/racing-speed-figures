@@ -1,9 +1,8 @@
 name: France Daily Ratings
 
 on:
-  schedule:
-    # 21:00 UTC = 22:00 CET / 23:00 CEST
-    - cron: '0 21 * * *'
+  # Scheduled daily send retired in favour of daily_combined_ratings.yml
+  # (one combined UK/IRE/FR email at 10pm UK). Kept for manual dispatch/backfill.
   workflow_dispatch:
     inputs:
       date:
@@ -157,26 +156,5 @@ jobs:
             output/france_qa/
           retention-days: 90
 
-      - name: Send ratings email
-        if: steps.summary.outputs.has_csv == 'true'
-        env:
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-        run: |
-          DATE_ARG="${{ steps.summary.outputs.date }}"
-          python3 -c "
-          import pandas as pd, datetime, os, sys
-          sys.path.insert(0, '.')
-          from src.france.live_ratings import format_email_html, send_email
-
-          csv_path = 'data/france_live/ratings_${DATE_ARG}.csv'
-          df = pd.read_csv(csv_path)
-          target_date = '${DATE_ARG}'
-          run_time = datetime.datetime.utcnow().strftime('%H:%M')
-
-          html = format_email_html(df, target_date, run_time)
-          ok = send_email(html, target_date, run_time)
-          if not ok:
-              print('WARNING: Email sending failed', file=sys.stderr)
-              sys.exit(1)
-          "
+      # Per-jurisdiction email retired: the combined email is sent by
+      # daily_combined_ratings.yml. This workflow now only prepares data.
