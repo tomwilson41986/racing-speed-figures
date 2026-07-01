@@ -47,6 +47,7 @@
     <span style="color:{{ T.LABEL }};font-weight:700;font-size:12px;">{{ tp.rank }}</span>
     <span style="color:{{ T.INK }};font-weight:600;font-size:15px;">&nbsp;{{ tp.horse }}</span>
     <div style="color:{{ T.MUTED }};font-size:12px;margin-top:1px;">{{ tp.course }} &middot; Race {{ tp.race_number }}{% if tp.pos %} &middot; finished {{ tp.pos }}{% endif %}</div>
+    {% if tp.note %}<div style="color:{{ T.FAINT }};font-size:11px;margin-top:2px;">{{ tp.note }}</div>{% endif %}
   </td>
   <td style="padding:8px;border-top:1px solid {{ T.ROW_DIVIDER }};text-align:right;width:1%;white-space:nowrap;vertical-align:middle;">{{ fig_pill(tp.figure) }}</td>
 </tr>
@@ -101,7 +102,7 @@
   {{ td('%.2f'|format(r.beaten) if r.beaten else '&ndash;', 'right', color=T.BODY) }}
   {{ td(r.time if r.time else '&ndash;', 'right', color=T.BODY) }}
   <td style="padding:6px 8px;border-top:1px solid {{ T.ROW_DIVIDER }};text-align:right;white-space:nowrap;vertical-align:middle;">
-    {% if has_uplift and r.uplift is not none %}<span style="color:{{ T.FAINT }};font-size:12px;">{{ '%.0f'|format(r.figure_original) }}&rarr;</span> {{ fig_pill(r.figure) }} {{ uplift_badge(r.uplift) }}{% else %}{{ fig_pill(r.figure) }}{% endif %}
+    {% if has_uplift and r.uplift is not none and r.figure_original is not none %}<span style="color:{{ T.FAINT }};font-size:12px;">{{ '%.0f'|format(r.figure_original) }}&rarr;</span> {{ fig_pill(r.figure) }} {{ uplift_badge(r.uplift) }}{% else %}{{ fig_pill(r.figure) }}{% endif %}
   </td>
 </tr>
 {% endfor %}
@@ -122,6 +123,22 @@
     </td>
   {% endfor %}
   </tr></table>
+</td></tr></table>
+{%- endmacro -%}
+
+{#- Pars table: shows n= count next to each par -#}
+{%- macro par_table(pt) -%}
+<table cellpadding="0" cellspacing="0" border="0" width="100%" style="background:{{ T.CARD_BG }};border:1px solid {{ T.CARD_BORDER }};border-radius:8px;margin-bottom:12px;">
+<tr><td style="padding:12px 16px 4px;font-size:13px;font-weight:700;color:{{ T.INK }};">{{ pt.title }}</td></tr>
+<tr><td style="padding:2px 8px 12px;">
+<table cellpadding="0" cellspacing="0" border="0" width="100%">
+<tr>{% for h in pt.headers %}{{ th(h, 'left' if loop.first else 'right') }}{% endfor %}</tr>
+{% for row in pt.rows %}
+<tr>{% for c in row.cells %}
+  <td style="padding:6px 8px;font-size:13px;text-align:{{ 'left' if loop.first else 'right' }};border-top:1px solid {{ T.ROW_DIVIDER }};color:{{ T.FAINT if row.faint else T.BODY_DARK }};{{ 'font-style:italic;' if row.faint else '' }}">{{ c }}</td>
+{% endfor %}</tr>
+{% endfor %}
+</table>
 </td></tr></table>
 {%- endmacro -%}
 
@@ -151,6 +168,11 @@
       <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background:{{ T.CARD_BG }};border:1px solid {{ T.CARD_BORDER }};border-radius:8px;margin-bottom:12px;"><tr><td style="padding:20px;"><p style="margin:0;color:{{ T.BODY_DARK }};font-size:15px;font-weight:600;">No results today</p></td></tr></table>
     {% endif %}
   {% endfor %}
+
+  {% if ctx.par_tables %}
+    {{ section_header('Sectional & stride pars') }}
+    {% for pt in ctx.par_tables %}{{ par_table(pt) }}{% endfor %}
+  {% endif %}
 
   <p style="margin-top:24px;color:{{ T.FOOTNOTE }};font-size:11px;line-height:1.5;">
     {% for line in ctx.footer_lines %}{{ line }}<br>{% endfor %}

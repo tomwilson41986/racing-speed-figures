@@ -74,6 +74,7 @@ class TopPerformer:
     race_number: int
     figure: float
     pos: Optional[int] = None
+    note: Optional[str] = None
     silk_url: Optional[str] = None
     silk_cid: Optional[str] = None
 
@@ -87,6 +88,7 @@ class ReportContext:
     sections: List[Section] = field(default_factory=list)
     top_performers: List[TopPerformer] = field(default_factory=list)
     accuracy_panel: Optional[dict] = None
+    par_tables: List[dict] = field(default_factory=list)
     footer_lines: List[str] = field(default_factory=list)
     run_time: Optional[str] = None
     template: str = "email.html.j2"
