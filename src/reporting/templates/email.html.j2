@@ -1,0 +1,163 @@
+{#- House-style email. All CSS inline; layout from <table>s; colour = meaning. -#}
+{%- macro fig_pill(fig) -%}
+{%- set sw = figure_swatch(fig) -%}
+<span style="display:inline-block;background:{{ sw.bg }};color:{{ sw.fg }};font-weight:700;font-size:13px;padding:2px 9px;border-radius:10px;">{% if fig is not none %}{{ '%.0f'|format(fig) }}{% else %}&mdash;{% endif %}</span>
+{%- endmacro -%}
+
+{%- macro pos_badge(pos, field) -%}
+{%- set sw = pos_swatch(pos) -%}
+<span style="display:inline-block;background:{{ sw.bg }};color:{{ sw.fg }};font-weight:700;font-size:12px;padding:2px 8px;border-radius:10px;">{% if pos %}{{ pos }}{% if field %}<span style="color:{{ T.LABEL }};font-weight:600;"> / {{ field }}</span>{% endif %}{% else %}&ndash;{% endif %}</span>
+{%- endmacro -%}
+
+{%- macro uplift_badge(uplift) -%}
+{%- set sw = uplift_swatch(uplift) -%}
+<span style="display:inline-block;background:{{ sw.bg }};color:{{ sw.fg }};font-weight:700;font-size:11px;letter-spacing:0.04em;padding:2px 8px;border-radius:10px;">{{ '%+.0f'|format(uplift) }} lb</span>
+{%- endmacro -%}
+
+{%- macro rating_tile(label, value) -%}
+{%- set sw = figure_swatch(value) -%}
+<table cellpadding="0" cellspacing="0" border="0" style="background:{{ sw.bg }};border-radius:8px;">
+<tr><td style="padding:10px 14px;text-align:center;line-height:1;min-width:54px;">
+<div style="font-size:10px;color:{{ sw.label }};font-weight:700;letter-spacing:0.10em;text-transform:uppercase;">{{ label }}</div>
+<div style="font-size:26px;font-weight:700;color:{{ sw.fg }};margin-top:6px;">{% if value is not none %}{{ '%.0f'|format(value) }}{% else %}&mdash;{% endif %}</div>
+</td></tr></table>
+{%- endmacro -%}
+
+{%- macro th(text, align='left') -%}
+<th style="padding:6px 8px;text-align:{{ align }};font-size:10px;color:{{ T.LABEL }};font-weight:700;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid {{ T.CARD_BORDER }};">{{ text }}</th>
+{%- endmacro -%}
+
+{%- macro td(inner, align='left', weight='400', color=None) -%}
+<td style="padding:6px 8px;font-size:13px;text-align:{{ align }};border-top:1px solid {{ T.ROW_DIVIDER }};font-weight:{{ weight }};color:{{ color or T.BODY_DARK }};">{{ inner|safe }}</td>
+{%- endmacro -%}
+
+{%- macro section_header(text) -%}
+<h2 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:{{ T.MUTED }};margin:28px 0 10px;">{{ text }}</h2>
+{%- endmacro -%}
+
+{#- Top performers board: full rating tiles -#}
+{%- macro top_board(ctx) -%}
+<table cellpadding="0" cellspacing="0" border="0" width="100%" style="background:{{ T.CARD_BG }};border:1px solid {{ T.CARD_BORDER }};border-radius:8px;margin-bottom:12px;">
+<tr><td style="padding:6px 8px;">
+<table cellpadding="0" cellspacing="0" border="0" width="100%">
+{% for tp in ctx.top_performers %}
+<tr>
+  {% if tp.silk_cid %}<td style="padding:6px 0 6px 8px;vertical-align:middle;width:{{ T.SILK_DISPLAY_W + 8 }}px;"><img src="cid:{{ tp.silk_cid }}" alt="{{ tp.horse }}" width="{{ T.SILK_DISPLAY_W }}" height="{{ T.SILK_DISPLAY_H }}" style="background:#fff;display:block;border-radius:{{ T.SILK_RADIUS }}px;"></td>{% endif %}
+  <td style="padding:8px;border-top:1px solid {{ T.ROW_DIVIDER }};vertical-align:middle;">
+    <span style="color:{{ T.LABEL }};font-weight:700;font-size:12px;">{{ tp.rank }}</span>
+    <span style="color:{{ T.INK }};font-weight:600;font-size:15px;">&nbsp;{{ tp.horse }}</span>
+    <div style="color:{{ T.MUTED }};font-size:12px;margin-top:1px;">{{ tp.course }} &middot; Race {{ tp.race_number }}{% if tp.pos %} &middot; finished {{ tp.pos }}{% endif %}</div>
+  </td>
+  <td style="padding:8px;border-top:1px solid {{ T.ROW_DIVIDER }};text-align:right;width:1%;white-space:nowrap;vertical-align:middle;">{{ fig_pill(tp.figure) }}</td>
+</tr>
+{% endfor %}
+</table>
+</td></tr></table>
+{%- endmacro -%}
+
+{#- One race card -#}
+{%- macro race_card(race) -%}
+{%- set has_or = race.runners|selectattr('official_rating')|list|length > 0 -%}
+{%- set has_silks = race.runners|selectattr('silk_cid')|list|length > 0 -%}
+{%- set has_uplift = race.runners|selectattr('uplift','ne',None)|list|length > 0 -%}
+<table cellpadding="0" cellspacing="0" border="0" width="100%" style="background:{{ T.CARD_BG }};border:1px solid {{ T.CARD_BORDER }};border-radius:8px;margin-bottom:12px;">
+<tr><td style="padding:14px 16px 6px;">
+  <div style="font-size:15px;font-weight:700;color:{{ T.INK }};">{{ race.course }} <span style="color:{{ T.LABEL }};font-weight:600;">&middot; Race {{ race.race_number }}</span></div>
+  {% if race.race_name %}<div style="font-size:12px;color:{{ T.BODY }};margin-top:2px;">{{ race.race_name }}</div>{% endif %}
+  <div style="font-size:12px;color:{{ T.MUTED }};margin-top:4px;">
+    {% for m in [race.distance_str, race.going, race.surface] if m %}{% if not loop.first %} &middot; {% endif %}{{ m }}{% endfor %}{% if race.race_class %} &middot; Class {{ race.race_class }}{% endif %}
+  </div>
+  {% set orparts = [] %}
+  {% if race.median_or %}{% set _ = orparts.append('Median OR ' ~ race.median_or) %}{% endif %}
+  {% if race.max_or %}{% set _ = orparts.append('Max OR ' ~ race.max_or) %}{% endif %}
+  {% if race.going_allowance is not none %}{% set _ = orparts.append('GA %+.3f'|format(race.going_allowance)) %}{% endif %}
+  {% if orparts %}<div style="font-size:11px;color:{{ T.FAINT }};font-style:italic;margin-top:3px;">{{ orparts|join(' &middot; ')|safe }}</div>{% endif %}
+  {% if race.video_url %}<div style="margin-top:4px;"><a href="{{ race.video_url }}" style="color:{{ T.LINK }};text-decoration:none;font-weight:600;font-size:12px;">Watch the race replay &rsaquo;</a></div>{% endif %}
+</td></tr>
+<tr><td style="padding:2px 8px 12px;">
+<table cellpadding="0" cellspacing="0" border="0" width="100%">
+<tr>
+  {{ th('Pos') }}
+  {% if has_silks %}{{ th('') }}{% endif %}
+  {{ th('Horse') }}
+  {{ th('Age','right') }}
+  {{ th('Wgt','right') }}
+  {% if has_or %}{{ th('OR','right') }}{% endif %}
+  {{ th('Btn','right') }}
+  {{ th('Time','right') }}
+  {{ th('Figure','right') }}
+</tr>
+{% for r in race.runners %}
+<tr>
+  <td style="padding:6px 8px;border-top:1px solid {{ T.ROW_DIVIDER }};vertical-align:middle;">{{ pos_badge(r.pos, r.field_size) }}</td>
+  {% if has_silks %}<td style="padding:4px 0 4px 4px;border-top:1px solid {{ T.ROW_DIVIDER }};vertical-align:middle;width:{{ T.SILK_DISPLAY_W + 4 }}px;">{% if r.silk_cid %}<img src="cid:{{ r.silk_cid }}" alt="{{ r.horse }}" width="{{ T.SILK_DISPLAY_W }}" height="{{ T.SILK_DISPLAY_H }}" style="background:#fff;display:block;border-radius:{{ T.SILK_RADIUS }}px;">{% endif %}</td>{% endif %}
+  <td style="padding:6px 8px;border-top:1px solid {{ T.ROW_DIVIDER }};vertical-align:middle;">
+    <span style="font-weight:600;color:{{ T.INK }};font-size:14px;">{{ r.horse }}</span>
+    {% if r.reason %}<div style="font-size:11px;color:{{ T.FAINT }};margin-top:2px;">{{ r.reason }}</div>{% endif %}
+  </td>
+  {{ td(r.age if r.age else '&ndash;', 'right') }}
+  {{ td(r.weight if r.weight else '&ndash;', 'right') }}
+  {% if has_or %}{{ td(r.official_rating if r.official_rating else '&ndash;', 'right') }}{% endif %}
+  {{ td('%.2f'|format(r.beaten) if r.beaten else '&ndash;', 'right', color=T.BODY) }}
+  {{ td(r.time if r.time else '&ndash;', 'right', color=T.BODY) }}
+  <td style="padding:6px 8px;border-top:1px solid {{ T.ROW_DIVIDER }};text-align:right;white-space:nowrap;vertical-align:middle;">
+    {% if has_uplift and r.uplift is not none %}<span style="color:{{ T.FAINT }};font-size:12px;">{{ '%.0f'|format(r.figure_original) }}&rarr;</span> {{ fig_pill(r.figure) }} {{ uplift_badge(r.uplift) }}{% else %}{{ fig_pill(r.figure) }}{% endif %}
+  </td>
+</tr>
+{% endfor %}
+</table>
+</td></tr>
+</table>
+{%- endmacro -%}
+
+{%- macro accuracy_panel(panel) -%}
+<table cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#e9edf0;border:1px solid {{ T.CARD_BORDER }};border-radius:8px;margin:14px 0;">
+<tr><td style="padding:12px 16px;">
+  <div style="font-size:10px;font-weight:700;letter-spacing:0.10em;text-transform:uppercase;color:{{ T.MUTED }};">{{ panel.window }}</div>
+  <table cellpadding="0" cellspacing="0" border="0" style="margin-top:6px;"><tr>
+  {% for s in panel.stats %}
+    <td style="padding:4px 22px 0 0;vertical-align:top;">
+      <div style="font-size:22px;font-weight:700;color:{{ T.INK }};">{{ s.value }}</div>
+      <div style="font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:{{ T.LABEL }};margin-top:2px;">{{ s.label }}</div>
+    </td>
+  {% endfor %}
+  </tr></table>
+</td></tr></table>
+{%- endmacro -%}
+
+{#- ─────────────────────────── document ─────────────────────────── -#}
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:24px;background:{{ T.PAGE_BG }};font-family:{{ FONT_STACK }};color:{{ T.INK }};-webkit-text-size-adjust:100%;">
+<table cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:920px;margin:0 auto;">
+<tr><td>
+
+  <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em;color:{{ T.INK }};">{{ ctx.title }}</h1>
+  <p style="margin:4px 0 0;color:{{ T.MUTED }};font-size:13px;">{{ ctx.date_str }}{% for f in ctx.subtitle_facts %} &middot; {{ f }}{% endfor %}</p>
+
+  {% if ctx.accuracy_panel %}{{ accuracy_panel(ctx.accuracy_panel) }}{% endif %}
+
+  {% if ctx.top_performers %}
+    {{ section_header('Top performers') }}
+    {{ top_board(ctx) }}
+  {% endif %}
+
+  {% for section in ctx.sections %}
+    {% if section.title %}{{ section_header(section.title ~ ' · ' ~ section.race_count ~ ' races') }}{% endif %}
+    {% if section.races %}
+      {% for race in section.races %}{{ race_card(race) }}{% endfor %}
+    {% else %}
+      <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background:{{ T.CARD_BG }};border:1px solid {{ T.CARD_BORDER }};border-radius:8px;margin-bottom:12px;"><tr><td style="padding:20px;"><p style="margin:0;color:{{ T.BODY_DARK }};font-size:15px;font-weight:600;">No results today</p></td></tr></table>
+    {% endif %}
+  {% endfor %}
+
+  <p style="margin-top:24px;color:{{ T.FOOTNOTE }};font-size:11px;line-height:1.5;">
+    {% for line in ctx.footer_lines %}{{ line }}<br>{% endfor %}
+    {% if ctx.run_time %}Generated {{ ctx.run_time }}.{% endif %}
+  </p>
+
+</td></tr>
+</table>
+</body>
+</html>

@@ -58,6 +58,16 @@ from speed_figures import (
     interpolate_lookup,
 )
 
+# House-style reporting engine (shared by every email — see src/reporting/)
+try:
+    from reporting import context as report_context
+    from reporting import render as report_render
+    from reporting import emailer as report_emailer
+except ImportError:  # when imported as src.live_ratings
+    from src.reporting import context as report_context
+    from src.reporting import render as report_render
+    from src.reporting import emailer as report_emailer
+
 # ─── Directories ─────────────────────────────────────────────────────
 ROOT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = ROOT_DIR / "output"
@@ -1832,184 +1842,28 @@ class LiteRatingEngine:
 # EMAIL PUBLISHER
 # ═════════════════════════════════════════════════════════════════════
 
-def format_email_html(df, target_date, run_time):
-    """Format the ratings as a styled HTML email."""
-    # Sort with non-finishers (pos 0 or NaN) at the bottom of each race
-    df = df.copy()
-    df["_sort_pos"] = df["positionOfficial"].where(
-        df["positionOfficial"].notna() & (df["positionOfficial"] > 0), other=9999
+def _live_subject(title, target_date, ctx):
+    """House-style subject line: 'Title \u2014 Ddd DD Mon YYYY (N runners)'."""
+    from datetime import datetime as _dt
+    try:
+        d = _dt.strptime(str(target_date), "%Y-%m-%d").strftime("%a %d %b %Y")
+    except ValueError:
+        d = str(target_date)
+    n = sum(sec.runner_count for sec in ctx.sections)
+    return f"{title} \u2014 {d} ({n} runners)"
+
+
+def _build_live_ctx(df, target_date, run_time):
+    """Build the UK/IRE live ReportContext (house style \u2014 src/reporting)."""
+    return report_context.build_live_context(
+        df, "uk", target_date, "UK & Ireland Speed Ratings",
+        run_time=(f"{run_time} UK" if run_time else None),
     )
-    df = df.sort_values(["courseName", "raceNumber", "_sort_pos"])
-    df = df.drop(columns=["_sort_pos"])
 
-    css = """
-    <style>
-        body { font-family: 'Segoe UI', Arial, sans-serif; color: #333;
-               max-width: 800px; margin: 0 auto; padding: 10px; }
-        h1 { color: #1a3a5c; border-bottom: 3px solid #c8102e;
-             padding-bottom: 10px; }
-        h2 { color: #1a3a5c; margin-top: 30px; }
-        h3 { color: #555; margin-top: 20px;
-             border-left: 4px solid #c8102e; padding-left: 10px; }
-        table { border-collapse: collapse; width: 100%;
-                margin: 10px 0; font-size: 14px; }
-        th { background: #1a3a5c; color: white;
-             padding: 8px 12px; text-align: left; }
-        td { padding: 6px 12px; border-bottom: 1px solid #ddd; }
-        tr:nth-child(even) { background: #f8f9fa; }
-        .high { color: #c8102e; font-weight: bold; }
-        .good { color: #1a5c3a; font-weight: bold; }
-        .avg  { color: #555; }
-        .box  { background: #f0f4f8; border: 1px solid #d0d8e0;
-                border-radius: 8px; padding: 15px; margin: 15px 0; }
-        .meta { color: #666; font-size: 13px; margin-bottom: 5px; }
-        .note { color: #888; font-size: 12px; font-style: italic; }
-        .foot { color: #888; font-size: 12px; margin-top: 30px;
-                border-top: 1px solid #ddd; padding-top: 10px; }
-    </style>
-    """
 
-    html = f"""<html><head>{css}</head><body>
-    <h1>Live Speed Figures &mdash; {target_date}</h1>
-    <p>Generated at {run_time} GMT</p>
-    """
-
-    # ── Top performers ──
-    rated = df[df["figure_calibrated"].notna() & (df["figure_calibrated"] >= 0)]
-    top = rated.nlargest(10, "figure_calibrated")
-    if len(top) > 0:
-        html += '<div class="box"><h2>Top Performers</h2><table>'
-        html += (
-            "<tr><th>#</th><th>Horse</th><th>Course</th>"
-            "<th>Race</th><th>Pos</th><th>Figure</th></tr>"
-        )
-        for i, (_, r) in enumerate(top.iterrows(), 1):
-            fig = r["figure_calibrated"]
-            cls = _fig_class(fig)
-            html += (
-                f'<tr><td>{i}</td><td><b>{r.get("horseName", "?")}</b></td>'
-                f'<td>{r.get("courseName", "")}</td>'
-                f'<td>R{int(r.get("raceNumber", 0))}</td>'
-                f'<td>{int(r.get("positionOfficial", 0))}</td>'
-                f'<td class="{cls}">{fig:.0f}</td></tr>'
-            )
-        html += "</table></div>"
-
-    # ── Race-by-race breakdown ──
-    html += "<h2>Full Results</h2>"
-
-    for (course, race_num), race_df in df.groupby(
-        ["courseName", "raceNumber"], sort=True
-    ):
-        first = race_df.iloc[0]
-        dist = first.get("distance", "?")
-        dist_yards = first.get("distanceYards", "?")
-        going = first.get("going", "?")
-        surface = first.get("raceSurfaceName", "?")
-        rc = first.get("raceClass", "?")
-        ga = first.get("going_allowance", 0)
-        name = first.get("race_name", "")
-        median_or = first.get("medianOR", 0)
-        max_or = first.get("maxOR", 0)
-
-        # Format distance: show yards if available
-        if pd.notna(dist_yards) and dist_yards > 0:
-            dist_str = f"{int(dist_yards)}y ({dist:.1f}f)"
-        elif pd.notna(dist):
-            dist_str = f"{dist}f"
-        else:
-            dist_str = "?"
-
-        html += f"<h3>{course} &mdash; Race {int(race_num)}</h3>"
-        if name:
-            html += f'<p class="meta"><em>{name}</em></p>'
-        html += (
-            f'<p class="meta">{dist_str} &middot; {going} &middot; '
-            f'{surface} &middot; Class {rc}</p>'
-        )
-        # OR info line
-        or_parts = []
-        if pd.notna(median_or) and median_or > 0:
-            or_parts.append(f"Median OR: {median_or:.0f}")
-        if pd.notna(max_or) and max_or > 0:
-            or_parts.append(f"Max OR: {max_or:.0f}")
-        or_str = " &middot; ".join(or_parts) if or_parts else ""
-        if or_str:
-            html += f'<p class="note">{or_str} &middot; Going allowance: {ga:+.3f} s/f</p>'
-        else:
-            html += f'<p class="note">Going allowance: {ga:+.3f} s/f</p>'
-
-        html += (
-            "<table><tr><th>Pos</th><th>Horse</th><th>Age</th>"
-            "<th>Wgt</th><th>OR</th><th>Beaten</th><th>Time</th>"
-            "<th>Figure</th></tr>"
-        )
-
-        for _, r in race_df.iterrows():
-            pos = (
-                int(r["positionOfficial"])
-                if pd.notna(r.get("positionOfficial"))
-                and r["positionOfficial"] > 0
-                else "-"
-            )
-            horse = r.get("horseName", "?")
-            age = (
-                int(r["horseAge"])
-                if pd.notna(r.get("horseAge"))
-                else "?"
-            )
-            wgt = (
-                f'{int(r["weightCarried"])}'
-                if pd.notna(r.get("weightCarried"))
-                else "-"
-            )
-            or_val = (
-                f'{int(r["officialRating"])}'
-                if pd.notna(r.get("officialRating"))
-                and r.get("officialRating", 0) > 0
-                else "-"
-            )
-            beaten = (
-                f'{r["distanceCumulative"]:.2f}'
-                if pd.notna(r.get("distanceCumulative"))
-                and r.get("distanceCumulative", 0) > 0
-                else "-"
-            )
-            est_time = (
-                f'{r["est_time"]:.2f}'
-                if pd.notna(r.get("est_time"))
-                else "-"
-            )
-            fig = r.get("figure_calibrated")
-            if pd.notna(fig) and fig >= 0:
-                fig_str = f"{fig:.0f}"
-                cls = _fig_class(fig)
-            else:
-                fig_str = "-"
-                cls = ""
-
-            html += (
-                f"<tr><td>{pos}</td><td><b>{horse}</b></td>"
-                f"<td>{age}</td><td>{wgt}</td><td>{or_val}</td>"
-                f"<td>{beaten}</td>"
-                f"<td>{est_time}</td>"
-                f'<td class="{cls}">{fig_str}</td></tr>'
-            )
-
-        html += "</table>"
-
-    # ── Footer ──
-    total = rated.shape[0]
-    races = df["race_id"].nunique() if "race_id" in df.columns else "?"
-    html += f"""
-    <div class="foot">
-        <p>{total} runners rated across {races} races</p>
-        <p>Figures calibrated to Timeform scale using {len(rated['courseName'].unique()) if len(rated) > 0 else 0}
-           course standard times from 2015&ndash;2026 dataset.</p>
-        <p>Racing Speed Figures &mdash; Live Ratings Engine</p>
-    </div></body></html>
-    """
-    return html
+def format_email_html(df, target_date, run_time):
+    """Styled HTML for the UK/IRE ratings email (delegates to src/reporting)."""
+    return report_render.render_html(_build_live_ctx(df, target_date, run_time))
 
 
 def _fig_class(fig):
@@ -2406,7 +2260,8 @@ def run_once(target_date=None, send_email_flag=True):
     log.info(f"XLSX saved: {xlsx_path}")
 
     # 4. Format and send email
-    html = format_email_html(df, target_date, run_time)
+    ctx = _build_live_ctx(df, target_date, run_time)
+    html = report_render.render_html(ctx)
 
     html_path = LIVE_DIR / f"ratings_{target_date}.html"
     with open(html_path, "w") as f:
@@ -2414,7 +2269,8 @@ def run_once(target_date=None, send_email_flag=True):
     log.info(f"HTML saved: {html_path}")
 
     if send_email_flag:
-        send_email(html, target_date, run_time)
+        subject = _live_subject("UK & Ireland Speed Ratings", target_date, ctx)
+        report_emailer.send_report(ctx, subject, RECIPIENTS)
 
     # 5. Save audit files (ratings + calculation logic for review)
     audit_dir = save_uk_audit_output(df, target_date, run_source="live")
