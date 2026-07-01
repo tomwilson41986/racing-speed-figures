@@ -15,6 +15,7 @@ from pathlib import Path
 import click
 
 from . import drive_client, matching, parser, pars as pars_mod, report as report_mod, store
+from .normalize import normalise_track
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -47,19 +48,19 @@ def ingest(date):
     track_country = index.track_country
 
     try:
-        service = drive_client.get_service()
+        reader = drive_client.get_reader()
     except Exception as e:
-        log.error("Drive service unavailable (%s). Set GDRIVE_SA_JSON.", e)
+        log.error("Drive reader unavailable (%s). Set GDRIVE_SA_JSON.", e)
         return
 
     n_pdf = n_run = 0
-    for track_name, pdf in drive_client.iter_race_pdfs(service, date):
-        tn = parser.normalise_track(track_name)
+    for track_name, pdf in drive_client.iter_race_pdfs(reader, date):
+        tn = normalise_track(track_name)
         country = track_country.get(tn, "GB/IRE")
         unit = "m" if country == "FR" else "f"
         dest = PDF_DIR / date / track_name / pdf["name"]
         try:
-            drive_client.download_pdf(service, pdf["id"], str(dest))
+            drive_client.download_pdf(reader, pdf["id"], str(dest))
             ctx = parser.parse_filename(pdf["name"], folder_date=date, folder_track=track_name)
             rs = parser.parse_pdf(str(dest), track=track_name, race_date=date,
                                   race_time=ctx["race_time"], distance_unit=unit)

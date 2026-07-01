@@ -1,20 +1,22 @@
 """Read the 'Daily Sectional Reports' Google Drive folder from CI.
 
-GitHub Actions cannot use the interactive Drive connection, so this uses a
-Google **service account** (share the folder read-only with its email; store the
-JSON as the ``GDRIVE_SA_JSON`` secret — either the JSON itself or a path to it).
+Thin, sectionals-specific wrapper over the service-account reader in
+``gdrive_reader.py``. GitHub Actions cannot use the interactive Drive
+connection, so this authenticates with a Google **service account** (share the
+folder read-only with its email; store the JSON as the ``GDRIVE_SA_JSON``
+secret — either the JSON itself or a path to a file).
 
 Folder layout: ``<root>/DD.MM.YY/<Track>/<race>.pdf``.
 """
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 import os
+import tempfile
 from datetime import datetime
-from typing import Iterator, List, Optional, Tuple
+from typing import Iterator, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -22,45 +24,28 @@ log = logging.getLogger(__name__)
 SECTIONALS_ROOT_ID = os.environ.get(
     "SECTIONALS_DRIVE_FOLDER_ID", "1tR8_Hhq3vBAuohj48fYtVT8arY8WlsDr"
 )
-_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+FOLDER_MIME = "application/vnd.google-apps.folder"
+PDF_MIME = "application/pdf"
 
 
-def _load_sa_info() -> dict:
+def _sa_json_path() -> str:
+    """Resolve GDRIVE_SA_JSON to a file path (writing a temp file if it's JSON)."""
     raw = os.environ.get("GDRIVE_SA_JSON", "").strip()
     if not raw:
         raise RuntimeError("GDRIVE_SA_JSON not set (service-account JSON or path)")
     if raw.startswith("{"):
-        return json.loads(raw)
-    with open(raw) as fh:
-        return json.load(fh)
+        json.loads(raw)  # validate
+        fh = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        fh.write(raw)
+        fh.close()
+        return fh.name
+    return raw
 
 
-def get_service():
-    """Build an authenticated Drive v3 client from the service account."""
-    from google.oauth2 import service_account            # lazy imports
-    from googleapiclient.discovery import build
-    creds = service_account.Credentials.from_service_account_info(
-        _load_sa_info(), scopes=_SCOPES
-    )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
-
-
-def _list_children(service, folder_id: str, mime: Optional[str] = None) -> List[dict]:
-    q = f"'{folder_id}' in parents and trashed = false"
-    if mime:
-        q += f" and mimeType = '{mime}'"
-    out, page = [], None
-    while True:
-        resp = service.files().list(
-            q=q, fields="nextPageToken, files(id,name,mimeType)",
-            pageSize=1000, pageToken=page,
-            supportsAllDrives=True, includeItemsFromAllDrives=True,
-        ).execute()
-        out.extend(resp.get("files", []))
-        page = resp.get("nextPageToken")
-        if not page:
-            break
-    return out
+def get_reader():
+    """Build a GDriveReader from the service account (lazy import of google libs)."""
+    from .gdrive_reader import GDriveReader
+    return GDriveReader(_sa_json_path())
 
 
 def date_folder_name(date: str) -> str:
@@ -68,36 +53,38 @@ def date_folder_name(date: str) -> str:
     return datetime.strptime(date, "%Y-%m-%d").strftime("%d.%m.%y")
 
 
-def find_date_folder(service, date: str, root_id: str = SECTIONALS_ROOT_ID) -> Optional[dict]:
-    target = date_folder_name(date)
-    folder_mime = "application/vnd.google-apps.folder"
-    for f in _list_children(service, root_id, mime=folder_mime):
-        # tolerate '4.05.26' vs '04.05.26'
-        name = f["name"].strip()
-        if name == target or name.replace(".0", ".").lstrip("0") == target.replace(".0", ".").lstrip("0"):
+def _norm_folder(name: str) -> str:
+    """Normalise 'DD.MM.YY' tolerating dropped leading zeros ('4.05.26')."""
+    try:
+        return ".".join(str(int(p)) for p in name.strip().split("."))
+    except (ValueError, TypeError):
+        return name.strip()
+
+
+def find_date_folder(reader, date: str, root_id: str = SECTIONALS_ROOT_ID) -> Optional[dict]:
+    target = _norm_folder(date_folder_name(date))
+    for f in reader.list_children(root_id):
+        if f.get("mimeType") == FOLDER_MIME and _norm_folder(f["name"]) == target:
             return f
     return None
 
 
-def iter_race_pdfs(service, date: str, root_id: str = SECTIONALS_ROOT_ID) -> Iterator[Tuple[str, dict]]:
+def iter_race_pdfs(reader, date: str, root_id: str = SECTIONALS_ROOT_ID) -> Iterator[Tuple[str, dict]]:
     """Yield (track_name, pdf_file_dict) for every race PDF on ``date``."""
-    day = find_date_folder(service, date, root_id)
+    day = find_date_folder(reader, date, root_id)
     if not day:
         log.warning("No Drive folder for %s (%s)", date, date_folder_name(date))
         return
-    folder_mime = "application/vnd.google-apps.folder"
-    for track in _list_children(service, day["id"], mime=folder_mime):
-        for pdf in _list_children(service, track["id"], mime="application/pdf"):
-            yield track["name"], pdf
+    for meta in reader.list_folder(day["id"], recursive=True):
+        name = meta.get("name", "")
+        is_pdf = meta.get("mimeType") == PDF_MIME or name.lower().endswith(".pdf")
+        if not is_pdf:
+            continue
+        rel = meta.get("relpath", name)
+        track = rel.split("/")[0] if "/" in rel else day["name"]
+        yield track, meta
 
 
-def download_pdf(service, file_id: str, dest_path: str) -> str:
-    from googleapiclient.http import MediaIoBaseDownload
-    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
-    with io.FileIO(dest_path, "wb") as fh:
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
+def download_pdf(reader, file_id: str, dest_path: str) -> str:
+    reader.download_to(file_id, dest_path)
     return dest_path
