@@ -134,6 +134,12 @@ def build_day_after_context(date: str, session=None) -> ReportContext:
 
     par_tables = _build_par_tables(pars, today_tracks)
 
+    try:
+        from src.reporting import accuracy as accuracy_mod
+        accuracy_panel = accuracy_mod.rolling_panel()
+    except Exception:
+        accuracy_panel = None
+
     n_up = sum(1 for _, tp in eyecatchers if _ > 0)
     n_down = sum(1 for _, tp in eyecatchers if _ < 0)
     return ReportContext(
@@ -143,6 +149,7 @@ def build_day_after_context(date: str, session=None) -> ReportContext:
         sections=sections,
         top_performers=top,
         par_tables=par_tables,
+        accuracy_panel=accuracy_panel,
         footer_lines=[
             f"{matched} runners matched to ratings; {unmatched} sectionals had "
             "no matching rating.",

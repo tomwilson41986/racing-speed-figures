@@ -58,6 +58,10 @@ jobs:
         continue-on-error: true
         run: python src/speed_figures.py
 
+      - name: Refresh accuracy panel
+        continue-on-error: true
+        run: python -m src.reporting.accuracy
+
       - name: UK live ratings (no email)
         continue-on-error: true
         env:
@@ -115,7 +119,8 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git pull --rebase origin ${{ github.ref_name }} || true
           git add output/daily_ratings/ output/uk_audit/ output/france/ \
-                  output/france_audit/ output/france_qa/ data/france_live/ || true
+                  output/france_audit/ output/france_qa/ data/france_live/ \
+                  output/accuracy/ || true
           if git diff --cached --quiet; then
             echo "No new artifacts to commit"
           else
