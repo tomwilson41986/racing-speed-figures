@@ -193,6 +193,11 @@ def run(date: str, send: bool = True) -> ReportContext:
 
     subj_date = datetime.strptime(date, "%Y-%m-%d").strftime("%a %d %b %Y") if _isdate(date) else date
     n = sum(s.runner_count for s in ctx.sections)
+    if n == 0:
+        # No sectionals matched (e.g. Drive access not yet configured) — don't
+        # send an empty email; the HTML preview is still written for inspection.
+        log.warning("No matched sectionals for %s — skipping email.", date)
+        return ctx
     subject = f"Sectional Upgrades & Downgrades — {subj_date} ({n} runners)"
     emailer.send_report(ctx, subject, RECIPIENTS, dry_run=not send, save_html_path=str(html_path))
     return ctx
