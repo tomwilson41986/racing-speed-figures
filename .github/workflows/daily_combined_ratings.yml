@@ -1,0 +1,142 @@
+name: Daily Combined Live Ratings
+
+# One combined UK + Ireland + France live email at ~10pm UK (21:00 UTC) on the
+# race day. Computes both pipelines (no per-jurisdiction email), then sends a
+# single house-style message via src/reporting/combined_live.py. The old
+# live_ratings.yml / france_daily_ratings.yml are kept for manual dispatch and
+# backfill; their scheduled sends are retired in favour of this workflow.
+
+on:
+  schedule:
+    # 21:00 UTC = 22:00 BST = 10pm UK
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Target date (YYYY-MM-DD), empty = today'
+        required: false
+        default: ''
+      send_email:
+        description: 'Send the email?'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: write
+
+jobs:
+  combined-live:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pandas numpy scikit-learn
+
+      - name: Resolve target date
+        id: d
+        run: |
+          DATE_ARG="${{ github.event.inputs.date }}"
+          if [ -z "$DATE_ARG" ]; then DATE_ARG=$(date -u +%Y-%m-%d); fi
+          echo "date=$DATE_ARG" >> "$GITHUB_OUTPUT"
+
+      # ── UK / Ireland pipeline (compute only) ──────────────────────
+      - name: Extract UK data archives
+        continue-on-error: true
+        run: |
+          sudo apt-get update && sudo apt-get install -y p7zip-full
+          cd data/raw
+          for f in *.7z; do [ -f "$f" ] && 7z x -y "$f"; done
+
+      - name: UK build standard times
+        continue-on-error: true
+        run: python src/speed_figures.py
+
+      - name: Refresh accuracy panel
+        continue-on-error: true
+        run: python -m src.reporting.accuracy
+
+      - name: UK live ratings (no email)
+        continue-on-error: true
+        env:
+          HRB_USER: ${{ secrets.HRB_USER }}
+          HRB_PASS: ${{ secrets.HRB_PASS }}
+          HRB_USER_ID: ${{ secrets.HRB_USER_ID }}
+          HRB_COOKIE: ${{ secrets.HRB_COOKIE }}
+        run: python src/live_ratings.py --date "${{ steps.d.outputs.date }}" --no-email
+
+      # ── France pipeline (compute only) ────────────────────────────
+      - name: France download DB from S3
+        continue-on-error: true
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: python -m src.france.cli s3-download --s3-bucket frenchspeedfigures --s3-key france.db
+
+      - name: France ingest today's results
+        continue-on-error: true
+        run: python -m src.france.cli backfill --start "${{ steps.d.outputs.date }}" --end "${{ steps.d.outputs.date }}" --no-resume
+
+      - name: France upload DB to S3
+        continue-on-error: true
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: python -m src.france.cli s3-upload --s3-bucket frenchspeedfigures --s3-key france.db
+
+      - name: France build artifacts
+        continue-on-error: true
+        run: python -m src.france.cli build-artifacts --skip-download
+
+      - name: France rate today (no email)
+        continue-on-error: true
+        run: python -m src.france.cli rate-today --skip-download --date "${{ steps.d.outputs.date }}"
+
+      # ── Combined email ────────────────────────────────────────────
+      - name: Send combined live email
+        if: always()
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+        run: |
+          SEND="${{ github.event.inputs.send_email }}"
+          FLAG=""
+          if [ "$SEND" = "false" ]; then FLAG="--no-email"; fi
+          python -m src.reporting.combined_live --date "${{ steps.d.outputs.date }}" $FLAG
+
+      - name: Commit ratings artifacts
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin ${{ github.ref_name }} || true
+          git add output/daily_ratings/ output/uk_audit/ output/france/ \
+                  output/france_audit/ output/france_qa/ data/france_live/ \
+                  output/accuracy/ || true
+          if git diff --cached --quiet; then
+            echo "No new artifacts to commit"
+          else
+            git commit -m "Combined live ratings for ${{ steps.d.outputs.date }}"
+            git push
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-ratings-${{ github.run_id }}
+          path: |
+            data/live/
+            data/france_live/
+            output/uk_audit/
+            output/france_qa/
+          retention-days: 90
+          if-no-files-found: ignore
