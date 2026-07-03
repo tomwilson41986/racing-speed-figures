@@ -1161,6 +1161,25 @@ class LiteRatingEngine:
                 / winners["distance"]
             )
 
+            # Remove the class gradient (batch artifact) so the GA
+            # measures ground, not card quality — elite winners beating
+            # class-neutral standards were being read as "fast ground"
+            # and their superiority subtracted from the whole card.
+            gradient = (
+                (self._artifacts or {}).get("ga_class_gradient", {})
+                if hasattr(self, "_artifacts") else {}
+            )
+            if gradient:
+                cls_num = pd.to_numeric(
+                    winners["raceClass"], errors="coerce"
+                )
+                cls_key = cls_num.map(
+                    lambda v: str(int(v)) if pd.notna(v) else "unknown"
+                )
+                winners["dev_per_furlong"] -= cls_key.map(
+                    gradient
+                ).fillna(0.0)
+
             for mid, group in winners.groupby("meeting_id"):
                 if len(group) >= 3:
                     vals = group["dev_per_furlong"].sort_values().values.copy()
@@ -1693,13 +1712,19 @@ class LiteRatingEngine:
         return df
 
     def _apply_gbr(self, df):
-        """Apply pre-trained GBR models from batch pipeline."""
+        """Apply pre-trained GBR models from batch pipeline.
+
+        Residual-mode artifacts (gbr_target == "residual") predict a
+        CORRECTION that is added to the figure; legacy artifacts predict
+        the figure level and replace it.
+        """
         if not self._artifacts or not self._artifacts.get("gbr_models"):
             return df
 
         log.info("Applying GBR enhancement...")
         gbr_models = self._artifacts["gbr_models"]
         course_freq = self._artifacts.get("course_freq", {})
+        residual_mode = self._artifacts.get("gbr_target") == "residual"
 
         GBR_FEATURES = [
             "figure_calibrated", "figure_final", "raceClass",
@@ -1731,8 +1756,16 @@ class LiteRatingEngine:
             sub["horseAge"] = sub["horseAge"].clip(upper=4)
 
             preds = gbr.predict(sub.values)
-            df.loc[mask, "figure_calibrated"] = preds
-            log.info(f"  {surface}: GBR applied to {mask.sum()} runners")
+            if residual_mode:
+                df.loc[mask, "figure_calibrated"] = (
+                    df.loc[mask, "figure_calibrated"].values + preds
+                )
+            else:
+                df.loc[mask, "figure_calibrated"] = preds
+            log.info(
+                f"  {surface}: GBR applied to {mask.sum()} runners "
+                f"({'residual' if residual_mode else 'level'} mode)"
+            )
 
         df.drop(
             columns=["going_num", "course_freq", "ga_value"],
@@ -1742,13 +1775,19 @@ class LiteRatingEngine:
         return df
 
     def _apply_quantile_mapping(self, df):
-        """Apply pre-computed quantile mapping from batch pipeline."""
+        """Apply the batch recalibration map (PCHIP with slope-1 tails).
+
+        Uses apply_recal_map from speed_figures: beyond the outermost
+        anchors the map extends linearly with slope 1, so a same-day
+        career-best above the training range is carried through at full
+        value instead of being bent by cubic extrapolation.
+        """
         if not self._artifacts or not self._artifacts.get("qm_params"):
             return df
 
-        from scipy.interpolate import PchipInterpolator
+        from speed_figures import apply_recal_map
 
-        log.info("Applying quantile mapping...")
+        log.info("Applying recalibration map...")
 
         for surface, qm in self._artifacts["qm_params"].items():
             mask = (
@@ -1758,13 +1797,11 @@ class LiteRatingEngine:
             if mask.sum() == 0:
                 continue
 
-            pred_q = np.array(qm["pred_quantiles"])
-            tf_q = np.array(qm["tf_quantiles"])
-            mapper = PchipInterpolator(pred_q, tf_q, extrapolate=True)
-
             x = df.loc[mask, "figure_calibrated"].values.astype(float)
-            df.loc[mask, "figure_calibrated"] = mapper(x)
-            log.info(f"  {surface}: QM applied to {mask.sum()} runners")
+            df.loc[mask, "figure_calibrated"] = apply_recal_map(
+                x, qm["pred_quantiles"], qm["tf_quantiles"]
+            )
+            log.info(f"  {surface}: recalibration applied to {mask.sum()} runners")
 
         df["figure_calibrated"] = df["figure_calibrated"].round(1)
         return df
