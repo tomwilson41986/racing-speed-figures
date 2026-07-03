@@ -306,8 +306,10 @@ def compute_standard_times(df):
     # Apply prior-based going correction to ALL winners so that standards
     # reflect median ground conditions, not just good-going conditions.
     # This reduces GA corrective burden (GA audit §2).
-    winners["prior_ga"] = winners["going"].map(FRANCE_GOING_GA_PRIOR).fillna(
-        FRANCE_GOING_GA_PRIOR.get("Bon", 0.04 / 201.168)
+    winners["prior_ga"] = winners["going"].map(
+        lambda g: C.get_france_going_prior(
+            g, default=FRANCE_GOING_GA_PRIOR["Bon"]
+        )
     )
     winners["adj_time"] = (
         winners["finishingTime"] - (winners["prior_ga"] * winners["distance"])
@@ -833,7 +835,7 @@ def compute_going_allowances(df, std_times):
         going_desc = meeting_going.get(
             mid.replace("_early", "").replace("_late", ""), "Bon"
         )
-        prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05)
+        prior_ga = C.get_france_going_prior(going_desc)
 
         k = GA_SHRINKAGE_K
         shrunk_ga = (n * raw_ga + k * prior_ga) / (n + k)
@@ -1069,11 +1071,13 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict, std_times=None,
     is_winner = out["positionOfficial"] == 1
     cum_raw = out["distanceCumulative"].fillna(0).clip(lower=0)
 
-    # Going-dependent beaten-length attenuation (same as UK)
+    # Going-dependent beaten-length attenuation (same as UK).
+    # GA is in s/m here — bl_attenuation_threshold converts to the s/f
+    # scale the -8 sensitivity was derived on.
     F = BL_ATTENUATION_FACTOR
     if going_allowances is not None:
         ga = out["meeting_id"].map(going_allowances).fillna(0)
-        T = np.clip(BL_ATTENUATION_THRESHOLD + (ga * -8), 10, 30)
+        T = C.bl_attenuation_threshold(ga)
     else:
         T = BL_ATTENUATION_THRESHOLD
     cum = np.where(cum_raw <= T, cum_raw, T + F * (cum_raw - T))
@@ -1085,6 +1089,19 @@ def compute_all_figures(df, winner_fig_dict, lpl_dict, std_times=None,
     # Non-finishers
     no_pos = out["positionOfficial"].isna() | (out["positionOfficial"] == 0)
     out.loc[no_pos, "raw_figure"] = np.nan
+
+    # Finishers behind an unparseable margin have an unknown cumulative
+    # beaten distance (NaN from compute_cumulative_bl).  The fillna(0)
+    # above would otherwise hand them the winner's figure — null instead.
+    unknown_bl = (
+        out["distanceCumulative"].isna()
+        & out["positionOfficial"].notna()
+        & (out["positionOfficial"] > 1)
+    )
+    if unknown_bl.any():
+        log.info("    Nulling %s finishers with unknown beaten margins",
+                 f"{unknown_bl.sum():,}")
+        out.loc[unknown_bl, "raw_figure"] = np.nan
 
     # Cap extreme outlier figures — same bounds as winner figures (Stage 4).
     # Without this, garbage values from clamped/missing standard times leak
@@ -1135,9 +1152,9 @@ def apply_wfa_adjustment(df):
     Weight-for-age adjustment using empirical WFA table derived from
     GBR Timeform timefigure gaps (2021-2025, ~270k runners).
 
-    WFA is only applied to runners in mixed-age races.  In age-restricted
-    races (e.g. all 3yos) there is no older-horse benchmark, so the WFA
-    would artificially inflate figures.
+    Always applied, regardless of race age composition, so that figures
+    are comparable across the entire population (matches the live
+    pipeline's behaviour).
     """
     from .constants import get_france_wfa_allowance
 

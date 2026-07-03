@@ -54,6 +54,8 @@ from .constants import (
     LPL_SURFACE_MULTIPLIER,
     NON_FRENCH_COURSE_CODES,
     SECONDS_PER_LENGTH,
+    bl_attenuation_threshold,
+    get_france_going_prior,
 )
 from .speed_figures import (
     generic_lbs_per_length,
@@ -119,7 +121,7 @@ class FranceLiveRatingEngine:
             ga = self.empirical_ga_priors.get(going_desc)
             if ga is not None:
                 return ga
-        return FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05)
+        return get_france_going_prior(going_desc)
 
     def _compute_realtime_ga(self, df):
         """Compute going allowances from same-day results for meetings
@@ -195,7 +197,7 @@ class FranceLiveRatingEngine:
             if self.empirical_ga_priors:
                 prior_ga = self.empirical_ga_priors.get(going_desc)
             if prior_ga is None:
-                prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05 / 201.168)
+                prior_ga = get_france_going_prior(going_desc)
             ga = (n * raw_ga + GA_SHRINKAGE_K * prior_ga) / (n + GA_SHRINKAGE_K)
 
             # Non-linear correction for extreme going
@@ -484,9 +486,10 @@ class FranceLiveRatingEngine:
         is_winner = df["positionOfficial"] == 1
         cum_raw = df["distanceCumulative"].fillna(0).clip(lower=0)
 
-        # Beaten-length attenuation
+        # Beaten-length attenuation.  GA is in s/m — the helper converts
+        # to the s/f scale the -8 sensitivity was derived on.
         ga = df["going_allowance"].fillna(0)
-        T = np.clip(BL_ATTENUATION_THRESHOLD + (ga * -8), 10, 30)
+        T = bl_attenuation_threshold(ga)
         cum = np.where(cum_raw <= T, cum_raw, T + BL_ATTENUATION_FACTOR * (cum_raw - T))
 
         df["bl_effective"] = cum  # attenuated BL for QA display
@@ -497,6 +500,22 @@ class FranceLiveRatingEngine:
         # Non-finishers
         no_pos = df["positionOfficial"].isna() | (df["positionOfficial"] == 0)
         df.loc[no_pos, "raw_figure"] = np.nan
+
+        # Finishers behind an unparseable margin (NaN distanceCumulative)
+        # have an unknown gap to the winner — the fillna(0) above would
+        # otherwise hand them the winner's figure.
+        unknown_bl = (
+            df["distanceCumulative"].isna()
+            & df["positionOfficial"].notna()
+            & (df["positionOfficial"] > 1)
+        )
+        if unknown_bl.any():
+            log.info("  Nulling %d finishers with unknown beaten margins",
+                     unknown_bl.sum())
+            df.loc[unknown_bl, "raw_figure"] = np.nan
+            df.loc[unknown_bl, "figure_comment"] = (
+                "excluded: unparseable beaten margin"
+            )
 
         # --- Weight adjustment ---
         has_w = df["weightCarried"].notna()
