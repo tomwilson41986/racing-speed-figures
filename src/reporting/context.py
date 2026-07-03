@@ -34,8 +34,13 @@ JURISDICTIONS = {
     },
 }
 
-# UK ratings CSV uses ``figure_calibrated`` as the headline figure.
-_UK_RATING_CANDIDATES = ["figure_final", "figure_calibrated"]
+# IMPORTANT: ``figure_final`` means DIFFERENT things in the two pipelines:
+#   UK  : figure_final is a PRE-calibration intermediate (raw_figure + wfa_adj,
+#         on a ~180-240 scale). The published UK figure is ``figure_calibrated``.
+#   FR  : figure_final == figure_calibrated (the published French figure).
+# So UK must resolve to figure_calibrated ONLY (never figure_final), while France
+# uses figure_final. Getting this wrong shows UK figures at ~180-240.
+_UK_RATING_CANDIDATES = ["figure_calibrated"]
 _FR_RATING_CANDIDATES = ["figure_final", "figure_calibrated"]
 
 
