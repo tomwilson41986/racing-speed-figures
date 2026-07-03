@@ -782,12 +782,15 @@ def train_model(df):
     print("ML MODEL TRAINING")
     print("=" * 70)
 
-    # Filter to valid target
+    # Filter to valid target.  figure_calibrated is required because the
+    # models are trained on the RESIDUAL (timefigure − figure_calibrated)
+    # and predictions are added back to it — see below.
     valid = df[
         df["timefigure"].notna()
         & (df["timefigure"] != 0)
         & df["timefigure"].between(-200, 200)
         & df["figure_final"].notna()
+        & df["figure_calibrated"].notna()
     ].copy()
     print(f"\nValid rows for training: {len(valid):,}")
 
@@ -811,8 +814,21 @@ def train_model(df):
             X[col] = X[col].fillna(-999)
     y = valid[target].values
 
+    # Residual target: a boosted-tree blend cannot predict above its
+    # training maximum and leaf averaging regresses rare elite levels
+    # toward the mean.  Training on the residual against the pipeline
+    # figure keeps the level in the (extrapolating) physical baseline;
+    # the trees only learn a bounded correction.  All reported metrics
+    # remain on the LEVEL scale after adding the baseline back.
+    base = valid["figure_calibrated"].values.astype(float)
+    y_resid = y - base
+
     X_train, y_train = X[train_mask], y[train_mask]
     X_test, y_test = X[test_mask], y[test_mask]
+    r_train = y_resid[train_mask.values]
+    r_test = y_resid[test_mask.values]
+    base_train = base[train_mask.values]
+    base_test = base[test_mask.values]
     print(f"Train: {len(X_train):,} rows (2015–2023)")
     print(f"Test:  {len(X_test):,} rows (2024+)")
 
@@ -839,7 +855,12 @@ def train_model(df):
     train_proper_mask = valid["source_year"] <= 2022
     X_tp, y_tp = X[train_proper_mask], y[train_proper_mask]
     X_vy, y_vy = X[val_year_mask], y[val_year_mask]
+    r_tp = y_resid[train_proper_mask.values]
+    r_vy = y_resid[val_year_mask.values]
+    base_vy = base[val_year_mask.values]
 
+    # Weights stay a function of the LEVEL (emphasise high-rated rows)
+    # even though the fitted target is the residual.
     sw_tp = np.ones_like(y_tp, dtype=float)
     sw_tp += np.clip((y_tp - 60) / 20, 0, 3)
     sw_tp = np.where(y_tp < 40, 0.7, sw_tp)
@@ -851,30 +872,34 @@ def train_model(df):
             **params, n_estimators=8000, early_stopping_rounds=150,
             verbosity=0,
         )
-        probe.fit(X_tp, y_tp, sample_weight=sw_tp,
-                  eval_set=[(X_vy, y_vy)], verbose=500)
+        probe.fit(X_tp, r_tp, sample_weight=sw_tp,
+                  eval_set=[(X_vy, r_vy)], verbose=500)
         n_rounds = int(probe.best_iteration) + 1
         model = xgb.XGBRegressor(**params, n_estimators=n_rounds,
                                  verbosity=0)
-        model.fit(X_train, y_train, sample_weight=sample_weights,
+        model.fit(X_train, r_train, sample_weight=sample_weights,
                   verbose=False)
-        print(f"    {label} rounds={n_rounds}, test MAE: "
-              f"{mean_absolute_error(y_test, model.predict(X_test)):.4f}")
+        level_mae = mean_absolute_error(
+            y_test, base_test + model.predict(X_test)
+        )
+        print(f"    {label} rounds={n_rounds}, test MAE: {level_mae:.4f}")
         return model
 
     def _fit_lgb(params, label):
-        probe_tr = lgb.Dataset(X_tp, y_tp, weight=sw_tp)
-        probe_va = lgb.Dataset(X_vy, y_vy, reference=probe_tr)
+        probe_tr = lgb.Dataset(X_tp, r_tp, weight=sw_tp)
+        probe_va = lgb.Dataset(X_vy, r_vy, reference=probe_tr)
         probe = lgb.train(
             params, probe_tr, num_boost_round=8000,
             valid_sets=[probe_va],
             callbacks=[lgb.early_stopping(150), lgb.log_evaluation(500)],
         )
         n_rounds = probe.best_iteration or 8000
-        full_tr = lgb.Dataset(X_train, y_train, weight=sample_weights)
+        full_tr = lgb.Dataset(X_train, r_train, weight=sample_weights)
         model = lgb.train(params, full_tr, num_boost_round=n_rounds)
-        print(f"    {label} rounds={n_rounds}, test MAE: "
-              f"{mean_absolute_error(y_test, model.predict(X_test)):.4f}")
+        level_mae = mean_absolute_error(
+            y_test, base_test + model.predict(X_test)
+        )
+        print(f"    {label} rounds={n_rounds}, test MAE: {level_mae:.4f}")
         return model
 
     # ── Model 1: XGBoost MSE (lower min_child_weight for sharper extremes) ──
@@ -915,12 +940,12 @@ def train_model(df):
         "LGB-MAE",
     )
 
-    # ── 4-model equal blend ──
-    train_pred = 0.25 * (
+    # ── 4-model equal blend (residual corrections + baseline = level) ──
+    train_pred = base_train + 0.25 * (
         xgb_mse.predict(X_train) + xgb_mae.predict(X_train)
         + lgb_mse.predict(X_train) + lgb_mae.predict(X_train)
     )
-    test_pred = 0.25 * (
+    test_pred = base_test + 0.25 * (
         xgb_mse.predict(X_test) + xgb_mae.predict(X_test)
         + lgb_mse.predict(X_test) + lgb_mae.predict(X_test)
     )
@@ -933,7 +958,8 @@ def train_model(df):
     # find optimal one-sided stretch for predictions above a threshold.
     print("\n  One-sided calibration (top-end only, 2015-2022 → 2023)...")
     # Reuse the probe-train (≤2022) / validation-year (2023) split and its
-    # asymmetric weights from the early-stopping protocol above.
+    # asymmetric weights from the early-stopping protocol above.  Same
+    # residual target; cal_pred is on the LEVEL scale after add-back.
     X_cy, y_cy = X_vy, y_vy
 
     xgb_cal = xgb.XGBRegressor(
@@ -941,11 +967,11 @@ def train_model(df):
         n_estimators=4000, early_stopping_rounds=100, verbosity=0,
         subsample=0.8, colsample_bytree=0.7, min_child_weight=8,
     )
-    xgb_cal.fit(X_tp, y_tp, sample_weight=sw_tp,
-                eval_set=[(X_cy, y_cy)], verbose=False)
+    xgb_cal.fit(X_tp, r_tp, sample_weight=sw_tp,
+                eval_set=[(X_cy, r_vy)], verbose=False)
 
-    lgb_cal_tr = lgb.Dataset(X_tp, y_tp, weight=sw_tp)
-    lgb_cal_va = lgb.Dataset(X_cy, y_cy, reference=lgb_cal_tr)
+    lgb_cal_tr = lgb.Dataset(X_tp, r_tp, weight=sw_tp)
+    lgb_cal_va = lgb.Dataset(X_cy, r_vy, reference=lgb_cal_tr)
     lgb_cal_mdl = lgb.train(
         {"objective": "regression", "metric": "mae", "num_leaves": 127,
          "learning_rate": 0.03, "feature_fraction": 0.8,
@@ -955,7 +981,9 @@ def train_model(df):
         callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)],
     )
 
-    cal_pred = 0.5 * (xgb_cal.predict(X_cy) + lgb_cal_mdl.predict(X_cy))
+    cal_pred = base_vy + 0.5 * (
+        xgb_cal.predict(X_cy) + lgb_cal_mdl.predict(X_cy)
+    )
     cal_mae = mean_absolute_error(y_cy, cal_pred)
     print(f"    Calibration 2023 MAE: {cal_mae:.2f}")
 
