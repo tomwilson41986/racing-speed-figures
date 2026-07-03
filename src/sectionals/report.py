@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,14 @@ try:
     from src.live_ratings import RECIPIENTS
 except Exception:  # pragma: no cover
     RECIPIENTS = ["racingsquared@gmail.com"]
+
+
+def _recipients():
+    """Recipients, overridable via RATINGS_RECIPIENTS (comma-separated)."""
+    override = os.environ.get("RATINGS_RECIPIENTS", "").strip()
+    if override:
+        return [r.strip() for r in override.split(",") if r.strip()]
+    return RECIPIENTS
 
 
 def _distance_str(distance, unit) -> str:
@@ -199,7 +208,7 @@ def run(date: str, send: bool = True) -> ReportContext:
         log.warning("No matched sectionals for %s — skipping email.", date)
         return ctx
     subject = f"Sectional Upgrades & Downgrades — {subj_date} ({n} runners)"
-    emailer.send_report(ctx, subject, RECIPIENTS, dry_run=not send, save_html_path=str(html_path))
+    emailer.send_report(ctx, subject, _recipients(), dry_run=not send, save_html_path=str(html_path))
     return ctx
 
 
