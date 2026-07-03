@@ -54,6 +54,19 @@ except Exception:  # pragma: no cover
         IRE_COURSES = set()
 
 
+def _recipients() -> List[str]:
+    """Recipient list, overridable via RATINGS_RECIPIENTS (comma-separated).
+
+    Set RATINGS_RECIPIENTS in the workflow to restrict who receives the email
+    (e.g. to racingsquared@gmail.com while verifying); unset it to use the full
+    distribution list.
+    """
+    override = os.environ.get("RATINGS_RECIPIENTS", "").strip()
+    if override:
+        return [r.strip() for r in override.split(",") if r.strip()]
+    return RECIPIENTS
+
+
 def _read(path_tmpl: Path, date: str) -> Optional[pd.DataFrame]:
     p = Path(str(path_tmpl).format(date=date))
     if p.exists():
@@ -149,8 +162,10 @@ def run(target_date: Optional[str] = None, send: bool = True) -> ReportContext:
     subj_date = _subject_date(target_date)
     subject = f"Live Speed Ratings — {subj_date} ({n} runners)"
 
+    recipients = _recipients()
+    log.info("Sending combined email to %s", recipients)
     emailer.send_report(
-        ctx, subject, RECIPIENTS, dry_run=not send, save_html_path=str(html_path)
+        ctx, subject, recipients, dry_run=not send, save_html_path=str(html_path)
     )
     return ctx
 
