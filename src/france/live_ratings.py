@@ -67,6 +67,13 @@ log = logging.getLogger(__name__)
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 LIVE_DIR = ROOT_DIR / "data" / "france_live"
 
+# Data-sanity ceiling for French figures. Normal French figures top out ~95;
+# a whole race exceeding this is almost certainly a bad finishing time. France
+# applies only a linear scale+shift calibration (no quantile compression like
+# the UK pipeline), so such outliers are not tamed and must be guarded here.
+# See _sanity_guard and docs/AUDIT_FRENCH_VS_UK_RATINGS.md.
+FRANCE_FIGURE_CEILING = 120.0
+
 # ─── Email configuration ────────────────────────────────────────────
 RECIPIENTS = [
     "racingsquared@gmail.com",
@@ -571,6 +578,12 @@ class FranceLiveRatingEngine:
         df.loc[beaten_far, "figure_calibrated"] = np.nan
         df.loc[beaten_far, "figure_comment"] = "excluded: beaten >20 lengths"
 
+        # Data-sanity guard: France's linear calibration does not compress
+        # extreme raw figures, so a bad finishing time can yield a 150+ figure
+        # for a whole race (e.g. LAT R6 2026-07-01: winner 117.95s vs 121.04s
+        # standard -> figure 149). Exclude races above the plausibility ceiling.
+        df = self._sanity_guard(df)
+
         df["figure_final"] = df["figure_calibrated"]
 
         has_fig = df["figure_final"].notna()
@@ -580,6 +593,37 @@ class FranceLiveRatingEngine:
                      df.loc[has_fig, "figure_final"].min(),
                      df.loc[has_fig, "figure_final"].max())
 
+        return df
+
+    def _sanity_guard(self, df):
+        """Null out races whose calibrated figure is implausibly high.
+
+        France applies only a linear (scale+shift) calibration, which — unlike
+        the UK pipeline's quantile mapping — does not compress extreme figures.
+        A single bad finishing time then inflates the whole race to a 150+
+        rating. Across 107 days of history only four races exceed the ceiling
+        (128, 152, 214, 224 — all clearly erroneous), so excluding them is safe
+        and does not touch legitimate figures (which top out ~95). The deeper
+        fix (add compression to France calibration) is tracked in
+        docs/AUDIT_FRENCH_VS_UK_RATINGS.md.
+        """
+        if "race_id" not in df.columns or "figure_calibrated" not in df.columns:
+            return df
+        race_max = df.groupby("race_id")["figure_calibrated"].transform("max")
+        bad = race_max > FRANCE_FIGURE_CEILING
+        if bad.any():
+            for rid in sorted(df.loc[bad, "race_id"].unique()):
+                mx = df.loc[df["race_id"] == rid, "figure_calibrated"].max()
+                log.warning(
+                    "Sanity guard: excluded race %s — figure %.0f exceeds ceiling "
+                    "%.0f (likely bad finishing time)",
+                    rid, mx, FRANCE_FIGURE_CEILING,
+                )
+            df.loc[bad, "figure_calibrated"] = np.nan
+            df.loc[bad, "figure_comment"] = (
+                f"excluded: race figure implausibly high (>{FRANCE_FIGURE_CEILING:.0f}) "
+                "— likely a bad finishing time (data check)"
+            )
         return df
 
     def rate_day(self, session, race_date):
