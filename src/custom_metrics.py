@@ -99,6 +99,10 @@ class CustomMetricsEngine:
         windows: Lookback windows for rolling metrics (default: [3, 5, 10]).
     """
 
+    # Minimum prior races at a (track, distance, going) before an RSR
+    # par is trusted — below this the par is too noisy to rate against.
+    _RSR_MIN_PAR_SAMPLE = 5
+
     def __init__(self, windows: list[int] | None = None):
         self.windows = windows or [3, 5, 10]
         self.max_window = max(self.windows)
@@ -1150,7 +1154,12 @@ class CustomMetricsEngine:
             numerator = np.nansum(
                 (x - x_mean) * (y_vals - y_mean), axis=1
             )
-            slope = numerator / x_var
+            # x runs from the MOST RECENT prior run (lag1, x=0) to the
+            # oldest (x=w-1), so the raw regression slope is positive
+            # when the OLDER runs were better — i.e. declining form.
+            # Negate so positive = improving, matching the
+            # is_improving / is_declining flags below.
+            slope = -(numerator / x_var)
 
             # Positive slope = improving (most recent is better)
             df[f"form_slope_{w}"] = slope
@@ -1483,6 +1492,13 @@ class CustomMetricsEngine:
 
         RSR = (standard_time - actual_time) / standard_time * 100
         Positive RSR = faster than standard.
+
+        Lag-safety: the standard time for each race is the median of
+        finishing times at the same (track, distance, going) from races
+        on STRICTLY EARLIER dates only, and requires at least
+        ``_RSR_MIN_PAR_SAMPLE`` prior races.  A whole-dataset median
+        would leak the current race (and future races) into its own par,
+        making every RSR-derived feature invalid for backtesting.
         """
         if "comptime_numeric" not in df.columns:
             for col in [
@@ -1506,9 +1522,36 @@ class CustomMetricsEngine:
             df["track"].fillna("unknown").str.lower().str.strip()
         )
 
-        std_times = df.groupby(
-            ["_track_lower_sf", "_dist_round", "_going_lower"]
-        )["_comptime"].transform("median")
+        # Lag-safe standard time: for each race, the median finishing
+        # time of races at the same (track, distance, going) run on
+        # strictly earlier dates.  All runners in a race share one
+        # comptime, so pars are computed at RACE level (one vote per
+        # race, not per runner) and races without enough prior sample
+        # get no RSR rather than a noisy one.
+        df["_race_dt"] = pd.to_datetime(df["race_date"], errors="coerce")
+
+        race_level = (
+            df.dropna(subset=["_comptime", "_race_dt"])
+            .drop_duplicates(subset=["raceid"])
+            [["raceid", "_track_lower_sf", "_dist_round", "_going_lower",
+              "_race_dt", "_comptime"]]
+        )
+
+        par_by_race = {}
+        group_cols = ["_track_lower_sf", "_dist_round", "_going_lower"]
+        for _, g in race_level.groupby(group_cols, dropna=False):
+            g = g.sort_values("_race_dt")
+            times = g["_comptime"].to_numpy(dtype=float)
+            dates = g["_race_dt"].to_numpy()
+            rids = g["raceid"].to_numpy()
+            for i in range(len(g)):
+                # Races strictly before this date (same-day races at the
+                # same track/distance/going are also excluded).
+                j = int(np.searchsorted(dates, dates[i], side="left"))
+                if j >= self._RSR_MIN_PAR_SAMPLE:
+                    par_by_race[rids[i]] = float(np.median(times[:j]))
+
+        std_times = df["raceid"].map(par_by_race)
 
         # RSR: positive = faster than standard
         df["RSR"] = (
@@ -1552,7 +1595,7 @@ class CustomMetricsEngine:
 
         df.drop(
             columns=["_comptime", "_going_lower", "_dist_round",
-                     "_track_lower_sf"],
+                     "_track_lower_sf", "_race_dt"],
             errors="ignore", inplace=True,
         )
 
