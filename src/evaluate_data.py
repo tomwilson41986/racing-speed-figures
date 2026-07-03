@@ -8,7 +8,12 @@ import numpy as np
 import os
 from collections import defaultdict
 
-DATA_DIR = "/tmp/racing_data"
+# Same raw-data location the pipeline uses (src/speed_figures.py), with an
+# env override for ad-hoc runs against data staged elsewhere.
+DATA_DIR = os.environ.get(
+    "RACING_DATA_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "raw"),
+)
 
 
 def load_all_data():

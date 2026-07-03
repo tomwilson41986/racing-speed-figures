@@ -663,7 +663,7 @@ def generic_lbs_per_length(distance_furlongs, surface=None):
     """
     Generic lbs-per-length from the distance (and optionally surface).
     lpl = seconds_per_length × lbs_per_second_at_distance × surface_mult
-    lbs_per_second = 22 × (5 / distance)
+    lbs_per_second = LBS_PER_SECOND_5F × (BENCHMARK_FURLONGS / distance)
     """
     lbs_per_sec = LBS_PER_SECOND_5F * (BENCHMARK_FURLONGS / distance_furlongs)
     base_lpl = SECONDS_PER_LENGTH * lbs_per_sec
