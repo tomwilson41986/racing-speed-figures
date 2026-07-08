@@ -1,0 +1,104 @@
+name: Timeform TFig Reconciliation
+
+# Every morning after racing, pull the previous day's Timeform TFigs, compare
+# them to our UK/IRE figures for that day, email a comparison report, and update
+# the rolling correction. Runs at 08:30 UTC — TFigs are published overnight, and
+# this lands well before the 21:00 combined live email.
+#
+# First-time setup: run this workflow manually with capture_only=true to dump the
+# real logged-in HTML/JSON as an artifact, then finalise the parser selectors.
+
+on:
+  schedule:
+    - cron: '30 8 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Race date (YYYY-MM-DD), empty = yesterday'
+        required: false
+        default: ''
+      capture_only:
+        description: 'Only dump raw HTML/JSON artifact (no reconcile/email)'
+        required: false
+        default: 'false'
+      send_email:
+        description: 'Send the comparison email?'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: write
+
+jobs:
+  timeform-recon:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Install Chromium for Playwright
+        run: python -m playwright install chromium --with-deps
+
+      - name: Run offline parser/reconcile tests
+        run: python -m pytest tests/timeform/ -q
+
+      - name: Resolve target date
+        id: d
+        run: |
+          DATE_ARG="${{ github.event.inputs.date }}"
+          if [ -z "$DATE_ARG" ]; then DATE_ARG=$(date -u -d 'yesterday' +%Y-%m-%d); fi
+          echo "date=$DATE_ARG" >> "$GITHUB_OUTPUT"
+
+      - name: Timeform reconciliation
+        env:
+          TIMEFORM_USER: ${{ secrets.TIMEFORM_USER }}
+          TIMEFORM_PASS: ${{ secrets.TIMEFORM_PASS }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          # Send the report to the account owner. Add addresses (comma-separated)
+          # to widen distribution once the numbers are trusted.
+          RATINGS_RECIPIENTS: racingsquared@gmail.com
+        run: |
+          D="${{ steps.d.outputs.date }}"
+          if [ "${{ github.event.inputs.capture_only }}" = "true" ]; then
+            python -m src.timeform.cli -v capture-html --date "$D"
+          else
+            FLAG=""
+            if [ "${{ github.event.inputs.send_email }}" = "false" ]; then FLAG="--no-email"; fi
+            python -m src.timeform.cli -v run --date "$D" $FLAG
+          fi
+
+      - name: Upload raw capture artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: timeform-raw-${{ github.run_id }}
+          path: output/timeform_recon/raw/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Commit reconciliation outputs
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin ${{ github.ref_name }} || true
+          git add output/timeform_recon/history.csv \
+                  output/timeform_recon/*.csv \
+                  output/timeform_recon/*.md \
+                  output/timeform_recon/*.html \
+                  output/timeform_recon/correction.json || true
+          if git diff --cached --quiet; then
+            echo "No new reconciliation outputs to commit"
+          else
+            git commit -m "Timeform reconciliation for ${{ steps.d.outputs.date }}"
+            git push
+          fi
