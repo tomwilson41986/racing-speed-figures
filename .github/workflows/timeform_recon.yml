@@ -2,15 +2,15 @@ name: Timeform TFig Reconciliation
 
 # Every morning after racing, pull the previous day's Timeform TFigs, compare
 # them to our UK/IRE figures for that day, email a comparison report, and update
-# the rolling correction. Runs at 08:30 UTC — TFigs are published overnight, and
-# this lands well before the 21:00 combined live email.
+# the rolling correction. Runs at 10:00 UTC — late enough for Timeform to finish
+# publishing the previous day's TFigs, and well before the 21:00 combined email.
 #
 # First-time setup: run this workflow manually with capture_only=true to dump the
 # real logged-in HTML/JSON as an artifact, then finalise the parser selectors.
 
 on:
   schedule:
-    - cron: '30 8 * * *'
+    - cron: '0 10 * * *'
   workflow_dispatch:
     inputs:
       date:

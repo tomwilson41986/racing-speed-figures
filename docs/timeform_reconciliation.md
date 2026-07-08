@@ -12,8 +12,9 @@ check: how well yesterday's live figures actually tracked Timeform, day by day.
 
 ## What runs
 
-`.github/workflows/timeform_recon.yml` runs at **08:30 UTC** each morning (TFigs
-are published overnight; this lands before the 21:00 combined live email). It:
+`.github/workflows/timeform_recon.yml` runs at **10:00 UTC** each morning (late
+enough for Timeform to finish publishing the previous day's TFigs; still well
+before the 21:00 combined live email). It:
 
 1. logs into Timeform and loads `results/yesterday`;
 2. parses each meeting's runners + TFigs (preferring a JSON feed if the site
