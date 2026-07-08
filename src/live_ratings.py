@@ -1037,6 +1037,7 @@ class LiteRatingEngine:
         df = self._apply_quantile_mapping(df)
         df = self._apply_oos_corrections(df)
         df = self._apply_final_rescaling(df)
+        df = self._apply_timeform_correction(df)
 
         # Diagnostic: how much the figure-based rank diverges from finish position.
         # Positive = figure ranks higher than finishing position (weight boost).
@@ -1835,6 +1836,43 @@ class LiteRatingEngine:
             )
 
         df["figure_calibrated"] = df["figure_calibrated"].round(1)
+        return df
+
+    def _apply_timeform_correction(self, df):
+        """Optionally nudge figures toward Timeform TFigs (dormant by default).
+
+        Uses the rolling bias/scale correction that the Timeform reconciliation
+        pipeline maintains in ``output/timeform_recon/correction.json`` (see
+        ``docs/timeform_reconciliation.md``).  This only runs when BOTH gates are
+        open: the master env switch ``TIMEFORM_CORRECTION=1`` is set AND the
+        persisted correction has ``apply=true`` (i.e. every guardrail passed).
+        By default neither is true, so this is a no-op — fully reversible by
+        unsetting the env var or setting ``apply:false``.
+        """
+        if os.environ.get("TIMEFORM_CORRECTION", "").strip().lower() not in ("1", "true"):
+            return df
+        try:
+            from src.timeform.store import load_correction
+            corr = load_correction()
+        except Exception as e:  # pragma: no cover - defensive
+            log.warning("Timeform correction unavailable: %s", e)
+            return df
+        if not corr or not corr.get("apply"):
+            return df
+
+        bias = float(corr.get("bias_applied", 0.0))
+        scale = float(corr.get("scale_applied", 1.0))
+        mask = df["figure_calibrated"].notna()
+        if mask.sum() == 0 or (abs(bias) < 1e-9 and abs(scale - 1.0) < 1e-9):
+            return df
+
+        # diff = ours - Timeform, so a positive bias means we over-rate → subtract.
+        y = df.loc[mask, "figure_calibrated"].astype(float)
+        y_mean = y.mean()
+        df.loc[mask, "figure_calibrated"] = (y - y_mean) * scale + y_mean - bias
+        df["figure_calibrated"] = df["figure_calibrated"].round(1)
+        log.info("Applied Timeform correction: bias=%.2f scale=%.3f to %d runners",
+                 bias, scale, int(mask.sum()))
         return df
 
 
