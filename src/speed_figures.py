@@ -16,9 +16,10 @@ Pipeline stages:
   7. Apply weight-for-age (WFA) adjustment
   8. Apply sex allowance
   9. Calibrate against Timeform timefigure (quadratic + offsets)
- 10. Stacked GBR enhancement (figure_calibrated + features → timefigure)
- 10b. Scale expansion via quantile mapping (corrects GBR compression)
- 11. Validate against Timeform timefigure
+ 10. Stacked GBR enhancement (residual-target: figure + learned correction)
+ 10b. Conditional-mean recalibration (corrects compression, slope-1 tails)
+ 10c. OOS corrections (distance + temporal + going bias)
+ 11. Validate against Timeform timefigure (+ top-band scorecard)
 """
 
 import pandas as pd
@@ -80,6 +81,8 @@ GA_SHRINKAGE_K = 3.0             # Bayesian shrinkage strength toward going-desc
 GA_NONLINEAR_THRESHOLD = 0.30    # GA magnitude (s/f) above which non-linear correction kicks in
 GA_NONLINEAR_BETA = 0.25         # Quadratic coefficient for extreme going correction
 GA_CONVERGENCE_TOL = 0.005       # Mean absolute change (s/f) for iteration convergence
+GA_CLASS_SHRINKAGE_K = 200       # Shrinkage for the per-class winner-deviation gradient
+                                 # removed from deviations before GA aggregation
 
 # Class adjustments in seconds per mile (8 furlongs).
 # These are subtracted from raw finishing times to normalise to a common
@@ -663,7 +666,7 @@ def generic_lbs_per_length(distance_furlongs, surface=None):
     """
     Generic lbs-per-length from the distance (and optionally surface).
     lpl = seconds_per_length × lbs_per_second_at_distance × surface_mult
-    lbs_per_second = 22 × (5 / distance)
+    lbs_per_second = LBS_PER_SECOND_5F × (BENCHMARK_FURLONGS / distance)
     """
     lbs_per_sec = LBS_PER_SECOND_5F * (BENCHMARK_FURLONGS / distance_furlongs)
     base_lpl = SECONDS_PER_LENGTH * lbs_per_sec
@@ -830,6 +833,42 @@ def _temporal_neighbor_ga(undersized_meetings, ga_dict):
     return recovered
 
 
+def _ga_class_key(race_class_series):
+    """Normalise raceClass to a stable string key ('1'..'7', or 'unknown')."""
+    c = pd.to_numeric(race_class_series, errors="coerce")
+    return c.map(lambda v: str(int(v)) if pd.notna(v) else "unknown")
+
+
+def compute_ga_class_gradient(dev_per_furlong, race_class,
+                              k=GA_CLASS_SHRINKAGE_K):
+    """Shrunk per-class mean winner deviation vs class-neutral standards.
+
+    Winners of better races beat the (class-neutral) standard times simply
+    because they are better horses — measured on production data, class
+    1-2 winners run ~0.08 s/f faster against standards than class 4+
+    winners on the SAME card.  Because the meeting GA is essentially the
+    winsorized mean of the card's winner deviations, that superiority is
+    absorbed into the GA as "fast ground" and then subtracted from every
+    figure on the card — shaving elite figures on exactly the days elite
+    horses run.
+
+    This gradient (per-class mean deviation relative to the overall mean,
+    shrunk by ``k`` pseudo-counts) is removed from each winner's deviation
+    BEFORE the meeting aggregation, so the GA measures ground, not card
+    quality.  Centred on the overall mean, it leaves the average GA
+    unchanged.  Returns {class_key: gradient_s_per_furlong}; unknown
+    classes (e.g. Irish cards with no raceClass) get no adjustment.
+    """
+    keys = _ga_class_key(race_class)
+    overall = dev_per_furlong.mean()
+    grp = dev_per_furlong.groupby(keys.values)
+    means = grp.mean()
+    counts = grp.count()
+    gradient = ((means - overall) * counts / (counts + k)).to_dict()
+    gradient.pop("unknown", None)
+    return gradient
+
+
 def compute_going_allowances(df, std_times):
     """
     Going allowance per meeting in seconds-per-furlong (s/f).
@@ -900,6 +939,23 @@ def compute_going_allowances(df, std_times):
     # Per-furlong deviation from standard
     winners["deviation"] = winners["adj_time"] - winners["standard_time"]
     winners["dev_per_furlong"] = winners["deviation"] / winners["distance"]
+
+    # ── Class-gradient correction (see compute_ga_class_gradient) ──
+    # Remove the class component of winner deviations before the meeting
+    # aggregation so elite winners' superiority is not misread as fast
+    # ground.  Applied per winner; centred so the mean GA is unchanged.
+    ga_class_gradient = compute_ga_class_gradient(
+        winners["dev_per_furlong"], winners["raceClass"]
+    )
+    if ga_class_gradient:
+        cls_adj = _ga_class_key(winners["raceClass"]).map(
+            ga_class_gradient
+        ).fillna(0.0)
+        winners["dev_per_furlong"] = winners["dev_per_furlong"] - cls_adj
+        grad_str = ", ".join(
+            f"C{k}:{v:+.4f}" for k, v in sorted(ga_class_gradient.items())
+        )
+        print(f"    GA class gradient (s/f, removed): {grad_str}")
 
     # ── Per-meeting outlier removal (replaces global 1st/99th percentile) ──
     # Within each meeting, remove deviations that are extreme relative to
@@ -1082,7 +1138,7 @@ def compute_going_allowances(df, std_times):
     )
     print(f"    GA mean:  {np.mean(list(ga_dict.values())):.3f} s/f")
 
-    return ga_dict, ga_se_dict
+    return ga_dict, ga_se_dict, ga_class_gradient
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1466,18 +1522,26 @@ def calibrate_figures(df):
                 f"    {surface:<15}: timefigure ≈ {a:.4f} × figure + {b:.2f}"
             )
 
-        # Per-class residual correction
+        # Per-class residual correction (with shrinkage).
+        # This was the only UNSHRUNK offset layer — and class 1-2 races
+        # contain essentially the whole high-figure population, so a
+        # noisy raw class-1 mean downshifted the entire elite band
+        # wholesale.  Shrunk like every other offset family.
+        SHRINKAGE_K = 100  # regularisation strength (all offset layers)
         fit_pred = (
             a * x + a2 * (x - x_mean) ** 2 + b if a2 != 0
             else a * x + b
         )
         residuals = y - fit_pred
-        class_offsets = (
+        cls_groups = (
             pd.Series(residuals, index=fit.index)
             .groupby(fit["raceClass"])
-            .mean()
         )
-        class_offset_dict = class_offsets.to_dict()
+        cls_means = cls_groups.mean()
+        cls_counts = cls_groups.count()
+        class_offset_dict = (
+            cls_means * cls_counts / (cls_counts + SHRINKAGE_K)
+        ).to_dict()
 
         surf_class_adj = df.loc[surf_mask, "raceClass"].map(
             class_offset_dict
@@ -1492,7 +1556,6 @@ def calibrate_figures(df):
 
         # Per course×distance residual correction (with shrinkage).
         # Directly corrects standard-time errors per track/distance combo.
-        SHRINKAGE_K = 100  # regularisation strength
         cd_key = (
             fit["courseName"] + "_" +
             fit["distance"].round(0).astype(int).astype(str)
@@ -1704,15 +1767,19 @@ def enhance_with_gbr(df):
     """
     Stage 10: Stacked GBR enhancement of calibrated figures.
 
-    Trains a Gradient Boosted Regression model per surface that uses
-    figure_calibrated as the primary feature (~92% importance) plus
-    auxiliary features (race class, distance, going, etc.) to reduce
-    residual bias — particularly in the 70-130 figure range where the
-    linear calibration under-predicts by +5 lbs.
+    Trains a Gradient Boosted Regression model per surface on the
+    RESIDUAL (timefigure − figure_calibrated) and ADDS its prediction to
+    the figure, rather than predicting the figure level and replacing it.
 
-    Analysis showed this reduces:
-      Turf:  overall MAE 8.82→8.08 (-8%), 70-130 MAE 9.39→7.32 (-22%)
-      AW:    overall MAE 6.46→6.22 (-4%), 70-130 MAE 6.86→6.09 (-11%)
+    Why residual, not level: a sum-of-trees model cannot predict above
+    its training maximum, and each leaf value is the mean of
+    min_samples_leaf (=50) training rows — so a level-target GBR
+    structurally caps career-best performances and regresses the top
+    decile toward the mean (measured: the level-target GBR was the
+    dominant top-end compressor, −13 of the −16.6 lbs total pull at the
+    top 2% of live figures).  With the physical time figure as the
+    spine, elite performances keep their level and the trees only remove
+    bounded, systematic biases (class/course/going patterns).
     """
     if not HAS_SKLEARN:
         print("    scikit-learn not available — skipping GBR enhancement")
@@ -1795,7 +1862,9 @@ def enhance_with_gbr(df):
         fit["horseAge"] = fit["horseAge"].clip(upper=4)
 
         X_fit = fit[FEATURES].values
-        y_fit = fit["timefigure"].values
+        # Residual target — see docstring.  The trees learn a bounded
+        # correction; the figure itself carries the level.
+        y_fit = (fit["timefigure"] - fit["figure_calibrated"]).values
 
         gbr = GradientBoostingRegressor(
             n_estimators=300,
@@ -1826,8 +1895,11 @@ def enhance_with_gbr(df):
         )
         if has_fig.sum() > 0:
             X_pred = all_surf.loc[has_fig, FEATURES].values
-            preds = gbr.predict(X_pred)
-            df.loc[all_surf.index[has_fig], "figure_calibrated"] = preds
+            corrections = gbr.predict(X_pred)
+            df.loc[all_surf.index[has_fig], "figure_calibrated"] = (
+                all_surf.loc[has_fig, "figure_calibrated"].values
+                + corrections
+            )
 
         # Report feature importances
         importances = dict(zip(FEATURES, gbr.feature_importances_))
@@ -1836,11 +1908,12 @@ def enhance_with_gbr(df):
         print(f"    {surface:<15}: {len(fit):,} training rows, "
               f"top features: {imp_str}")
 
-        # Report fit-window metrics
-        fit_pred = gbr.predict(X_fit)
-        fit_err = fit_pred - y_fit
+        # Report fit-window metrics (on the LEVEL, after add-back)
+        fit_level_pred = fit["figure_calibrated"].values + gbr.predict(X_fit)
+        fit_truth = fit["timefigure"].values
+        fit_err = fit_level_pred - fit_truth
         fit_mae = np.abs(fit_err).mean()
-        fit_corr = np.corrcoef(fit_pred, y_fit)[0, 1]
+        fit_corr = np.corrcoef(fit_level_pred, fit_truth)[0, 1]
         print(f"    {'':15}  fit MAE={fit_mae:.2f}, corr={fit_corr:.4f}")
 
     # Clean up temporary columns
@@ -1849,46 +1922,71 @@ def enhance_with_gbr(df):
     return df, gbr_models
 
 
-def expand_scale(df):
-    """
-    Stage 10b: Quantile mapping to correct GBR distribution compression.
+def apply_recal_map(x, pred_anchors, tf_anchors):
+    """Apply a monotone calibration map with slope-1 linear tails.
 
-    Tree-based models (GBR) systematically compress predictions toward
-    the training mean due to leaf averaging and regularisation.  This
-    causes high-rated horses (100+) to be under-rated by ~8 lbs and
-    low-rated horses (<20) to be over-rated by a similar margin.
-
-    Fix: per-surface empirical quantile mapping with PCHIP (monotonic
-    cubic) interpolation.  This is a standard statistical technique for
-    distribution matching (used in climate bias correction, Beyer speed
-    figures, etc.).  For each percentile level, it maps the prediction
-    quantile to the corresponding Timeform quantile, then interpolates
-    monotonically.
-
-    Unlike the previous linear variance-matching stretch, quantile
-    mapping captures the full non-linear shape of the distribution
-    mismatch — including the asymmetric compression at tails that
-    GBR introduces.
-
-    Validated impact (on full 2015-2026 dataset, with max_depth=6 GBR):
-      100-120 band: bias -8.33 → -2.30 (72% reduction)
-      80-100:       bias -4.97 → -1.82 (63% reduction)
-      <20:          bias +7.80 → +2.88 (63% reduction)
-      120+:         bias -12.23 → -3.21 (74% reduction)
-      Overall:      MAE 6.64 → 6.59
-      OOS 100-120:  bias -7.24 → -1.55 (79% reduction)
-      Correlation:  0.9265 (was 0.9211)
+    PCHIP interpolation between the anchors; beyond the outermost
+    anchors the map extends LINEARLY WITH SLOPE 1.  Cubic extrapolation
+    beyond the last anchor is undefined behaviour exactly where new
+    career-best performances land — the pinned tails guarantee a figure
+    above the training range is carried through at full value rather
+    than bent toward the mean.
     """
     from scipy.interpolate import PchipInterpolator
 
-    print("\n  Applying quantile mapping (fixing GBR compression)...")
+    pred_anchors = np.asarray(pred_anchors, dtype=float)
+    tf_anchors = np.asarray(tf_anchors, dtype=float)
+    x = np.asarray(x, dtype=float)
 
-    N_QUANTILES = 20  # fewer bins = more aggressive tail correction
+    mapper = PchipInterpolator(pred_anchors, tf_anchors, extrapolate=False)
+    y = mapper(np.clip(x, pred_anchors[0], pred_anchors[-1]))
+    y = np.where(x < pred_anchors[0],
+                 tf_anchors[0] + (x - pred_anchors[0]), y)
+    y = np.where(x > pred_anchors[-1],
+                 tf_anchors[-1] + (x - pred_anchors[-1]), y)
+    return y
+
+
+def expand_scale(df):
+    """
+    Stage 10b: Conditional-mean recalibration (replaces the previous
+    unconditional quantile mapping).
+
+    The old quantile mapping matched the MARGINAL distribution of
+    predictions to Timeform's.  That restores overall spread, but a
+    monotone function of the prediction alone cannot separate horses the
+    GBR collapsed together, and matching marginals is not the same as
+    being conditionally unbiased.
+
+    This version targets E[timefigure | prediction] directly:
+      1. Bin the training predictions on percentile edges, with extra
+         resolution in the top tail (92.5/95/97.5/99/99.5) where the
+         compression lives and data are sparse.
+      2. Anchor at (mean prediction, mean timefigure) per bin — an
+         estimate of the reliability curve.
+      3. Enforce monotonicity across anchors (running-max pooling; bin
+         means are large-sample so violations are rare and small).
+      4. Interpolate with PCHIP and extend beyond the outermost anchors
+         linearly with SLOPE 1 (see apply_recal_map) so a new
+         career-best cannot be bent down by cubic extrapolation.
+
+    Where the reliability curve has slope > 1 (the compressed top), the
+    map stretches predictions; where it is flat it leaves them alone —
+    a conditional de-shrinkage rather than a marginal restyling.
+    """
+    print("\n  Applying conditional-mean recalibration...")
+
+    N_MIN_BIN = 30
+    # Percentile edges: 5%-wide bins through the body, finer in the tail
+    PCT_EDGES = np.concatenate([
+        np.linspace(0, 90, 19),
+        [92.5, 95.0, 97.5, 99.0, 99.5, 100.0],
+    ])
 
     # Adaptive training window: all years up to max_year - 1
     max_year = int(df["source_year"].max())
     qm_train_end = max_year - 1
-    print(f"    Quantile mapping training window: up to {qm_train_end}")
+    print(f"    Recalibration training window: up to {qm_train_end}")
 
     mask = (
         df["timefigure"].notna()
@@ -1897,11 +1995,10 @@ def expand_scale(df):
         & df["figure_calibrated"].notna()
         & (df["source_year"] <= qm_train_end)
     )
-    # Exclude split-segment GA rows from the quantile fit (still mapped)
+    # Exclude split-segment GA rows from the fit (still mapped)
     if "ga_is_segment" in df.columns:
         mask &= ~df["ga_is_segment"]
 
-    quantile_levels = np.linspace(0, 100, N_QUANTILES + 1)
     qm_params = {}
 
     for surface in df["raceSurfaceName"].unique():
@@ -1914,31 +2011,44 @@ def expand_scale(df):
         fit_pred = fit["figure_calibrated"].values.astype(float)
         fit_truth = fit["timefigure"].values.astype(float)
 
-        # Compute percentile-to-percentile mapping on training data
-        pred_quantiles = np.percentile(fit_pred, quantile_levels)
-        tf_quantiles = np.percentile(fit_truth, quantile_levels)
+        edges = np.unique(np.percentile(fit_pred, PCT_EDGES))
+        if len(edges) < 4:
+            continue
+        bin_idx = np.clip(
+            np.searchsorted(edges, fit_pred, side="right") - 1,
+            0, len(edges) - 2,
+        )
 
-        # Remove duplicate x-values (can occur at distribution tails)
-        unique_mask = np.concatenate([[True], np.diff(pred_quantiles) > 0.001])
-        pred_quantiles = pred_quantiles[unique_mask]
-        tf_quantiles = tf_quantiles[unique_mask]
+        pred_anchor, tf_anchor = [], []
+        for b in range(len(edges) - 1):
+            in_bin = bin_idx == b
+            if in_bin.sum() >= N_MIN_BIN:
+                pred_anchor.append(float(fit_pred[in_bin].mean()))
+                tf_anchor.append(float(fit_truth[in_bin].mean()))
+        if len(pred_anchor) < 4:
+            continue
 
-        # Save QM params for live pipeline
+        pred_anchor = np.array(pred_anchor)
+        tf_anchor = np.array(tf_anchor)
+        order = np.argsort(pred_anchor)
+        pred_anchor, tf_anchor = pred_anchor[order], tf_anchor[order]
+
+        # Monotonicity (running-max pooling) + dedupe of x anchors
+        tf_anchor = np.maximum.accumulate(tf_anchor)
+        keep = np.concatenate([[True], np.diff(pred_anchor) > 0.001])
+        pred_anchor, tf_anchor = pred_anchor[keep], tf_anchor[keep]
+
+        # Save params for the live pipeline (same keys as the old QM
+        # artifact so existing artifact plumbing keeps working)
         qm_params[surface] = {
-            "pred_quantiles": pred_quantiles.tolist(),
-            "tf_quantiles": tf_quantiles.tolist(),
+            "pred_quantiles": pred_anchor.tolist(),
+            "tf_quantiles": tf_anchor.tolist(),
         }
-
-        # Build monotonic cubic interpolation (PCHIP)
-        # Guarantees monotonicity between anchor points and extrapolates
-        # smoothly beyond training range
-        mapper = PchipInterpolator(pred_quantiles, tf_quantiles,
-                                   extrapolate=True)
 
         # Apply mapping to all predictions for this surface
         has_fig = surf_mask & df["figure_calibrated"].notna()
         x = df.loc[has_fig, "figure_calibrated"].values.astype(float)
-        mapped = mapper(x)
+        mapped = apply_recal_map(x, pred_anchor, tf_anchor)
 
         old_std = x.std()
         new_std = mapped.std()
@@ -1950,7 +2060,7 @@ def expand_scale(df):
         df.loc[has_fig, "figure_calibrated"] = mapped
 
         print(
-            f"    {surface:<15}: {N_QUANTILES} quantile anchors, "
+            f"    {surface:<15}: {len(pred_anchor)} anchors, "
             f"std {old_std:.1f} → {new_std:.1f} (target {tf_std:.1f}), "
             f"mean {old_mean:.1f} → {new_mean:.1f} (target {tf_mean:.1f})"
         )
@@ -2147,91 +2257,66 @@ def apply_oos_corrections(df):
     return df, correction_params
 
 
-def apply_final_rescaling(df):
+# NOTE: Stage 10d ("final rescaling") has been REMOVED.  It fit the OLS
+# slope of timefigure on figure_calibrated and rescaled by it — but after
+# Stage 10b has matched the distributions, that slope collapses to ~the
+# correlation (<1) by construction, so the stage always re-compressed
+# part of the spread Stage 10b had just restored.  The conditional-mean
+# recalibration in expand_scale supersedes it.
+
+
+def compute_band_scorecard(df):
+    """Top-band acceptance scorecard.
+
+    Per timefigure band: n, MAE, bias, and the within-band OLS slope of
+    timefigure on figure_calibrated — for the full sample and for the
+    out-of-sample year (max source_year, which no calibration layer
+    trains on).  This is the regression test for top-end compression:
+    a change is acceptable only if it moves the 80+ band biases toward
+    zero (and slopes toward 1.0) without degrading the middle bands.
     """
-    Stage 10d: Final linear rescaling to correct residual scale compression.
-
-    After GBR + quantile mapping + OOS corrections, a residual slope < 1.0
-    often remains (figures compressed toward the mean).  This manifests as
-    high-class figures being systematically under-rated and low-class
-    figures over-rated.
-
-    Fix: per-surface OLS regression of timefigure on figure_calibrated.
-    If the slope deviates from 1.0 by more than 2%, apply:
-        figure_rescaled = (figure - mean_pred) * slope + mean_tf
-
-    (The OLS slope of truth-on-prediction is the MMSE rescaling factor:
-    slope > 1 expands compressed figures, slope < 1 shrinks over-spread
-    ones.)  This restores the correct spread around the timefigure mean.
-    Parameters are saved as artifacts for the live pipeline.
-    """
-    print("\n  Applying final rescaling (correcting residual compression)...")
-
-    # Training window: all years up to max_year - 1
-    max_year = int(df["source_year"].max())
-    train_end = max_year - 1
-    print(f"    Rescaling training window: up to {train_end}")
-
-    mask = (
+    valid = df[
         df["timefigure"].notna()
         & (df["timefigure"] != 0)
         & df["timefigure"].between(-200, 200)
         & df["figure_calibrated"].notna()
-        & (df["source_year"] <= train_end)
-        # Exclude extreme beaten-far runners for cleaner fit
-        & (df["distanceCumulative"].fillna(0) <= 20)
-    )
-    # Exclude split-segment GA rows from the fit (still rescaled)
-    if "ga_is_segment" in df.columns:
-        mask &= ~df["ga_is_segment"]
+    ]
+    if len(valid) == 0 or "source_year" not in valid.columns:
+        return pd.DataFrame()
 
-    rescale_params = {}
+    max_year = int(valid["source_year"].max())
+    scopes = [
+        ("all", valid),
+        (f"oos_{max_year}", valid[valid["source_year"] == max_year]),
+    ]
+    bands = [(-200, 20, "<20"), (20, 40, "20-40"), (40, 60, "40-60"),
+             (60, 80, "60-80"), (80, 100, "80-100"),
+             (100, 120, "100-120"), (120, 200, "120+")]
 
-    for surface in df["raceSurfaceName"].unique():
-        surf_mask = df["raceSurfaceName"] == surface
-        fit = df[mask & surf_mask]
-
-        if len(fit) < 2000:
-            continue
-
-        x = fit["figure_calibrated"].values.astype(float)
-        y = fit["timefigure"].values.astype(float)
-
-        # Compute slope via OLS
-        x_mean = x.mean()
-        y_mean = y.mean()
-        slope = np.sum((x - x_mean) * (y - y_mean)) / np.sum((x - x_mean) ** 2)
-
-        # Only correct if slope is meaningfully different from 1.0
-        if abs(slope - 1.0) < 0.02:
-            print(f"    {surface:<15}: slope={slope:.4f} — no correction needed")
-            continue
-
-        rescale_params[surface] = {
-            "slope": float(slope),
-            "x_mean": float(x_mean),
-            "y_mean": float(y_mean),
-        }
-
-        # Apply: rescaled = (fig - x_mean) * slope + y_mean
-        # This maps our distribution to match timefigure's spread
-        has_fig = surf_mask & df["figure_calibrated"].notna()
-        fig = df.loc[has_fig, "figure_calibrated"].values.astype(float)
-        rescaled = (fig - x_mean) * slope + y_mean
-
-        old_std = fig.std()
-        new_std = rescaled.std()
-
-        df.loc[has_fig, "figure_calibrated"] = rescaled
-
-        print(
-            f"    {surface:<15}: slope={slope:.4f}, "
-            f"std {old_std:.1f} → {new_std:.1f}, "
-            f"mean {x_mean:.1f} → {y_mean:.1f}"
-        )
-
-    df["figure_calibrated"] = df["figure_calibrated"].round(1)
-    return df, rescale_params
+    rows = []
+    for scope, sub in scopes:
+        for lo, hi, label in bands:
+            s = sub[(sub["timefigure"] >= lo) & (sub["timefigure"] < hi)]
+            if len(s) < 30:
+                continue
+            err = s["figure_calibrated"] - s["timefigure"]
+            x = s["figure_calibrated"].values.astype(float)
+            y = s["timefigure"].values.astype(float)
+            xc = x - x.mean()
+            denom = (xc ** 2).sum()
+            slope = (
+                float((xc * (y - y.mean())).sum() / denom)
+                if denom > 0 else np.nan
+            )
+            rows.append({
+                "scope": scope,
+                "band": label,
+                "n": int(len(s)),
+                "mae": round(float(err.abs().mean()), 2),
+                "bias": round(float(err.mean()), 2),
+                "truth_on_pred_slope": round(slope, 3),
+            })
+    return pd.DataFrame(rows)
 
 
 def validate_figures(df):
@@ -2346,7 +2431,9 @@ def run_pipeline():
 
     # 2 — Going allowance (initial)
     print("\nSTAGE 2: Going allowances (initial)")
-    going_allowances, ga_se = compute_going_allowances(df, std_times)
+    going_allowances, ga_se, ga_class_gradient = compute_going_allowances(
+        df, std_times
+    )
 
     # Iterative refinement: use going-corrected times to recompute
     # standard times (using ALL goings now), then recompute GA.
@@ -2358,7 +2445,9 @@ def run_pipeline():
         std_times, std_df = compute_standard_times_iterative(
             df, going_allowances
         )
-        going_allowances, ga_se = compute_going_allowances(df, std_times)
+        going_allowances, ga_se, ga_class_gradient = compute_going_allowances(
+            df, std_times
+        )
 
         # Convergence check
         common_keys = set(prev_ga.keys()) & set(going_allowances.keys())
@@ -2453,12 +2542,24 @@ def run_pipeline():
     print("\nSTAGE 10c: OOS corrections")
     all_figs, oos_correction_params = apply_oos_corrections(all_figs)
 
-    # 10d — Final rescaling (correct residual scale compression)
-    print("\nSTAGE 10d: Final rescaling")
-    all_figs, rescale_params = apply_final_rescaling(all_figs)
+    # Stage 10d (final rescaling) removed — it provably re-compressed the
+    # spread Stage 10b restored (see note above validate_figures).
+    rescale_params = {}
+    all_figs["figure_calibrated"] = all_figs["figure_calibrated"].round(1)
 
     print("\nSTAGE 11: Validation")
     validate_figures(all_figs)
+
+    # Top-band scorecard — the acceptance test for top-end compression
+    scorecard = compute_band_scorecard(all_figs)
+    if len(scorecard) > 0:
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        sc_path = os.path.join(OUTPUT_DIR, "band_scorecard.csv")
+        scorecard.to_csv(sc_path, index=False)
+        print("\n  BAND SCORECARD (bias must trend to 0 in 80+ bands; "
+              "slope to 1.0):")
+        print(scorecard.to_string(index=False))
+        print(f"  Saved: {sc_path}")
 
     # ── Save calibration artifacts for live pipeline ──
     import pickle
@@ -2486,10 +2587,16 @@ def run_pipeline():
     artifacts = {
         "cal_params": cal_artifacts,
         "gbr_models": gbr_models,
+        # GBR models predict the RESIDUAL (timefigure − figure_calibrated);
+        # the live pipeline must ADD their prediction, not replace with it.
+        "gbr_target": "residual",
         "course_freq": course_freq,
         "qm_params": qm_params,
         "oos_corrections": oos_correction_params,
         "rescale_params": rescale_params,
+        "ga_class_gradient": {
+            str(k): float(v) for k, v in ga_class_gradient.items()
+        },
     }
 
     artifact_path = os.path.join(OUTPUT_DIR, "calibration_artifacts.pkl")
@@ -2629,8 +2736,8 @@ def save_uk_batch_audit(all_figs, std_times, going_allowances):
     lines.append("  Stage 7:  figure_after_wfa       = figure_after_weight + wfa_adj")
     lines.append("  Stage 8:  sex_adj                (not applied)")
     lines.append("  Stage 9:  figure_calibrated      = quadratic_calibration(figure_final)")
-    lines.append("  Stage 10: figure_calibrated      = GBR_enhancement(figure_calibrated)")
-    lines.append("  Stage 10b: quantile_mapping      (corrects GBR distribution compression)")
+    lines.append("  Stage 10: figure_calibrated      += GBR_residual_correction(features)")
+    lines.append("  Stage 10b: conditional-mean recalibration (slope-1 tails)")
     lines.append("")
 
     # Summary by year

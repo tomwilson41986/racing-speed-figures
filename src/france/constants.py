@@ -7,6 +7,9 @@ and beaten-length codes.
 """
 
 import re
+import unicodedata
+
+import numpy as np
 
 # ─────────────────────────────────────────────────────────────────────
 # CORE PIPELINE CONSTANTS  (shared with UK — imported or duplicated
@@ -150,6 +153,77 @@ FRANCE_GOING_GA_PRIOR = {
     "Inconnu":        0.143 / _M,  # empirical 0.143 s/f (was 0.10)
     "":               0.133 / _M,  # empirical 0.133 s/f (was 0.10)
 }
+
+# Fallback prior when the going description is entirely unknown.  MUST be
+# on the seconds-per-METRE scale: a bare ``0.05`` here means 0.05 s/m
+# (~10 s/f) — roughly 100× too large — and, via Bayesian shrinkage, would
+# wreck every figure at the meeting.
+DEFAULT_GA_PRIOR = 0.05 / METERS_PER_FURLONG
+
+
+def normalise_going_description(going_desc) -> str:
+    """Lowercase, accent-strip and whitespace-collapse a going string."""
+    s = unicodedata.normalize("NFKD", str(going_desc or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return " ".join(s.lower().split())
+
+
+# Accent/case-insensitive fallback map for going descriptions that do not
+# match FRANCE_GOING_GA_PRIOR exactly (new casing variants, upper-cased
+# feeds, stripped accents).  Where casing variants of the same normalised
+# description carry different values above, the empirical (non-seed)
+# value wins.
+_NORMALISED_GA_PRIOR = {
+    "tres sec": -0.25 / _M,
+    "sec": -0.21 / _M,
+    "tres leger": 0.375 / _M,
+    "bon leger": 0.195 / _M,
+    "leger": 0.386 / _M,
+    "bon": 0.118 / _M,
+    "bon souple": 0.196 / _M,
+    "souple": 0.332 / _M,
+    "tres souple": 0.569 / _M,
+    "collant": 0.919 / _M,
+    "lourd": 0.705 / _M,
+    "tres lourd": 1.534 / _M,
+    "psf standard": 0.087 / _M,
+    "psf rapide": 0.019 / _M,
+    "psf lente": 0.125 / _M,
+    "psf": 0.012 / _M,
+    "standard": 0.06 / _M,
+    "inconnu": 0.143 / _M,
+    "": 0.133 / _M,
+}
+
+
+def get_france_going_prior(going_desc, default=DEFAULT_GA_PRIOR) -> float:
+    """GA prior in seconds per metre for a going description.
+
+    Exact match first (casing variants can carry different empirical
+    values), then an accent/case-insensitive match, then ``default``
+    (which is already on the s/m scale).
+    """
+    try:
+        if going_desc in FRANCE_GOING_GA_PRIOR:
+            return FRANCE_GOING_GA_PRIOR[going_desc]
+    except TypeError:
+        pass  # unhashable — fall through to normalised lookup
+    return _NORMALISED_GA_PRIOR.get(
+        normalise_going_description(going_desc), default
+    )
+
+
+def bl_attenuation_threshold(ga_per_metre):
+    """Going-dependent beaten-length attenuation threshold, in lengths.
+
+    The −8 lengths-per-(s/f) sensitivity was derived on the UK
+    seconds-per-furlong GA scale; France carries GA in seconds per
+    metre, so convert before applying.  Without the conversion the
+    going dependence is numerically inert (T stays ~20 for any real GA).
+    """
+    ga_spf = np.asarray(ga_per_metre, dtype=float) * METERS_PER_FURLONG
+    return np.clip(BL_ATTENUATION_THRESHOLD + ga_spf * -8.0, 10.0, 30.0)
+
 
 # Ordinal encoding for potential future ML use
 FRANCE_GOING_ORDINAL = {

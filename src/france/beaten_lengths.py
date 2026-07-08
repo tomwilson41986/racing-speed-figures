@@ -99,6 +99,9 @@ def compute_cumulative_bl(df: pd.DataFrame) -> pd.DataFrame:
 
     Logic mirrors how the UK pipeline uses ``distanceCumulative``:
     winner = 0, second = margin from winner, third = sum of margins, etc.
+    Unparseable margins yield NaN for that horse and every horse behind
+    it (their true cumulative margin is unknown); downstream figure
+    computation must null those runners rather than fill with 0.
     """
     df = df.copy()
 
@@ -111,23 +114,22 @@ def compute_cumulative_bl(df: pd.DataFrame) -> pd.DataFrame:
     # Sort by race and finish position, then cumsum within each race
     df = df.sort_values(["race_id", "positionOfficial"])
 
-    def _cumsum_race(group):
-        vals = group["_bl_individual"].values.copy()
-        # First runner (winner) = 0, rest are cumulative
-        cum = np.zeros(len(vals))
-        running = 0.0
-        for i in range(len(vals)):
-            if i == 0:
-                cum[i] = 0.0
-            else:
-                margin = vals[i] if not np.isnan(vals[i]) else 0.0
-                running += margin
-                cum[i] = running
-        return pd.Series(cum, index=group.index)
+    margins = df["_bl_individual"].astype(float).copy()
+    # The first finisher in each race anchors the accumulation at 0
+    # (its own margin, if any, is ignored — it has nobody in front).
+    first_in_race = ~df["race_id"].duplicated()
+    margins[first_in_race] = 0.0
 
-    df["distanceCumulative"] = df.groupby("race_id", group_keys=False).apply(
-        _cumsum_race
+    cum = margins.groupby(df["race_id"]).cumsum()
+    # NaN must be STICKY within a race: an unparseable margin means the
+    # horse behind that gap — and everyone behind it — has an unknown
+    # cumulative margin.  A plain cumsum would skip the NaN and resume
+    # accumulating, silently compressing the rest of the field.
+    nan_seen = (
+        margins.isna().astype(int).groupby(df["race_id"]).cummax().astype(bool)
     )
+    cum[nan_seen] = np.nan
+    df["distanceCumulative"] = cum
 
     df.drop(columns=["_bl_individual"], inplace=True)
     return df

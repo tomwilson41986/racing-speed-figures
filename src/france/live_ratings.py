@@ -54,6 +54,8 @@ from .constants import (
     LPL_SURFACE_MULTIPLIER,
     NON_FRENCH_COURSE_CODES,
     SECONDS_PER_LENGTH,
+    bl_attenuation_threshold,
+    get_france_going_prior,
 )
 from .speed_figures import (
     generic_lbs_per_length,
@@ -72,7 +74,24 @@ LIVE_DIR = ROOT_DIR / "data" / "france_live"
 # applies only a linear scale+shift calibration (no quantile compression like
 # the UK pipeline), so such outliers are not tamed and must be guarded here.
 # See _sanity_guard and docs/AUDIT_FRENCH_VS_UK_RATINGS.md.
+# Between the two ceilings the race is CAPPED and flagged for review (a
+# plausible elite performance must not be erased); above the hard ceiling
+# the whole race is nulled (physically implausible — bad clock).
 FRANCE_FIGURE_CEILING = 120.0
+FRANCE_FIGURE_HARD_CEILING = 140.0
+
+
+def class_excess_compress_factor(race_class_num):
+    """Compression factor for raw-figure excess above BASE_RATING.
+
+    Clipped to [0, 1]: below-reference classes (1-2) must NOT have their
+    excess AMPLIFIED — the unclipped formula multiplied class-1 excess by
+    1.708 (measured: +22.8 raw lbs mean on class-1 winners), inflating
+    exactly the elite figures the stage exists to sanity-check.
+    """
+    return (
+        1.0 - CLASS_EXCESS_FACTOR * (race_class_num - CLASS_EXCESS_REFERENCE)
+    ).clip(0.0, 1.0)
 
 # ─── Email configuration ────────────────────────────────────────────
 RECIPIENTS = [
@@ -119,7 +138,7 @@ class FranceLiveRatingEngine:
             ga = self.empirical_ga_priors.get(going_desc)
             if ga is not None:
                 return ga
-        return FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05)
+        return get_france_going_prior(going_desc)
 
     def _compute_realtime_ga(self, df):
         """Compute going allowances from same-day results for meetings
@@ -195,7 +214,7 @@ class FranceLiveRatingEngine:
             if self.empirical_ga_priors:
                 prior_ga = self.empirical_ga_priors.get(going_desc)
             if prior_ga is None:
-                prior_ga = FRANCE_GOING_GA_PRIOR.get(going_desc, 0.05 / 201.168)
+                prior_ga = get_france_going_prior(going_desc)
             ga = (n * raw_ga + GA_SHRINKAGE_K * prior_ga) / (n + GA_SHRINKAGE_K)
 
             # Non-linear correction for extreme going
@@ -451,9 +470,7 @@ class FranceLiveRatingEngine:
             winners["raceClass"], errors="coerce"
         ).fillna(CLASS_EXCESS_REFERENCE)
         excess = (winners["raw_figure"] - BASE_RATING).clip(lower=0)
-        compress = (
-            1.0 - CLASS_EXCESS_FACTOR * (race_class_num - CLASS_EXCESS_REFERENCE)
-        ).clip(lower=0)
+        compress = class_excess_compress_factor(race_class_num)
         winners["raw_figure"] = np.where(
             winners["raw_figure"] >= BASE_RATING,
             BASE_RATING + excess * compress,
@@ -484,9 +501,10 @@ class FranceLiveRatingEngine:
         is_winner = df["positionOfficial"] == 1
         cum_raw = df["distanceCumulative"].fillna(0).clip(lower=0)
 
-        # Beaten-length attenuation
+        # Beaten-length attenuation.  GA is in s/m — the helper converts
+        # to the s/f scale the -8 sensitivity was derived on.
         ga = df["going_allowance"].fillna(0)
-        T = np.clip(BL_ATTENUATION_THRESHOLD + (ga * -8), 10, 30)
+        T = bl_attenuation_threshold(ga)
         cum = np.where(cum_raw <= T, cum_raw, T + BL_ATTENUATION_FACTOR * (cum_raw - T))
 
         df["bl_effective"] = cum  # attenuated BL for QA display
@@ -497,6 +515,22 @@ class FranceLiveRatingEngine:
         # Non-finishers
         no_pos = df["positionOfficial"].isna() | (df["positionOfficial"] == 0)
         df.loc[no_pos, "raw_figure"] = np.nan
+
+        # Finishers behind an unparseable margin (NaN distanceCumulative)
+        # have an unknown gap to the winner — the fillna(0) above would
+        # otherwise hand them the winner's figure.
+        unknown_bl = (
+            df["distanceCumulative"].isna()
+            & df["positionOfficial"].notna()
+            & (df["positionOfficial"] > 1)
+        )
+        if unknown_bl.any():
+            log.info("  Nulling %d finishers with unknown beaten margins",
+                     unknown_bl.sum())
+            df.loc[unknown_bl, "raw_figure"] = np.nan
+            df.loc[unknown_bl, "figure_comment"] = (
+                "excluded: unparseable beaten margin"
+            )
 
         # --- Weight adjustment ---
         has_w = df["weightCarried"].notna()
@@ -596,33 +630,62 @@ class FranceLiveRatingEngine:
         return df
 
     def _sanity_guard(self, df):
-        """Null out races whose calibrated figure is implausibly high.
+        """Two-tier guard against implausibly high race figures.
 
         France applies only a linear (scale+shift) calibration, which — unlike
-        the UK pipeline's quantile mapping — does not compress extreme figures.
-        A single bad finishing time then inflates the whole race to a 150+
-        rating. Across 107 days of history only four races exceed the ceiling
-        (128, 152, 214, 224 — all clearly erroneous), so excluding them is safe
-        and does not touch legitimate figures (which top out ~95). The deeper
-        fix (add compression to France calibration) is tracked in
-        docs/AUDIT_FRENCH_VS_UK_RATINGS.md.
+        the UK pipeline's recalibration map — does not compress extreme
+        figures, so a single bad finishing time can inflate a whole race.
+
+        Tier 1 (ceiling < max <= hard ceiling): the race is CAPPED at the
+        ceiling and flagged for review.  A legitimate career-best slightly
+        above the ceiling survives (bounded) instead of being erased —
+        nulling whole races here was destroying exactly the elite
+        performances the figures exist to find.
+
+        Tier 2 (max > hard ceiling): the whole race is nulled.  Post-scale
+        figures this high imply a physically implausible raw time — a bad
+        clock, not a great horse (historical offenders: 152, 214, 224).
         """
         if "race_id" not in df.columns or "figure_calibrated" not in df.columns:
             return df
         race_max = df.groupby("race_id")["figure_calibrated"].transform("max")
-        bad = race_max > FRANCE_FIGURE_CEILING
-        if bad.any():
-            for rid in sorted(df.loc[bad, "race_id"].unique()):
+
+        # Tier 2 — physically implausible: null the race
+        broken = race_max > FRANCE_FIGURE_HARD_CEILING
+        if broken.any():
+            for rid in sorted(df.loc[broken, "race_id"].unique()):
                 mx = df.loc[df["race_id"] == rid, "figure_calibrated"].max()
                 log.warning(
-                    "Sanity guard: excluded race %s — figure %.0f exceeds ceiling "
-                    "%.0f (likely bad finishing time)",
+                    "Sanity guard: excluded race %s — figure %.0f exceeds hard "
+                    "ceiling %.0f (bad finishing time)",
+                    rid, mx, FRANCE_FIGURE_HARD_CEILING,
+                )
+            df.loc[broken, "figure_calibrated"] = np.nan
+            df.loc[broken, "figure_comment"] = (
+                f"excluded: race figure implausibly high "
+                f"(>{FRANCE_FIGURE_HARD_CEILING:.0f}) — likely a bad "
+                "finishing time (data check)"
+            )
+
+        # Tier 1 — suspicious but plausible: cap and flag for review
+        suspect = (
+            ~broken
+            & (race_max > FRANCE_FIGURE_CEILING)
+            & df["figure_calibrated"].notna()
+        )
+        if suspect.any():
+            over = suspect & (df["figure_calibrated"] > FRANCE_FIGURE_CEILING)
+            for rid in sorted(df.loc[suspect, "race_id"].unique()):
+                mx = df.loc[df["race_id"] == rid, "figure_calibrated"].max()
+                log.warning(
+                    "Sanity guard: capped race %s — figure %.0f exceeds "
+                    "ceiling %.0f (flagged for review, not excluded)",
                     rid, mx, FRANCE_FIGURE_CEILING,
                 )
-            df.loc[bad, "figure_calibrated"] = np.nan
-            df.loc[bad, "figure_comment"] = (
-                f"excluded: race figure implausibly high (>{FRANCE_FIGURE_CEILING:.0f}) "
-                "— likely a bad finishing time (data check)"
+            df.loc[over, "figure_calibrated"] = FRANCE_FIGURE_CEILING
+            df.loc[suspect, "figure_comment"] = (
+                f"capped: race figure exceeds plausibility ceiling "
+                f"({FRANCE_FIGURE_CEILING:.0f}) — needs review"
             )
         return df
 
