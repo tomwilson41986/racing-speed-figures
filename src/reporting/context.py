@@ -153,6 +153,16 @@ def build_section(
     return Section(title=title, races=races)
 
 
+def _race_time_str(v) -> Optional[str]:
+    """Normalise a raw off-time (HRB e.g. "5.30.") to a display string "5:30"."""
+    if v is None or (not isinstance(v, str) and pd.isna(v)):
+        return None
+    s = str(v).strip().rstrip(".")
+    if not s:
+        return None
+    return s.replace(".", ":")
+
+
 def top_performers(df: pd.DataFrame, jurisdiction: str, n: int = 10) -> List[TopPerformer]:
     rating_col = _rating_col(df, jurisdiction)
     rated = df[df[rating_col].notna() & (df[rating_col] >= 0)]
@@ -167,6 +177,8 @@ def top_performers(df: pd.DataFrame, jurisdiction: str, n: int = 10) -> List[Top
                 race_number=_int(r.get("raceNumber")) or 0,
                 figure=float(r[rating_col]),
                 pos=_pos(r.get("positionOfficial")),
+                race_time=_race_time_str(r.get("raceTime")),
+                race_name=(str(r.get("race_name")) if r.get("race_name") and pd.notna(r.get("race_name")) else None),
                 silk_url=(str(r.get("silk_url")) if r.get("silk_url") else None),
             )
         )
