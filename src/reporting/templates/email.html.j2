@@ -46,7 +46,8 @@
   <td style="padding:8px;border-top:1px solid {{ T.ROW_DIVIDER }};vertical-align:middle;">
     <span style="color:{{ T.LABEL }};font-weight:700;font-size:12px;">{{ tp.rank }}</span>
     <span style="color:{{ T.INK }};font-weight:600;font-size:15px;">&nbsp;{{ tp.horse }}</span>
-    <div style="color:{{ T.MUTED }};font-size:12px;margin-top:1px;">{{ tp.course }} &middot; Race {{ tp.race_number }}{% if tp.pos %} &middot; finished {{ tp.pos }}{% endif %}</div>
+    <div style="color:{{ T.MUTED }};font-size:12px;margin-top:1px;">{{ tp.course }}{% if tp.race_time %} &middot; {{ tp.race_time }}{% endif %} &middot; Race {{ tp.race_number }}{% if tp.pos %} &middot; finished {{ tp.pos }}{% endif %}</div>
+    {% if tp.race_name %}<div style="color:{{ T.BODY }};font-size:12px;margin-top:1px;">{{ tp.race_name }}</div>{% endif %}
     {% if tp.note %}<div style="color:{{ T.FAINT }};font-size:11px;margin-top:2px;">{{ tp.note }}</div>{% endif %}
   </td>
   <td style="padding:8px;border-top:1px solid {{ T.ROW_DIVIDER }};text-align:right;width:1%;white-space:nowrap;vertical-align:middle;">{{ fig_pill(tp.figure) }}</td>
@@ -152,8 +153,6 @@
 
   <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em;color:{{ T.INK }};">{{ ctx.title }}</h1>
   <p style="margin:4px 0 0;color:{{ T.MUTED }};font-size:13px;">{{ ctx.date_str }}{% for f in ctx.subtitle_facts %} &middot; {{ f }}{% endfor %}</p>
-
-  {% if ctx.accuracy_panel %}{{ accuracy_panel(ctx.accuracy_panel) }}{% endif %}
 
   {% if ctx.top_performers %}
     {{ section_header('Top performers') }}

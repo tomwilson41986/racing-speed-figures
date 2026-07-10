@@ -70,10 +70,12 @@ class Section:
 class TopPerformer:
     rank: int
     horse: str
-    course: str
+    course: str                         # the track
     race_number: int
     figure: float
     pos: Optional[int] = None
+    race_time: Optional[str] = None     # off time, e.g. "5:30"
+    race_name: Optional[str] = None
     note: Optional[str] = None
     silk_url: Optional[str] = None
     silk_cid: Optional[str] = None

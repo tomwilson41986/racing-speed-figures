@@ -24,10 +24,13 @@ def render_text(ctx: ReportContext) -> str:
         lines.append(f"═══ TOP PERFORMERS · {len(ctx.top_performers)} ═══")
         for tp in ctx.top_performers:
             pos = f"Pos {tp.pos}" if tp.pos else "  - "
+            time = f"{tp.race_time:>6}" if tp.race_time else "      "
             lines.append(
-                f"{tp.rank:>2}. {tp.horse:<22} {tp.course:<14} R{tp.race_number}"
+                f"{tp.rank:>2}. {tp.horse:<22} {tp.course:<14}{time}  R{tp.race_number}"
                 f"  {pos}  Fig {_fig(tp.figure)}"
             )
+            if tp.race_name:
+                lines.append(f"    {tp.race_name}")
         lines.append("")
 
     for section in ctx.sections:
