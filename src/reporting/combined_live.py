@@ -143,6 +143,18 @@ def run(target_date: Optional[str] = None, send: bool = True) -> ReportContext:
         target_date, 0 if uk_df is None else len(uk_df), 0 if fr_df is None else len(fr_df),
     )
 
+    # Silks: Racing Post racecards (public) carry per-runner jockey silks. Fetch
+    # the day's map once and join by horse name onto both frames. Best-effort and
+    # env-gated (set RP_SILKS=0 to skip); cards render silk-optional either way.
+    if os.environ.get("RP_SILKS", "1") != "0":
+        try:
+            from . import rp_silks
+            silk_map = rp_silks.fetch_silk_map(target_date)
+            uk_df = rp_silks.enrich_silks(uk_df, target_date, silk_map)
+            fr_df = rp_silks.enrich_silks(fr_df, target_date, silk_map)
+        except Exception as e:  # never let silks break the email
+            log.warning("RP silks enrichment skipped: %s", e)
+
     accuracy_panel = None
     try:
         from . import accuracy as accuracy_mod
