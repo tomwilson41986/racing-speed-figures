@@ -75,6 +75,23 @@ def _pos(v) -> Optional[int]:
     return p if (p is not None and p > 0) else None
 
 
+def _silk_url(v) -> Optional[str]:
+    """A clean silk URL or None.
+
+    Guards against pandas NaN (which is *truthy*, so ``str(nan)`` would leak the
+    literal ``"nan"`` into ``silk_url`` and trigger a bogus ``https://nan`` fetch).
+    """
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):  # non-scalar; fall through to str()
+        pass
+    s = str(v).strip()
+    return s or None
+
+
 def _distance_str(first: pd.Series, mode: str) -> str:
     dist = _float(first.get("distance"))
     if mode == "fr":
@@ -145,7 +162,7 @@ def build_section(
                     beaten=(beaten if beaten and beaten > 0 else None),
                     time=(f"{_float(r.get(time_col)):.2f}" if _float(r.get(time_col)) else None),
                     figure=(fig if fig is not None and fig >= 0 else None),
-                    silk_url=(str(r.get("silk_url")) if r.get("silk_url") else None),
+                    silk_url=_silk_url(r.get("silk_url")),
                 )
             )
         races.append(race)
@@ -179,7 +196,7 @@ def top_performers(df: pd.DataFrame, jurisdiction: str, n: int = 10) -> List[Top
                 pos=_pos(r.get("positionOfficial")),
                 race_time=_race_time_str(r.get("raceTime")),
                 race_name=(str(r.get("race_name")) if r.get("race_name") and pd.notna(r.get("race_name")) else None),
-                silk_url=(str(r.get("silk_url")) if r.get("silk_url") else None),
+                silk_url=_silk_url(r.get("silk_url")),
             )
         )
     return out

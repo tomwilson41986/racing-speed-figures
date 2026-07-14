@@ -102,6 +102,11 @@ class TimeformAuth:
         if self._proxy:
             launch_kwargs["proxy"] = {"server": self._proxy}
 
+        # Reduce the most obvious headless-automation fingerprint. Timeform sits
+        # behind Azure Front Door WAF, which challenges datacenter/bot traffic;
+        # this helps but does not defeat an IP-based block (set PW_PROXY for that).
+        launch_kwargs.setdefault("args", ["--disable-blink-features=AutomationControlled"])
+
         browser = pw.chromium.launch(**launch_kwargs)
         context = browser.new_context(user_agent=CHROME_USER_AGENT, locale="en-GB",
                                       viewport={"width": 1400, "height": 1000})
@@ -116,6 +121,7 @@ class TimeformAuth:
             # 2. Go to the sign-in page.
             log.info("Navigating to sign-in page...")
             page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=45000)
+            self._settle_waf(page)
             self._accept_cookies(page)
             _human_pause()
 
@@ -127,10 +133,14 @@ class TimeformAuth:
             # 3. Fill email.
             try:
                 email_input = page.wait_for_selector(EMAIL_SELECTORS, state="visible",
-                                                     timeout=20000)
+                                                     timeout=30000)
             except PWTimeout:
                 self._dump_debug(page, "email-field-timeout")
-                raise RuntimeError(f"Email field not found. URL: {page.url}")
+                blocked = "azwaf" in (page.url or "").lower()
+                hint = (" The page is an Azure Front Door WAF challenge (afd_azwaf_tok "
+                        "in the URL) — the runner IP is being blocked. Set PW_PROXY to a "
+                        "residential proxy to log in from CI." if blocked else "")
+                raise RuntimeError(f"Email field not found. URL: {page.url}.{hint}")
             email_input.click()
             email_input.fill(self._email)
             _human_pause(0.6, 1.4)
@@ -183,6 +193,29 @@ class TimeformAuth:
             browser.close()
             pw.stop()
             raise
+
+    @staticmethod
+    def _settle_waf(page) -> None:
+        """Give an Azure Front Door WAF JS-challenge a chance to resolve.
+
+        The challenge sets ``afd_azwaf_tok`` and redirects back to the form; it
+        needs the page's JS to run and network to go idle. Best-effort: wait for
+        networkidle, and if we're still on a challenge URL, reload once.
+        """
+        try:
+            page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception:
+            pass
+        try:
+            if "azwaf" in (page.url or "").lower():
+                _human_pause(2.0, 4.0)
+                page.reload(wait_until="domcontentloaded", timeout=45000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     @staticmethod
     def _accept_cookies(page) -> None:

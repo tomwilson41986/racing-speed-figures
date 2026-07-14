@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -33,6 +34,41 @@ log = logging.getLogger(__name__)
 BASE = "https://www.racingpost.com"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+
+# Full browser-like header set. Racing Post sits behind a WAF that rejects
+# datacenter traffic (GitHub Actions runners get HTTP 403/406); a complete
+# header set is not enough to defeat an IP-based block, but it is the correct
+# baseline and lets the request succeed anywhere the IP is not blocked.
+_BROWSER_HEADERS = {
+    "User-Agent": UA,
+    "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+               "image/avif,image/webp,image/apng,*/*;q=0.8"),
+    "Accept-Language": "en-GB,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+}
+
+# HTTP statuses that indicate a WAF/IP block rather than a genuine "no data".
+_BLOCKED_STATUSES = {401, 403, 405, 406, 429}
+
+
+def _proxies() -> Optional[Dict[str, str]]:
+    """Optional proxy for RP requests only.
+
+    GitHub Actions runner IPs are WAF-blocked by Racing Post, so silks cannot be
+    fetched from CI without an egress that RP does not block. Set ``RP_SILKS_PROXY``
+    (e.g. ``http://user:pass@host:port``) to route *only* the silk requests through
+    a residential/unblocked proxy, leaving the ratings feeds untouched. Falls back
+    to the standard ``HTTPS_PROXY``/``HTTP_PROXY`` if those are set.
+    """
+    proxy = os.environ.get("RP_SILKS_PROXY", "").strip()
+    if proxy:
+        return {"http": proxy, "https": proxy}
+    return None  # requests already honours HTTPS_PROXY/HTTP_PROXY automatically
 
 # A racecard link for a given date: /racecards/<courseId>/<course>/<date>/<raceId>
 _CARD_LINK_RE_TMPL = r"/racecards/\d+/[a-z0-9-]+/{date}/\d+"
@@ -74,6 +110,26 @@ def parse_card_silks(card_html: str) -> Dict[str, str]:
     return out
 
 
+def _get_with_retry(session, url: str, timeout: int = 20, attempts: int = 3):
+    """GET with a short backoff on transient/blocked responses.
+
+    Returns the last response (even a blocked one, so the caller can log the
+    status) or None if every attempt raised.
+    """
+    resp = None
+    for i in range(attempts):
+        try:
+            resp = session.get(url, timeout=timeout)
+            if resp.status_code == 200 or resp.status_code not in _BLOCKED_STATUSES:
+                return resp
+        except Exception as e:  # pragma: no cover - network best-effort
+            log.debug("RP GET failed %s (attempt %d/%d): %s", url, i + 1, attempts, e)
+            resp = None
+        if i < attempts - 1:
+            time.sleep(2 ** i + random.uniform(0, 0.5))
+    return resp
+
+
 def fetch_silk_map(
     date: str,
     session=None,
@@ -93,15 +149,25 @@ def fetch_silk_map(
     close = False
     if session is None:
         session = requests.Session()
-        session.headers.update({"User-Agent": UA, "Accept-Encoding": "gzip, deflate",
-                                "Accept-Language": "en-GB,en;q=0.9"})
+        session.headers.update(_BROWSER_HEADERS)
+        proxies = _proxies()
+        if proxies:
+            session.proxies.update(proxies)
+            log.info("RP silks: routing through RP_SILKS_PROXY")
         close = True
 
     silk_map: Dict[str, str] = {}
     try:
-        landing = session.get(f"{BASE}/racecards/{date}/", timeout=20)
-        if landing.status_code != 200:
-            log.info("RP racecards landing HTTP %s for %s — no silks", landing.status_code, date)
+        landing = _get_with_retry(session, f"{BASE}/racecards/{date}/", timeout=20)
+        if landing is None or landing.status_code != 200:
+            status = "no response" if landing is None else landing.status_code
+            if landing is not None and landing.status_code in _BLOCKED_STATUSES:
+                log.warning(
+                    "RP racecards landing HTTP %s for %s — the request is being "
+                    "blocked (WAF/IP block). Silks will be empty. Set RP_SILKS_PROXY "
+                    "to a residential proxy to fetch silks from CI.", status, date)
+            else:
+                log.info("RP racecards landing HTTP %s for %s — no silks", status, date)
             return {}
         links = parse_card_links(landing.text, date)
         log.info("RP silks: %d cards for %s", len(links), date)
