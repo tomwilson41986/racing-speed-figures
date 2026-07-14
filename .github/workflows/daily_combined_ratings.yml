@@ -106,6 +106,10 @@ jobs:
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          # Racing Post blocks GitHub runner IPs (HTTP 406), so silks come back
+          # empty from CI. Set the optional RP_SILKS_PROXY secret to a residential
+          # proxy to fetch silks; unset = graceful no-silk fallback.
+          RP_SILKS_PROXY: ${{ secrets.RP_SILKS_PROXY }}
           # Temporary: send only to racingsquared@gmail.com while verifying the
           # new figures. Remove this line to restore the full distribution list.
           RATINGS_RECIPIENTS: racingsquared@gmail.com
@@ -120,7 +124,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin ${{ github.ref_name }} || true
           git add output/daily_ratings/ output/uk_audit/ output/france/ \
                   output/france_audit/ output/france_qa/ data/france_live/ \
                   output/accuracy/ || true
@@ -128,7 +131,17 @@ jobs:
             echo "No new artifacts to commit"
           else
             git commit -m "Combined live ratings for ${{ steps.d.outputs.date }}"
-            git push
+            # The sectional workflow also pushes to this branch at 21:00, so the
+            # first push can be rejected. Rebase (autostash keeps unstaged files)
+            # and retry a few times instead of failing the whole job.
+            pushed=0
+            for i in 1 2 3 4 5; do
+              if git push origin "HEAD:${{ github.ref_name }}"; then pushed=1; break; fi
+              echo "Push rejected (attempt $i) — rebasing on latest and retrying..."
+              git pull --rebase --autostash origin "${{ github.ref_name }}" || true
+              sleep $((RANDOM % 5 + 2))
+            done
+            if [ "$pushed" != "1" ]; then echo "::warning::Could not push ratings artifacts after retries"; fi
           fi
 
       - name: Upload artifacts

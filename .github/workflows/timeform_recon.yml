@@ -63,6 +63,11 @@ jobs:
         env:
           TIMEFORM_USER: ${{ secrets.TIMEFORM_USER }}
           TIMEFORM_PASS: ${{ secrets.TIMEFORM_PASS }}
+          # Timeform sits behind Azure Front Door WAF, which blocks GitHub runner
+          # IPs (the login page becomes an afd_azwaf challenge and the form never
+          # loads). Set the optional PW_PROXY secret to a residential proxy to log
+          # in from CI.
+          PW_PROXY: ${{ secrets.PW_PROXY }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           # Send the report to the account owner. Add addresses (comma-separated)

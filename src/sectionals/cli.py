@@ -50,8 +50,15 @@ def ingest(date):
     try:
         reader = drive_client.get_reader()
     except Exception as e:
-        log.error("Drive reader unavailable (%s). Set GDRIVE_SA_JSON.", e)
-        return
+        # A missing/invalid service account is a configuration error, not a
+        # normal "no data" day. Fail loudly so the empty report doesn't silently
+        # look like success (this is why the sectional email stopped arriving).
+        raise click.ClickException(
+            f"Google Drive is not configured ({e}). Set the GDRIVE_SA_JSON "
+            "secret to the service-account JSON (or a path to it) and share the "
+            "'Daily Sectional Reports' Drive folder read-only with the service "
+            "account's email. No sectionals can be ingested until then."
+        )
 
     n_pdf = n_run = 0
     for track_name, pdf in drive_client.iter_race_pdfs(reader, date):
