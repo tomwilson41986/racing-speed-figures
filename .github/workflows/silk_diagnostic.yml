@@ -1,0 +1,48 @@
+name: Silk fetch diagnostic
+
+# Lightweight, on-demand check of silk coverage from a GitHub runner IP (no S3,
+# no email, no ratings pipeline). Used to confirm Racing Post (UK/IRE) and PMU
+# (France) silk fetching works from CI. Safe to delete once silks are trusted.
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Race date (YYYY-MM-DD), empty = today'
+        required: false
+        default: ''
+
+jobs:
+  silk-diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install minimal deps
+        run: pip install requests pandas
+
+      - name: Resolve date
+        id: d
+        run: |
+          D="${{ github.event.inputs.date }}"
+          if [ -z "$D" ]; then D=$(date -u +%Y-%m-%d); fi
+          echo "date=$D" >> "$GITHUB_OUTPUT"
+
+      - name: Probe silk coverage
+        run: |
+          python - <<'PY'
+          import logging
+          logging.basicConfig(level=logging.INFO, format="%(message)s")
+          date = "${{ steps.d.outputs.date }}"
+          from src.reporting import rp_silks
+          from src.france import silks as fr_silks
+          rp = rp_silks.fetch_silk_map(date)
+          fr = fr_silks.fetch_silk_map(date)
+          print(f"RESULT  RP(UK/IRE) mapped={len(rp)}  PMU(FR) mapped={len(fr)}  date={date}")
+          PY
