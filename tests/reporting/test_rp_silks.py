@@ -31,6 +31,47 @@ def test_parse_card_silks():
     assert "LATE WITHDRAWAL" not in m
 
 
+_RESULT_LANDING = """
+<a href="/results/6/beverley/2026-07-14/923066">Beverley 2:00</a>
+<a href="/results/6/beverley/2026-07-14/923066">dup</a>
+<a href="/results/179/downpatrick/2026-07-14/924645">Downpatrick</a>
+<a href="/racecards/2/ascot/2026-07-14/111">still upcoming</a>
+"""
+
+_RESULT_PAGE = """
+<td class="rp-horseTable__horseCell">
+  <a data-test-selector="link-silk">
+    <img class="rp-horseTable__silk"
+         src="https://www.rp-assets.com/svg/0/4/2/112240.svg" alt="Runner Jacket">
+  </a>
+  <div class="rp-horseTable__horse">
+    <a href="/profile/horse/1/star-velocity"
+       class="rp-horseTable__horse__name ui-link">Star Velocity</a>
+</td>
+<td class="rp-horseTable__horseCell">
+  <img class="rp-horseTable__silk"
+       src="https://www.rp-assets.com/svg/b/1/7/287171b.svg" alt="Runner Jacket">
+  <a class="rp-horseTable__horse__name ui-link">Queen Sana</a>
+</td>
+"""
+
+
+def test_parse_result_links():
+    links = rp_silks.parse_result_links(_RESULT_LANDING, "2026-07-14")
+    assert links == [
+        "/results/6/beverley/2026-07-14/923066",
+        "/results/179/downpatrick/2026-07-14/924645",
+    ]
+    # racecard links are not results
+    assert all("/racecards/" not in l for l in links)
+
+
+def test_parse_result_silks():
+    m = rp_silks.parse_result_silks(_RESULT_PAGE)
+    assert m["STAR VELOCITY"] == "https://www.rp-assets.com/svg/0/4/2/112240.svg"
+    assert m["QUEEN SANA"].endswith("287171b.svg")
+
+
 def test_enrich_silks_matches_by_name():
     silk_map = {"ASCOT STAR": "https://www.rp-assets.com/svg/0/4/2/112240.svg"}
     df = pd.DataFrame({"horseName": ["Ascot Star", "Some Other Horse"]})

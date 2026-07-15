@@ -72,6 +72,11 @@ def _proxies() -> Optional[Dict[str, str]]:
 
 # A racecard link for a given date: /racecards/<courseId>/<course>/<date>/<raceId>
 _CARD_LINK_RE_TMPL = r"/racecards/\d+/[a-z0-9-]+/{date}/\d+"
+# Once a race is off, the day's landing page swaps the racecard link for a RESULT
+# link of the same shape. At ~21:00 (when the email sends) most of the card is
+# finished, so we harvest silks from result pages too — otherwise only the last
+# few upcoming races carry silks.
+_RESULT_LINK_RE_TMPL = r"/results/\d+/[a-z0-9-]+/{date}/\d+"
 # Within a card's embedded JSON each runner has "horseName":"…" followed (still
 # inside the same runner object, so before the next "horseName") by
 # "silkImage":"https://www.rp-assets.com/svg/….svg".
@@ -79,6 +84,14 @@ _RUNNER_RE = re.compile(
     r'"horseName":"((?:[^"\\]|\\.)*)"'
     r'(?:(?!"horseName")[\s\S]){0,6000}?'
     r'"silkImage":"(https://www\.rp-assets\.com/svg/(?:[^"\\]|\\.)*?\.svg)"'
+)
+# Result pages render silks as HTML, not JSON: each runner cell holds a
+# rp-horseTable__silk <img src="…svg"> and, a little later in the same cell, a
+# rp-horseTable__horse__name link with the horse's name.
+_RESULT_RUNNER_RE = re.compile(
+    r'rp-horseTable__silk"\s+src="(https://www\.rp-assets\.com/svg/[^"]+?\.svg)"'
+    r'[\s\S]{0,1500}?'
+    r'rp-horseTable__horse__name[^>]*>\s*([^<]+?)\s*<'
 )
 
 
@@ -110,6 +123,28 @@ def parse_card_silks(card_html: str) -> Dict[str, str]:
     return out
 
 
+def parse_result_links(landing_html: str, date: str) -> List[str]:
+    """Distinct result paths for ``date`` from a ``/racecards/<date>/`` page.
+
+    After a race is run its landing-page link becomes ``/results/…`` — the result
+    page still carries the runners' silks (as HTML)."""
+    rx = re.compile(_RESULT_LINK_RE_TMPL.format(date=re.escape(date)))
+    seen: dict[str, None] = {}
+    for m in rx.findall(landing_html):
+        seen.setdefault(m, None)
+    return list(seen.keys())
+
+
+def parse_result_silks(result_html: str) -> Dict[str, str]:
+    """Map normalised horse name → silk SVG URL from one result page's HTML."""
+    out: Dict[str, str] = {}
+    for raw_url, raw_name in _RESULT_RUNNER_RE.findall(result_html):
+        name = normalise_name(raw_name)
+        if name and raw_url and name not in out:
+            out[name] = raw_url
+    return out
+
+
 def _get_with_retry(session, url: str, timeout: int = 20, attempts: int = 3):
     """GET with a short backoff on transient/blocked responses.
 
@@ -133,10 +168,13 @@ def _get_with_retry(session, url: str, timeout: int = 20, attempts: int = 3):
 def fetch_silk_map(
     date: str,
     session=None,
-    max_cards: int = 60,
-    delay: float = 3.5,
+    max_races: int = 90,
+    delay: float = 1.5,
 ) -> Dict[str, str]:
     """Build ``{horse_norm: silk_url}`` for a race date from RP racecards.
+
+    Harvests silks from both upcoming (racecard, JSON) and finished (result, HTML)
+    races so coverage is full whatever time of day the email sends.
 
     Best-effort: returns whatever it gathered (possibly empty) rather than raising.
     """
@@ -169,17 +207,35 @@ def fetch_silk_map(
             else:
                 log.info("RP racecards landing HTTP %s for %s — no silks", status, date)
             return {}
-        links = parse_card_links(landing.text, date)
-        log.info("RP silks: %d cards for %s", len(links), date)
-        for i, path in enumerate(links[:max_cards]):
-            time.sleep(delay + random.uniform(0.5, 2.0))  # human-paced
+        cards = parse_card_links(landing.text, date)          # upcoming (JSON)
+        results = parse_result_links(landing.text, date)      # finished (HTML)
+        # A race is either upcoming or finished, never both, so the two lists
+        # don't overlap. Tag each with the parser it needs.
+        targets = ([(p, parse_card_silks) for p in cards]
+                   + [(p, parse_result_silks) for p in results])
+        log.info("RP silks: %d cards + %d results for %s", len(cards), len(results), date)
+        # Single attempt per race (no retry storm) + a circuit breaker: if RP
+        # starts blocking, stop quickly rather than hammering 90 URLs and
+        # escalating the block.
+        consecutive_blocks = 0
+        for i, (path, parse) in enumerate(targets[:max_races]):
+            time.sleep(delay + random.uniform(0.2, 1.0))  # polite, not glacial
             try:
                 r = session.get(BASE + path, timeout=20)
-                if r.status_code == 200:
-                    for name, url in parse_card_silks(r.text).items():
-                        silk_map.setdefault(name, url)
             except Exception as e:  # pragma: no cover - network best-effort
-                log.debug("RP card fetch failed %s: %s", path, e)
+                log.debug("RP fetch failed %s: %s", path, e)
+                continue
+            if r.status_code == 200:
+                consecutive_blocks = 0
+                for name, url in parse(r.text).items():
+                    silk_map.setdefault(name, url)
+            elif r.status_code in _BLOCKED_STATUSES:
+                consecutive_blocks += 1
+                if consecutive_blocks >= 6:
+                    log.warning("RP silks: %d consecutive HTTP %s — stopping early "
+                                "to avoid hammering (mapped %d so far)",
+                                consecutive_blocks, r.status_code, len(silk_map))
+                    break
         log.info("RP silks: mapped %d runners for %s", len(silk_map), date)
     except Exception as e:  # pragma: no cover - network best-effort
         log.warning("RP silks fetch failed for %s: %s", date, e)
