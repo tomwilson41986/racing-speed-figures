@@ -46,8 +46,13 @@ jobs:
         # them explicitly), so add them here alongside pytest.
         run: pip install -r requirements.txt pandas numpy pytest
 
-      - name: Install Chromium for Playwright
-        run: python -m playwright install chromium --with-deps
+      - name: Install Chromium for Playwright (+ xvfb)
+        # xvfb provides a virtual display so Chromium can run *headed*. A headed
+        # browser is far less detectable than headless, which is what gets the
+        # login past Timeform's Azure Front Door WAF from a datacenter IP.
+        run: |
+          python -m playwright install chromium --with-deps
+          sudo apt-get install -y xvfb
 
       - name: Run offline parser/reconcile tests
         run: python -m pytest tests/timeform/ -q
@@ -75,12 +80,16 @@ jobs:
           RATINGS_RECIPIENTS: racingsquared@gmail.com
         run: |
           D="${{ steps.d.outputs.date }}"
+          # Run headed under a virtual display (xvfb) so the login clears the WAF.
+          # With a proxy supplied, a plain headless run through it is enough.
+          HEADED="--headful"
+          if [ -n "$PW_PROXY" ]; then HEADED=""; fi
           if [ "${{ github.event.inputs.capture_only }}" = "true" ]; then
-            python -m src.timeform.cli -v capture-html --date "$D"
+            xvfb-run -a python -m src.timeform.cli -v capture-html --date "$D" $HEADED
           else
             FLAG=""
             if [ "${{ github.event.inputs.send_email }}" = "false" ]; then FLAG="--no-email"; fi
-            python -m src.timeform.cli -v run --date "$D" $FLAG
+            xvfb-run -a python -m src.timeform.cli -v run --date "$D" $HEADED $FLAG
           fi
 
       - name: Upload raw capture artifact

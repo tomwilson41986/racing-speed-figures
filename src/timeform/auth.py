@@ -102,14 +102,27 @@ class TimeformAuth:
         if self._proxy:
             launch_kwargs["proxy"] = {"server": self._proxy}
 
-        # Reduce the most obvious headless-automation fingerprint. Timeform sits
-        # behind Azure Front Door WAF, which challenges datacenter/bot traffic;
-        # this helps but does not defeat an IP-based block (set PW_PROXY for that).
-        launch_kwargs.setdefault("args", ["--disable-blink-features=AutomationControlled"])
+        # Normalise the automation fingerprint so Timeform's Azure Front Door WAF
+        # treats the session as an ordinary browser. Paired with a *headed* run
+        # under xvfb (see the workflow), this is what clears the challenge from a
+        # datacenter IP; a proxy (PW_PROXY) is the fallback for a hard IP block.
+        # (Account owner explicitly authorised this to reach their own paid data.)
+        launch_kwargs.setdefault("args", [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+        ])
 
         browser = pw.chromium.launch(**launch_kwargs)
         context = browser.new_context(user_agent=CHROME_USER_AGENT, locale="en-GB",
-                                      viewport={"width": 1400, "height": 1000})
+                                      viewport={"width": 1400, "height": 1000},
+                                      timezone_id="Europe/London")
+        # Hide the webdriver flag the WAF sniffs for.
+        try:
+            context.add_init_script(
+                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+        except Exception:  # pragma: no cover - best effort
+            pass
         page = context.new_page()
         try:
             # 1. Land on the homepage first, like a person would.
