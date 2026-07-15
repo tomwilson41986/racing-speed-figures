@@ -143,17 +143,25 @@ def run(target_date: Optional[str] = None, send: bool = True) -> ReportContext:
         target_date, 0 if uk_df is None else len(uk_df), 0 if fr_df is None else len(fr_df),
     )
 
-    # Silks: Racing Post racecards (public) carry per-runner jockey silks. Fetch
-    # the day's map once and join by horse name onto both frames. Best-effort and
-    # env-gated (set RP_SILKS=0 to skip); cards render silk-optional either way.
-    if os.environ.get("RP_SILKS", "1") != "0":
+    # Silks by jurisdiction, each from its own feed:
+    #   UK/IRE — Racing Post public racecards (rp-assets SVG). Best-effort: RP's
+    #     WAF blocks datacenter IPs, so this is empty from CI unless RP_SILKS_PROXY
+    #     is set. Env-gated with RP_SILKS=0.
+    #   France — PMU casaques (urlCasaque), from the same first-party API the
+    #     ratings use, so it works from CI with no proxy. Env-gated with FR_SILKS=0.
+    # Cards render silk-optional either way.
+    if uk_df is not None and os.environ.get("RP_SILKS", "1") != "0":
         try:
             from . import rp_silks
-            silk_map = rp_silks.fetch_silk_map(target_date)
-            uk_df = rp_silks.enrich_silks(uk_df, target_date, silk_map)
-            fr_df = rp_silks.enrich_silks(fr_df, target_date, silk_map)
+            uk_df = rp_silks.enrich_silks(uk_df, target_date, rp_silks.fetch_silk_map(target_date))
         except Exception as e:  # never let silks break the email
             log.warning("RP silks enrichment skipped: %s", e)
+    if fr_df is not None and os.environ.get("FR_SILKS", "1") != "0":
+        try:
+            from src.france import silks as fr_silks
+            fr_df = fr_silks.enrich_silks(fr_df, fr_silks.fetch_silk_map(target_date))
+        except Exception as e:  # never let silks break the email
+            log.warning("PMU silks enrichment skipped: %s", e)
 
     accuracy_panel = None
     try:

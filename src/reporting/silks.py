@@ -78,20 +78,54 @@ def render_silk_png(svg: str) -> Optional[bytes]:
         return None
 
 
-def _fetch_svg(url: str) -> Optional[str]:
+def _http_get(url: str):
     if requests is None:
         return None
     try:
         resp = requests.get(url, timeout=15)
-        if resp.status_code == 200 and resp.text.strip():
-            return resp.text
+        if resp.status_code == 200 and resp.content:
+            return resp
     except Exception as e:  # pragma: no cover
         log.warning("silk fetch failed %s: %s", url, e)
     return None
 
 
+def _looks_svg(content: bytes, ctype: str, url: str) -> bool:
+    if "svg" in ctype or "xml" in ctype:
+        return True
+    if url.lower().split("?")[0].endswith(".svg"):
+        return True
+    head = content[:256].lstrip()
+    return head.startswith(b"<?xml") or head.startswith(b"<svg")
+
+
+def _raster_to_png(content: bytes) -> Optional[bytes]:
+    """Normalise an already-raster silk (PNG/JPEG, e.g. a PMU casaque) to a
+    white-backed PNG letterboxed into the silk render box. Falls back to the
+    original bytes if Pillow is unavailable (the <img> tag still scales them)."""
+    try:
+        import io
+
+        from PIL import Image
+
+        W, H = theme.SILK_RENDER_W, theme.SILK_RENDER_H
+        im = Image.open(io.BytesIO(content)).convert("RGBA")
+        im.thumbnail((W, H))  # preserve aspect ratio
+        canvas = Image.new("RGBA", (W, H), (255, 255, 255, 255))
+        canvas.alpha_composite(im, ((W - im.width) // 2, (H - im.height) // 2))
+        out = io.BytesIO()
+        canvas.convert("RGB").save(out, format="PNG")
+        return out.getvalue()
+    except Exception as e:  # pragma: no cover - Pillow optional
+        log.debug("raster silk normalise failed (%s); using original bytes", e)
+        return content or None
+
+
 def fetch_and_render(url: str) -> Optional[bytes]:
-    """Fetch (or read cached) a silk SVG and return PNG bytes, or None."""
+    """Fetch (or read cached) a silk and return PNG bytes, or None.
+
+    Handles both SVG silks (Racing Post → rasterise via resvg) and already-raster
+    silks (PMU casaques are PNG → normalise directly)."""
     os.makedirs(_CACHE_DIR, exist_ok=True)
     cache_png = os.path.join(_CACHE_DIR, silk_cid(url) + ".png")
     if os.path.exists(cache_png):
@@ -100,10 +134,14 @@ def fetch_and_render(url: str) -> Optional[bytes]:
                 return fh.read()
         except Exception:
             pass
-    svg = _fetch_svg(url)
-    if not svg:
+    resp = _http_get(url)
+    if resp is None:
         return None
-    png = render_silk_png(svg)
+    ctype = (resp.headers.get("content-type") or "").lower()
+    if _looks_svg(resp.content, ctype, url):
+        png = render_silk_png(resp.text)
+    else:
+        png = _raster_to_png(resp.content)
     if png:
         try:
             with open(cache_png, "wb") as fh:
