@@ -31,7 +31,9 @@ from src.france_galop.auth import (
 log = logging.getLogger(__name__)
 
 SITE_BASE = "https://www.timeform.com"
-LOGIN_URL = f"{SITE_BASE}/account/sign-in"
+# The sign-in form lives under /horse-racing (the old /account/sign-in now 404s
+# once you clear the WAF — confirmed from the homepage's own sign-in link).
+LOGIN_URL = f"{SITE_BASE}/horse-racing/account/sign-in?returnUrl=%2Fhorse-racing"
 HOME_URL = f"{SITE_BASE}/horse-racing"
 RESULTS_YESTERDAY = f"{SITE_BASE}/horse-racing/results/yesterday"
 
