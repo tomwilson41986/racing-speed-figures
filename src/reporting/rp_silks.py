@@ -17,6 +17,7 @@ card fetches (Racing Post asks nicely; we ask nicely back).
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
@@ -30,6 +31,14 @@ import pandas as pd
 from src.sectionals.normalize import normalise_name
 
 log = logging.getLogger(__name__)
+
+# Committed cache of the day's silk map, written by the morning prefetch job
+# (silks_prefetch.yml) while every UK/IRE race is still an upcoming card — the
+# racecard JSON path, which RP does not throttle. The 21:00 email reads it so it
+# never has to scrape RP's rate-limited result pages.
+_SILK_MAP_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "silks"
+)
 
 BASE = "https://www.racingpost.com"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -264,3 +273,62 @@ def enrich_silks(df: pd.DataFrame, date: str,
     n = int(df["silk_url"].notna().sum())
     log.info("RP silks: matched %d/%d runners for %s", n, len(df), date)
     return df
+
+
+# ── Prefetch cache ────────────────────────────────────────────────────
+def _silk_map_path(date: str) -> str:
+    return os.path.join(_SILK_MAP_DIR, f"rp_silks_{date}.json")
+
+
+def save_silk_map(date: str, silk_map: Dict[str, str]) -> str:
+    """Write the day's silk map to the committed cache; returns the path."""
+    os.makedirs(_SILK_MAP_DIR, exist_ok=True)
+    path = _silk_map_path(date)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(silk_map, fh, ensure_ascii=False, sort_keys=True, indent=0)
+    return path
+
+
+def load_silk_map(date: str) -> Optional[Dict[str, str]]:
+    """Read the prefetched silk map for ``date``, or None if absent/empty."""
+    path = _silk_map_path(date)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            m = json.load(fh)
+        if m:
+            log.info("RP silks: loaded %d prefetched silks for %s", len(m), date)
+            return m
+    except Exception as e:  # pragma: no cover
+        log.warning("RP silks: failed to read cache %s: %s", path, e)
+    return None
+
+
+def silk_map_for(date: str) -> Dict[str, str]:
+    """Best silk map for a date: the morning prefetch if present, else a live
+    fetch. The prefetch (all races upcoming → un-throttled racecard JSON) gives
+    full coverage without hitting RP's rate-limited evening result pages."""
+    return load_silk_map(date) or fetch_silk_map(date)
+
+
+def main():
+    """CLI: prefetch and cache the day's RP silk map (run in the morning)."""
+    import argparse
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    ap = argparse.ArgumentParser(description="Prefetch the day's Racing Post silk map")
+    ap.add_argument("--date", default=None, help="YYYY-MM-DD (default: today UTC)")
+    args = ap.parse_args()
+    date = args.date or datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+
+    silk_map = fetch_silk_map(date)
+    if silk_map:
+        path = save_silk_map(date, silk_map)
+        log.info("Saved %d silks -> %s", len(silk_map), path)
+    else:
+        log.warning("No silks fetched for %s — nothing cached", date)
+
+
+if __name__ == "__main__":
+    main()

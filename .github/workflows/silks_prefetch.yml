@@ -1,0 +1,71 @@
+name: Silk Map Prefetch (UK/IRE)
+
+# Racing Post throttles its *result* pages, so by the 21:00 combined email (when
+# most races are finished) UK/IRE silk coverage is capped. This job runs in the
+# late morning — while every race is still an upcoming *racecard* (the JSON path
+# RP does NOT throttle) — grabs the full silk map, and commits it. The 21:00
+# email then reads the cache instead of scraping RP's rate-limited pages.
+#
+# France silks come from the PMU API at send time (not throttled), so they need
+# no prefetch.
+
+on:
+  schedule:
+    # 11:00 UTC — today's UK/IRE cards are all published, none run yet.
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Race date (YYYY-MM-DD), empty = today'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  silk-prefetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install requests pandas
+
+      - name: Resolve date
+        id: d
+        run: |
+          D="${{ github.event.inputs.date }}"
+          if [ -z "$D" ]; then D=$(date -u +%Y-%m-%d); fi
+          echo "date=$D" >> "$GITHUB_OUTPUT"
+
+      - name: Prefetch silk map
+        env:
+          RP_SILKS_PROXY: ${{ secrets.RP_SILKS_PROXY }}
+        run: python -m src.reporting.rp_silks --date "${{ steps.d.outputs.date }}"
+
+      - name: Commit silk map
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/silks/ || true
+          if git diff --cached --quiet; then
+            echo "No silk map to commit"
+          else
+            git commit -m "Silk map for ${{ steps.d.outputs.date }}"
+            pushed=0
+            for i in 1 2 3 4 5; do
+              if git push origin "HEAD:${{ github.ref_name }}"; then pushed=1; break; fi
+              echo "Push rejected (attempt $i) — rebasing and retrying..."
+              git pull --rebase --autostash origin "${{ github.ref_name }}" || true
+              sleep $((RANDOM % 5 + 2))
+            done
+            if [ "$pushed" != "1" ]; then echo "::warning::Could not push silk map after retries"; fi
+          fi
