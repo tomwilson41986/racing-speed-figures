@@ -118,6 +118,31 @@ def test_get_with_retry_returns_last_block_when_never_recovers(monkeypatch):
     assert sess.calls == 3
 
 
+def test_silk_map_save_load_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(rp_silks, "_SILK_MAP_DIR", str(tmp_path))
+    m = {"STAR VELOCITY": "https://x/a.svg", "QUEEN SANA": "https://x/b.svg"}
+    path = rp_silks.save_silk_map("2026-07-16", m)
+    assert path.endswith("rp_silks_2026-07-16.json")
+    assert rp_silks.load_silk_map("2026-07-16") == m
+    assert rp_silks.load_silk_map("1999-01-01") is None
+
+
+def test_silk_map_for_prefers_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(rp_silks, "_SILK_MAP_DIR", str(tmp_path))
+    cached = {"HORSE": "https://x/c.svg"}
+    rp_silks.save_silk_map("2026-07-16", cached)
+    # If a cache exists, silk_map_for must NOT hit the network.
+    monkeypatch.setattr(rp_silks, "fetch_silk_map",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("network hit")))
+    assert rp_silks.silk_map_for("2026-07-16") == cached
+
+
+def test_silk_map_for_falls_back_to_live(tmp_path, monkeypatch):
+    monkeypatch.setattr(rp_silks, "_SILK_MAP_DIR", str(tmp_path))  # empty → no cache
+    monkeypatch.setattr(rp_silks, "fetch_silk_map", lambda *a, **k: {"LIVE": "https://x/d.svg"})
+    assert rp_silks.silk_map_for("2026-07-16") == {"LIVE": "https://x/d.svg"}
+
+
 def test_proxies_from_env(monkeypatch):
     monkeypatch.delenv("RP_SILKS_PROXY", raising=False)
     assert rp_silks._proxies() is None

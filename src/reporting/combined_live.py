@@ -153,7 +153,8 @@ def run(target_date: Optional[str] = None, send: bool = True) -> ReportContext:
     if uk_df is not None and os.environ.get("RP_SILKS", "1") != "0":
         try:
             from . import rp_silks
-            uk_df = rp_silks.enrich_silks(uk_df, target_date, rp_silks.fetch_silk_map(target_date))
+            # Prefer the morning prefetch (full, un-throttled); fall back to live.
+            uk_df = rp_silks.enrich_silks(uk_df, target_date, rp_silks.silk_map_for(target_date))
         except Exception as e:  # never let silks break the email
             log.warning("RP silks enrichment skipped: %s", e)
     if fr_df is not None and os.environ.get("FR_SILKS", "1") != "0":
