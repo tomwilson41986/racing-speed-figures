@@ -1,0 +1,507 @@
+UK Speed Figures — Calculation Logic Audit
+Date: 2026-07-26   Run source: live
+Generated: 2026-07-26T22:01:22+00:00
+================================================================================
+
+FORMULA REFERENCE
+----------------------------------------
+  BASE_RATING          = 100
+  BASE_WEIGHT_LBS      = 126
+  SECONDS_PER_LENGTH   = 0.2
+  LBS_PER_SECOND_5F    = 20
+  BENCHMARK_FURLONGS   = 5.0
+
+  corrected_time       = finishingTime - (going_allowance * distance)
+  deviation_seconds    = corrected_time - standard_time
+  deviation_lengths    = deviation_seconds / SECONDS_PER_LENGTH
+  deviation_lbs        = deviation_lengths * lpl
+  raw_figure (winner)  = BASE_RATING - deviation_lbs
+  raw_figure (others)  = winner_figure - lbs_behind
+  after_weight         = raw_figure + (weightCarried - BASE_WEIGHT_LBS)
+  figure_final         = after_weight + wfa_adj
+  figure_calibrated    = calibration(figure_final)  [surface-specific]
+
+SUMMARY
+----------------------------------------
+  Total runners: 44
+  Runners rated: 42
+  Races: 7
+  Courses: PONTEFRACT
+  Figure range: -2 to 111
+  Figure mean:  56.8
+
+================================================================================
+RACE: PONTEFRACT Race 1  (id=2026-07-26_PONTEFRACT_1)
+  Distance: 8.1f  Going: Good To Firm  Surface: Turf  Class: 4
+  standard_time=111.9661s  going_allowance=-0.156633 s/f  lpl=2.5183 lbs/L
+------------------------------------------------------------
+  WINNER: Asset (GER)
+    finishingTime        = 106.0200s
+    corrected_time       = 106.0200 - (-0.1566 * 8.0636) = 107.2830
+    deviation_seconds    = 107.2830 - 111.9661 = -4.6830
+    deviation_lengths    = -4.6830 / 0.2 = -23.4152
+    deviation_lbs        = -23.4152 * 2.5183 = -58.9657
+    raw_figure           = 100 - -58.9657 = 157.8343
+    weight_adj           = 2.0000
+    wfa_adj              = 2.9682
+    sex_allowance        = 3
+    figure_final         = 160.8025
+    figure_calibrated    = 29.2000
+
+     2. Albemagic
+    beaten_lengths       = 1.5000L
+    lbs_behind           = 1.5000 * 2.5183 = N/A
+    raw_figure           = N/A - N/A = 159.0569
+    weight_adj           = 7.0000
+    wfa_adj              = 2.9682
+    figure_final         = 162.0251
+    figure_calibrated    = 34.1000
+
+     3. Feliz Navidad
+    beaten_lengths       = 13.5000L
+    lbs_behind           = 13.5000 * 2.5183 = N/A
+    raw_figure           = N/A - N/A = 128.8376
+    weight_adj           = 7.0000
+    wfa_adj              = 2.9682
+    figure_final         = 131.8058
+    figure_calibrated    = -1.7000
+
+
+================================================================================
+RACE: PONTEFRACT Race 2  (id=2026-07-26_PONTEFRACT_2)
+  Distance: 5.0f  Going: Good To Firm  Surface: Turf  Class: 4
+  standard_time=67.4560s  going_allowance=-0.156633 s/f  lpl=4.0664 lbs/L
+------------------------------------------------------------
+  WINNER: Bolt Of Blue (FR)
+    finishingTime        = 62.5400s
+    corrected_time       = 62.5400 - (-0.1566 * 5.0409) = 63.3296
+    deviation_seconds    = 63.3296 - 67.4560 = -4.1264
+    deviation_lengths    = -4.1264 / 0.2 = -20.6320
+    deviation_lbs        = -20.6320 * 4.0664 = -83.8973
+    raw_figure           = 100 - -83.8973 = 184.7832
+    weight_adj           = 7.0000
+    wfa_adj              = 15.0000
+    figure_final         = 199.7832
+    figure_calibrated    = 73.7000
+
+   DNF. Sole Ruler (IRE)
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 4.0664 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 15.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. The Mean Fiddler (IRE)
+    beaten_lengths       = 0.0300L
+    lbs_behind           = 0.0300 * 4.0664 = N/A
+    raw_figure           = N/A - N/A = 184.6612
+    weight_adj           = 7.0000
+    wfa_adj              = 15.0000
+    figure_final         = 199.6612
+    figure_calibrated    = 72.0000
+
+     3. Onslaught (IRE)
+    beaten_lengths       = 3.5300L
+    lbs_behind           = 3.5300 * 4.0664 = N/A
+    raw_figure           = N/A - N/A = 170.4289
+    weight_adj           = 7.0000
+    wfa_adj              = 15.0000
+    figure_final         = 185.4289
+    figure_calibrated    = 60.7000
+
+     4. Calef (IRE)
+    beaten_lengths       = 3.6800L
+    lbs_behind           = 3.6800 * 4.0664 = N/A
+    raw_figure           = N/A - N/A = 164.8190
+    weight_adj           = 2.0000
+    wfa_adj              = 15.0000
+    sex_allowance        = 3
+    figure_final         = 179.8190
+    figure_calibrated    = 54.9000
+
+     5. Naval Cop
+    beaten_lengths       = 8.1800L
+    lbs_behind           = 8.1800 * 4.0664 = N/A
+    raw_figure           = N/A - N/A = 146.5203
+    weight_adj           = 2.0000
+    wfa_adj              = 15.0000
+    sex_allowance        = 3
+    figure_final         = 161.5203
+    figure_calibrated    = 40.1000
+
+     6. Shaqra Queen (IRE)
+    beaten_lengths       = 10.9300L
+    lbs_behind           = 10.9300 * 4.0664 = N/A
+    raw_figure           = N/A - N/A = 135.3378
+    weight_adj           = 2.0000
+    wfa_adj              = 15.0000
+    sex_allowance        = 3
+    figure_final         = 150.3378
+    figure_calibrated    = 27.3000
+
+
+================================================================================
+RACE: PONTEFRACT Race 3  (id=2026-07-26_PONTEFRACT_3)
+  Distance: 8.1f  Going: Good To Firm  Surface: Turf  Class: 5
+  standard_time=111.9661s  going_allowance=-0.156633 s/f  lpl=2.6045 lbs/L
+------------------------------------------------------------
+  WINNER: Polygram
+    finishingTime        = 102.5100s
+    corrected_time       = 102.5100 - (-0.1566 * 8.0636) = 103.7730
+    deviation_seconds    = 103.7730 - 111.9661 = -8.1930
+    deviation_lengths    = -8.1930 / 0.2 = -40.9652
+    deviation_lbs        = -40.9652 * 2.6045 = -106.6937
+    raw_figure           = 100 - -106.6937 = 211.6829
+    weight_adj           = 14.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 211.6829
+    figure_calibrated    = 76.9000
+
+     2. Mount King (IRE)
+    beaten_lengths       = 1.5000L
+    lbs_behind           = 1.5000 * 2.6045 = N/A
+    raw_figure           = N/A - N/A = 204.7762
+    weight_adj           = 11.0000
+    wfa_adj              = 0.0000
+    figure_final         = 204.7762
+    figure_calibrated    = 70.0000
+
+     3. Bradbury (IRE)
+    beaten_lengths       = 1.6500L
+    lbs_behind           = 1.6500 * 2.6045 = N/A
+    raw_figure           = N/A - N/A = 193.3855
+    weight_adj           = 0.0000
+    wfa_adj              = 2.9682
+    figure_final         = 196.3537
+    figure_calibrated    = 64.1000
+
+     4. The New Bay Pearl
+    beaten_lengths       = 2.6500L
+    lbs_behind           = 2.6500 * 2.6045 = N/A
+    raw_figure           = N/A - N/A = 191.7810
+    weight_adj           = 1.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 191.7810
+    figure_calibrated    = 59.2000
+
+     5. Stella Lucente (IRE)
+    beaten_lengths       = 5.1500L
+    lbs_behind           = 5.1500 * 2.6045 = N/A
+    raw_figure           = N/A - N/A = 194.2698
+    weight_adj           = 10.0000
+    wfa_adj              = 2.9682
+    sex_allowance        = 3
+    figure_final         = 197.2380
+    figure_calibrated    = 62.2000
+
+     6. Master Of Entropy
+    beaten_lengths       = 10.1500L
+    lbs_behind           = 10.1500 * 2.6045 = N/A
+    raw_figure           = N/A - N/A = 178.2473
+    weight_adj           = 7.0000
+    wfa_adj              = 2.9682
+    figure_final         = 181.2155
+    figure_calibrated    = 47.1000
+
+     7. Coolree (IRE)
+    beaten_lengths       = 20.1500L
+    lbs_behind           = 20.1500 * 2.6045 = N/A
+    raw_figure           = N/A - N/A = 160.2023
+    weight_adj           = 15.0000
+    wfa_adj              = -1.0000
+    figure_final         = 159.2023
+    figure_calibrated    = 40.6000
+
+
+================================================================================
+RACE: PONTEFRACT Race 4  (id=2026-07-26_PONTEFRACT_4)
+  Distance: 8.1f  Going: Good To Firm  Surface: Turf  Class: 1
+  standard_time=111.9661s  going_allowance=-0.156633 s/f  lpl=2.6603 lbs/L
+------------------------------------------------------------
+  WINNER: Holloway Boy
+    finishingTime        = 100.3600s
+    corrected_time       = 100.3600 - (-0.1566 * 8.0636) = 101.6230
+    deviation_seconds    = 101.6230 - 111.9661 = -10.3430
+    deviation_lengths    = -10.3430 / 0.2 = -51.7152
+    deviation_lbs        = -51.7152 * 2.6603 = -137.5776
+    raw_figure           = 100 - -137.5776 = 230.3167
+    weight_adj           = 7.0000
+    wfa_adj              = 0.0000
+    figure_final         = 230.3167
+    figure_calibrated    = 110.9000
+
+     2. Point Lynas (IRE)
+    beaten_lengths       = 0.7500L
+    lbs_behind           = 0.7500 * 2.6603 = N/A
+    raw_figure           = N/A - N/A = 228.3215
+    weight_adj           = 7.0000
+    wfa_adj              = -1.0000
+    figure_final         = 227.3215
+    figure_calibrated    = 108.2000
+
+     3. Mostar Dreams (IRE)
+    beaten_lengths       = 3.7500L
+    lbs_behind           = 3.7500 * 2.6603 = N/A
+    raw_figure           = N/A - N/A = 215.3406
+    weight_adj           = 2.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 215.3406
+    figure_calibrated    = 93.2000
+
+     4. Cerulean Bay (IRE)
+    beaten_lengths       = 3.8000L
+    lbs_behind           = 3.8000 * 2.6603 = N/A
+    raw_figure           = N/A - N/A = 220.2076
+    weight_adj           = 7.0000
+    wfa_adj              = 0.0000
+    figure_final         = 220.2076
+    figure_calibrated    = 97.5000
+
+     5. Crystal Flyer
+    beaten_lengths       = 11.3000L
+    lbs_behind           = 11.3000 * 2.6603 = N/A
+    raw_figure           = N/A - N/A = 195.2554
+    weight_adj           = 2.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 195.2554
+    figure_calibrated    = 73.1000
+
+     6. Model Yuko
+    beaten_lengths       = 22.3000L
+    lbs_behind           = 22.3000 * 2.6603 = N/A
+    raw_figure           = N/A - N/A = 167.3847
+    weight_adj           = 2.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 167.3847
+    figure_calibrated    = 62.3000
+
+
+================================================================================
+RACE: PONTEFRACT Race 5  (id=2026-07-26_PONTEFRACT_5)
+  Distance: 10.1f  Going: Good To Firm  Surface: Turf  Class: 3
+  standard_time=142.1373s  going_allowance=-0.156633 s/f  lpl=2.1063 lbs/L
+------------------------------------------------------------
+  WINNER: Jez Bomb
+    finishingTime        = 129.8100s
+    corrected_time       = 129.8100 - (-0.1566 * 10.0591) = 131.3856
+    deviation_seconds    = 131.3856 - 142.1373 = -10.7517
+    deviation_lengths    = -10.7517 / 0.2 = -53.7585
+    deviation_lbs        = -53.7585 * 2.1063 = -113.2340
+    raw_figure           = 100 - -113.2340 = 209.4135
+    weight_adj           = 6.0000
+    wfa_adj              = 0.0000
+    figure_final         = 209.4135
+    figure_calibrated    = 80.7000
+
+     2. Without Compromise
+    beaten_lengths       = 3.2500L
+    lbs_behind           = 3.2500 * 2.1063 = N/A
+    raw_figure           = N/A - N/A = 206.5678
+    weight_adj           = 10.0000
+    wfa_adj              = 0.0000
+    figure_final         = 206.5678
+    figure_calibrated    = 75.5000
+
+     3. Pomme Pomme (IRE)
+    beaten_lengths       = 7.7500L
+    lbs_behind           = 7.7500 * 2.1063 = N/A
+    raw_figure           = N/A - N/A = 196.0893
+    weight_adj           = 9.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 196.0893
+    figure_calibrated    = 65.4000
+
+     4. Percys Daydream
+    beaten_lengths       = 9.0000L
+    lbs_behind           = 9.0000 * 2.1063 = N/A
+    raw_figure           = N/A - N/A = 198.4563
+    weight_adj           = 14.0000
+    wfa_adj              = 0.0000
+    sex_allowance        = 3
+    figure_final         = 198.4563
+    figure_calibrated    = 67.4000
+
+     5. Moonjid
+    beaten_lengths       = 10.2500L
+    lbs_behind           = 10.2500 * 2.1063 = N/A
+    raw_figure           = N/A - N/A = 185.8234
+    weight_adj           = 4.0000
+    wfa_adj              = 0.0000
+    figure_final         = 185.8234
+    figure_calibrated    = 54.5000
+
+
+================================================================================
+RACE: PONTEFRACT Race 6  (id=2026-07-26_PONTEFRACT_6)
+  Distance: 6.0f  Going: Good To Firm  Surface: Turf  Class: 6
+  standard_time=81.6509s  going_allowance=-0.156633 s/f  lpl=3.4373 lbs/L
+------------------------------------------------------------
+  WINNER: Go Victor (IRE)
+    finishingTime        = 75.2300s
+    corrected_time       = 75.2300 - (-0.1566 * 6.0273) = 76.1741
+    deviation_seconds    = 76.1741 - 81.6509 = -5.4768
+    deviation_lengths    = -5.4768 / 0.2 = -27.3841
+    deviation_lbs        = -27.3841 * 3.4373 = -94.1276
+    raw_figure           = 100 - -94.1276 = 194.7256
+    weight_adj           = 8.0000
+    wfa_adj              = 2.9727
+    figure_final         = 197.6983
+    figure_calibrated    = 65.0000
+
+     2. Starsong (IRE)
+    beaten_lengths       = 0.5000L
+    lbs_behind           = 0.5000 * 3.4373 = N/A
+    raw_figure           = N/A - N/A = 194.0069
+    weight_adj           = 9.0000
+    wfa_adj              = -1.0000
+    sex_allowance        = 3
+    figure_final         = 193.0069
+    figure_calibrated    = 60.8000
+
+     3. Battenburg Belle (IRE)
+    beaten_lengths       = 1.2500L
+    lbs_behind           = 1.2500 * 3.4373 = N/A
+    raw_figure           = N/A - N/A = 186.4289
+    weight_adj           = 4.0000
+    wfa_adj              = 2.9727
+    sex_allowance        = 3
+    figure_final         = 189.4017
+    figure_calibrated    = 57.1000
+
+     4. My Boy Jack
+    beaten_lengths       = 3.2500L
+    lbs_behind           = 3.2500 * 3.4373 = N/A
+    raw_figure           = N/A - N/A = 178.5543
+    weight_adj           = 3.0000
+    wfa_adj              = -1.0000
+    figure_final         = 177.5543
+    figure_calibrated    = 47.1000
+
+     5. Eldeyaar (IRE)
+    beaten_lengths       = 3.2800L
+    lbs_behind           = 3.2800 * 3.4373 = N/A
+    raw_figure           = N/A - N/A = 182.4512
+    weight_adj           = 7.0000
+    wfa_adj              = -1.0000
+    figure_final         = 181.4512
+    figure_calibrated    = 50.6000
+
+     6. Bullington Bry
+    beaten_lengths       = 4.0300L
+    lbs_behind           = 4.0300 * 3.4373 = N/A
+    raw_figure           = N/A - N/A = 180.8732
+    weight_adj           = 8.0000
+    wfa_adj              = 0.0000
+    figure_final         = 180.8732
+    figure_calibrated    = 49.5000
+
+     7. Rain Cap
+    beaten_lengths       = 6.5300L
+    lbs_behind           = 6.5300 * 3.4373 = N/A
+    raw_figure           = N/A - N/A = 172.2799
+    weight_adj           = 8.0000
+    wfa_adj              = -2.0000
+    figure_final         = 170.2799
+    figure_calibrated    = 40.1000
+
+     8. Summer Rain
+    beaten_lengths       = 7.2800L
+    lbs_behind           = 7.2800 * 3.4373 = N/A
+    raw_figure           = N/A - N/A = 164.7019
+    weight_adj           = 3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 164.7019
+    figure_calibrated    = 34.6000
+
+     9. Miss Magic Dragon
+    beaten_lengths       = 8.7800L
+    lbs_behind           = 8.7800 * 3.4373 = N/A
+    raw_figure           = N/A - N/A = 161.5460
+    weight_adj           = 5.0000
+    wfa_adj              = 2.9727
+    sex_allowance        = 3
+    figure_final         = 164.5187
+    figure_calibrated    = 34.4000
+
+    10. Power Of Chora (IRE)
+    beaten_lengths       = 10.5300L
+    lbs_behind           = 10.5300 * 3.4373 = N/A
+    raw_figure           = N/A - N/A = 152.5307
+    weight_adj           = 2.0000
+    wfa_adj              = 2.9727
+    sex_allowance        = 3
+    figure_final         = 155.5034
+    figure_calibrated    = 22.6000
+
+    11. Coiled (IRE)
+    beaten_lengths       = 18.0300L
+    lbs_behind           = 18.0300 * 3.4373 = N/A
+    raw_figure           = N/A - N/A = 127.7508
+    weight_adj           = 3.0000
+    wfa_adj              = 0.0000
+    figure_final         = 127.7508
+    figure_calibrated    = 0.3000
+
+
+================================================================================
+RACE: PONTEFRACT Race 7  (id=2026-07-26_PONTEFRACT_7)
+  Distance: 6.0f  Going: Good To Firm  Surface: Turf  Class: 4
+  standard_time=81.6509s  going_allowance=-0.156633 s/f  lpl=3.4705 lbs/L
+------------------------------------------------------------
+  WINNER: The Good Biscuit
+    finishingTime        = 74.5100s
+    corrected_time       = 74.5100 - (-0.1566 * 6.0273) = 75.4541
+    deviation_seconds    = 75.4541 - 81.6509 = -6.1968
+    deviation_lengths    = -6.1968 / 0.2 = -30.9841
+    deviation_lbs        = -30.9841 * 3.4705 = -107.5311
+    raw_figure           = 100 - -107.5311 = 205.1268
+    weight_adj           = 7.0000
+    wfa_adj              = 0.0000
+    figure_final         = 205.1268
+    figure_calibrated    = 75.8000
+
+   DNF. Trilby
+    beaten_lengths       = N/AL
+    lbs_behind           = N/A * 3.4705 = N/A
+    raw_figure           = N/A - N/A = N/A
+    weight_adj           = 0.0000
+    wfa_adj              = 0.0000
+    figure_final         = N/A
+    figure_calibrated    = N/A
+
+     2. Bell Shot (IRE)
+    beaten_lengths       = 1.5000L
+    lbs_behind           = 1.5000 * 3.4705 = N/A
+    raw_figure           = N/A - N/A = 202.9210
+    weight_adj           = 10.0000
+    wfa_adj              = -1.0000
+    figure_final         = 201.9210
+    figure_calibrated    = 71.2000
+
+     3. Iris Dancer
+    beaten_lengths       = 4.2500L
+    lbs_behind           = 4.2500 * 3.4705 = N/A
+    raw_figure           = N/A - N/A = 179.3771
+    weight_adj           = -4.0000
+    wfa_adj              = -1.5000
+    sex_allowance        = 3
+    figure_final         = 177.8771
+    figure_calibrated    = 50.8000
+
+     4. Goyard (IRE)
+    beaten_lengths       = 20.2500L
+    lbs_behind           = 20.2500 * 3.4705 = N/A
+    raw_figure           = N/A - N/A = 137.8486
+    weight_adj           = 10.0000
+    wfa_adj              = 0.0000
+    figure_final         = 137.8486
+    figure_calibrated    = 24.9000
+
