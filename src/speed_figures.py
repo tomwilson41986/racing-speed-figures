@@ -1503,7 +1503,11 @@ def calibrate_figures(df):
         if mse_quad < mse_lin * 0.999:
             # Quadratic is meaningfully better
             xf = df.loc[surf_mask, "figure_final"].values
-            xf_c = xf - x_mean
+            # Clamp the curvature term to the fitted range so a career-best
+            # figure above the training max continues on the linear slope `a`
+            # rather than getting an unbounded x² extrapolation (mirrors the
+            # slope-1 tails that guard apply_recal_map).
+            xf_c = np.clip(xf, x.min(), x.max()) - x_mean
             df.loc[surf_mask, "figure_calibrated"] = (
                 a * xf + a2 * xf_c ** 2 + b
             )
