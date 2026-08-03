@@ -61,7 +61,6 @@
 {#- One race card -#}
 {%- macro race_card(race) -%}
 {%- set has_or = race.runners|selectattr('official_rating')|list|length > 0 -%}
-{%- set has_silks = race.runners|selectattr('silk_cid')|list|length > 0 -%}
 {%- set has_uplift = race.runners|selectattr('uplift','ne',None)|list|length > 0 -%}
 <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background:{{ T.CARD_BG }};border:1px solid {{ T.CARD_BORDER }};border-radius:8px;margin-bottom:12px;">
 <tr><td style="padding:14px 16px 6px;">
@@ -81,7 +80,6 @@
 <table cellpadding="0" cellspacing="0" border="0" width="100%">
 <tr>
   {{ th('Pos') }}
-  {% if has_silks %}{{ th('') }}{% endif %}
   {{ th('Horse') }}
   {{ th('Age','right') }}
   {{ th('Wgt','right') }}
@@ -93,7 +91,6 @@
 {% for r in race.runners %}
 <tr>
   <td style="padding:6px 8px;border-top:1px solid {{ T.ROW_DIVIDER }};vertical-align:middle;">{{ pos_badge(r.pos, r.field_size) }}</td>
-  {% if has_silks %}<td style="padding:4px 0 4px 4px;border-top:1px solid {{ T.ROW_DIVIDER }};vertical-align:middle;width:{{ T.SILK_DISPLAY_W + 4 }}px;">{% if r.silk_cid %}<img src="cid:{{ r.silk_cid }}" alt="{{ r.horse }}" width="{{ T.SILK_DISPLAY_W }}" height="{{ T.SILK_DISPLAY_H }}" style="background:#fff;display:block;border-radius:{{ T.SILK_RADIUS }}px;">{% endif %}</td>{% endif %}
   <td style="padding:6px 8px;border-top:1px solid {{ T.ROW_DIVIDER }};vertical-align:middle;">
     <span style="font-weight:600;color:{{ T.INK }};font-size:14px;">{{ r.horse }}</span>
     {% if r.reason %}<div style="font-size:11px;color:{{ T.FAINT }};margin-top:2px;">{{ r.reason }}</div>{% endif %}

@@ -152,8 +152,13 @@ def fetch_and_render(url: str) -> Optional[bytes]:
 
 
 def resolve_silks(context: ReportContext) -> Dict[str, bytes]:
-    """Render all referenced silks, set ``silk_cid`` on each object, and return
+    """Render the referenced silks, set ``silk_cid`` on each object, and return
     ``{cid: png_bytes}`` for the emailer to attach.
+
+    Silks are resolved for the TOP PERFORMERS board only — not every runner in
+    every race. A full card is hundreds of runners, and inlining a PNG for each
+    made the email far too large (and Gmail clips it); the colours only earn
+    their weight next to the day's best horses.
 
     Deduplicated by URL. Objects whose silk fails to render keep ``silk_cid``
     as None so the template shows alt text.
@@ -175,8 +180,6 @@ def resolve_silks(context: ReportContext) -> Dict[str, bytes]:
                 rendered[url] = None
         obj.silk_cid = rendered[url]
 
-    for runner in context.iter_runners():
-        handle(runner)
     for tp in context.top_performers:
         handle(tp)
 

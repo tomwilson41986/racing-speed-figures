@@ -30,14 +30,24 @@ def build_message(
     subject: str,
     recipients: List[str],
     sender: Optional[str] = None,
+    with_silks: bool = True,
 ) -> EmailMessage:
-    """Render the context and assemble a ready-to-send EmailMessage."""
+    """Render the context and assemble a ready-to-send EmailMessage.
+
+    ``with_silks=False`` builds a text+HTML message with no inline images — the
+    fallback used if a send fails (e.g. Gmail's 500-attachment cap), so the
+    figures always get through even when the silks don't.
+    """
     sender = sender or SMTP_USER or "racingsquared@gmail.com"
 
-    html = render.render_html(context)
     text = plaintext.render_text(context)
-    attachments = silks.resolve_silks(context)  # sets silk_cid on objects
-    # Re-render HTML now that silk_cid values are populated.
+    if with_silks:
+        attachments = silks.resolve_silks(context)  # sets silk_cid on objects
+    else:
+        attachments = {}
+        for tp in context.top_performers:  # drop any cid refs from the HTML
+            tp.silk_cid = None
+    # Render once, after silk_cid values are set (or cleared).
     html = render.render_html(context)
 
     msg = EmailMessage()
@@ -109,4 +119,12 @@ def send_report(
         log.info("Dry run: not sending. Subject=%r To=%s", subject, recipients)
         return True
 
-    return send_message(msg, recipients)
+    if send_message(msg, recipients):
+        return True
+
+    # A send failure (Gmail's 500-attachment cap, an oversized message, a flaky
+    # relay) must NOT silently lose the whole email. Retry once with no inline
+    # silks — the figures matter far more than the colours.
+    log.warning("Primary send failed — retrying without silk images.")
+    fallback = build_message(context, subject, recipients, sender=sender, with_silks=False)
+    return send_message(fallback, recipients)
