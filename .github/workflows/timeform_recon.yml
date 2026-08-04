@@ -68,10 +68,14 @@ jobs:
         env:
           TIMEFORM_USER: ${{ secrets.TIMEFORM_USER }}
           TIMEFORM_PASS: ${{ secrets.TIMEFORM_PASS }}
-          # Timeform sits behind Azure Front Door WAF, which blocks GitHub runner
-          # IPs (the login page becomes an afd_azwaf challenge and the form never
-          # loads). Set the optional PW_PROXY secret to a residential proxy to log
-          # in from CI.
+          # The sign-in FORM has an image CAPTCHA, so an automated form login
+          # cannot complete. Set TIMEFORM_COOKIE to a logged-in session cookie
+          # (copy the whole Cookie header from a browser where you're signed in);
+          # the pipeline reuses it and skips the form. Refresh it when it expires.
+          TIMEFORM_COOKIE: ${{ secrets.TIMEFORM_COOKIE }}
+          # Timeform also sits behind Azure Front Door WAF, which challenges
+          # datacenter IPs — the headed/xvfb run below clears that. PW_PROXY (a
+          # residential proxy) is an alternative for the WAF.
           PW_PROXY: ${{ secrets.PW_PROXY }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
