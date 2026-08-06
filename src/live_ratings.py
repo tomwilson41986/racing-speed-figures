@@ -58,6 +58,7 @@ from speed_figures import (
     compute_class_adjustment,
     interpolate_lookup,
     drop_implausible_times,
+    calibration_offset_keys,
 )
 
 # House-style reporting engine (shared by every email — see src/reporting/)
@@ -1763,15 +1764,19 @@ class LiteRatingEngine:
                 rc = pd.to_numeric(df.loc[mask, "raceClass"], errors="coerce")
                 cal_vals += rc.map(class_off_f).fillna(0).values
 
-            # Course x distance offsets
-            cd_offsets = params.get("course_dist_offsets", {})
-            if cd_offsets:
-                cd_key = (
-                    df.loc[mask, "courseName"]
-                    + "_"
-                    + df.loc[mask, "distance"].round(0).astype(int).astype(str)
-                )
-                cal_vals += cd_key.map(cd_offsets).fillna(0).values
+            # Course × distance offsets, and the two finer splits of that key.
+            # Keys come from the shared builder in speed_figures so batch and
+            # live cannot drift apart — a mismatch here is silent, since every
+            # lookup simply misses and fillna(0) swallows it.
+            keys = calibration_offset_keys(df.loc[mask])
+            for family, key_name in (
+                ("course_dist_offsets", "course_dist"),
+                ("course_dist_class_offsets", "course_dist_class"),
+                ("course_dist_quarter_offsets", "course_dist_quarter"),
+            ):
+                offsets = params.get(family, {})
+                if offsets:
+                    cal_vals += keys[key_name].map(offsets).fillna(0).values
 
             # Going group offsets
             going_offsets = params.get("going_offsets", {})

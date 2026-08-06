@@ -119,11 +119,7 @@ class TestQuadraticClamp:
 
 
 def test_calibrate_figures_publishes_the_range_it_fitted_over():
-    """The clamp is only possible if the range reaches the artifacts.
-
-    ``run_pipeline`` unpacks this tuple positionally and writes fit_lo/fit_hi
-    from its last element, so both the length and the range are load-bearing.
-    """
+    """The clamp is only possible if the range reaches the artifacts."""
     from src.speed_figures import calibrate_figures
 
     rng = np.random.default_rng(0)
@@ -147,11 +143,80 @@ def test_calibrate_figures_publishes_the_range_it_fitted_over():
     df["timefigure"] = 0.63 * x - 0.002 * (x - 180) ** 2 - 56 + rng.normal(0, 6, n)
 
     _, params = calibrate_figures(df.copy())
-    (a, b, a2, x_mean, cls, cd, go, ga_c, bl, age, fit_range) = params["Turf"]
-    lo, hi = fit_range
-    assert a2 != 0, "expected the quadratic branch"
+    p = params["Turf"]
+    lo, hi = p["fit_lo"], p["fit_hi"]
+    assert p["a2"] != 0, "expected the quadratic branch"
     assert np.isfinite(lo) and np.isfinite(hi) and lo < hi
     # The range must bound the data the quadratic was actually fitted on.
     trained = df[df["source_year"] <= df["source_year"].max() - 1]["figure_final"]
     assert lo <= trained.min() + 1e-6
     assert hi >= trained.max() - 1e-6
+
+
+class TestCalibrationOffsetKeys:
+    """Batch fits these offsets and live looks them up.
+
+    A mismatch between the two is silent — every lookup misses, ``fillna(0)``
+    swallows it, and the figures come out uncorrected. That has already happened
+    once, when live matched class offsets on "4" against batch keys written as
+    "4.0" and dropped all of them, a ±20 lb swing.
+    """
+
+    @pytest.fixture
+    def frame(self):
+        return pd.DataFrame({
+            "courseName": ["ASCOT", "ASCOT", "YORK", "CURRAGH"],
+            "distance": [7.6, 8.0, 12.0, 10.2],
+            "raceClass": [4.0, 4.0, 2.0, np.nan],
+            "meetingDate": ["2026-02-14", "2026-08-05", "2026-08-05",
+                            "2026-11-30"],
+        })
+
+    def test_course_distance_key_matches_the_historic_format(self, frame):
+        from src.speed_figures import calibration_offset_keys
+
+        keys = calibration_offset_keys(frame)
+        # The artifacts in the repo are keyed this way; changing it silently
+        # orphans every offset fitted before the change.
+        assert list(keys["course_dist"]) == ["ASCOT_8", "ASCOT_8", "YORK_12",
+                                             "CURRAGH_10"]
+
+    def test_class_split_buckets_a_missing_class_separately(self, frame):
+        from src.speed_figures import calibration_offset_keys
+
+        keys = calibration_offset_keys(frame)
+        # Irish cards carry no class; they must not inherit some other class's
+        # offset by defaulting to 0.
+        assert list(keys["course_dist_class"]) == [
+            "ASCOT_8|4", "ASCOT_8|4", "YORK_12|2", "CURRAGH_10|NA",
+        ]
+
+    def test_quarter_split_follows_the_calendar(self, frame):
+        from src.speed_figures import calibration_offset_keys
+
+        keys = calibration_offset_keys(frame)
+        assert list(keys["course_dist_quarter"]) == [
+            "ASCOT_8|Q1", "ASCOT_8|Q3", "YORK_12|Q3", "CURRAGH_10|Q4",
+        ]
+
+    def test_the_same_race_keys_identically_either_side(self, frame):
+        """The batch fit and the live lookup must agree character for character."""
+        from src.speed_figures import calibration_offset_keys as batch_side
+        from src.live_ratings import calibration_offset_keys as live_side
+
+        batch, live = batch_side(frame), live_side(frame)
+        assert set(batch) == set(live)
+        for name, series in batch.items():
+            assert list(series) == list(live[name]), name
+
+    def test_a_missing_distance_does_not_raise(self, frame):
+        from src.speed_figures import calibration_offset_keys
+
+        frame.loc[0, "distance"] = np.nan
+        keys = calibration_offset_keys(frame)
+        # Historically .astype(int) raised outright. Now the key is simply
+        # null, so the lookup misses and the runner takes no offset — which is
+        # the right answer for a race whose distance we do not know.
+        assert pd.isna(keys["course_dist"].iloc[0])
+        assert keys["course_dist"].iloc[1] == "ASCOT_8"
+        assert pd.Series([np.nan]).map({"ASCOT_8": 1.0}).fillna(0).iloc[0] == 0.0
