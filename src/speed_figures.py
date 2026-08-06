@@ -750,18 +750,53 @@ def _parse_std_keys(lookup_dict):
     return dict(cs_map)
 
 
+# Beyond this fractional distance outside the known grid we refuse to supply a
+# value at all.  Matches src/france/speed_figures.py, which has always had it.
+_EXTRAP_TOL = 0.05
+
+
 def _interp_single(actual_dist, dist_val_pairs):
     """Linearly interpolate a value for actual_dist given sorted (dist, val) pairs.
 
-    Clamps to nearest known value if outside the range (no extrapolation).
+    Returns NaN if actual_dist is more than 5% beyond the known distance range;
+    clamps to the nearest known value for small extrapolations inside that guard.
+
+    BUG FIX: this used to clamp unconditionally, so a race at a distance with no
+    nearby standard time silently borrowed the nearest one, however far away.
+    Because raw_figure = 100 - (corrected_time - standard_time)/0.2 * lpl, a
+    standard time from a materially different distance is not a small error, it
+    is tens to hundreds of pounds.  Fingerprints in our own 112-day audit
+    history (identical standard time at very different distances):
+    CHESTER 16.27f and 18.64f both 223.9193s; GOODWOOD 16.06f and 20.62f both
+    223.0334s; NEWMARKET (JULY) 14.11f and 16.00f both 192.6134s.
+    12 of 2960 winners (0.41%) got an implausible raw figure this way, 10 of
+    them at 16f+ where the distance grid runs out.  Published consequences
+    included a Newcastle 2m winner rated -71.9 and a Newmarket July 2m winner
+    rated 34.6 — every one of them labelled figure_confidence='high'.
+
+    compute_winner_figures already filters on standard_time.notna(), so an
+    off-grid race now becomes unrated rather than catastrophically wrong.
+    src/france/speed_figures.py has carried exactly this guard all along; this
+    only brings the UK interpolator into line.  live_ratings.py imports
+    interpolate_lookup from this module, so one edit covers batch and live.
+
+    NOTE: this changes nothing on the Timeform-compared sample — none of those
+    12 races is off-grid.  It is a correctness fix, not an accuracy tune.
     """
     if len(dist_val_pairs) == 1:
+        only_dist = dist_val_pairs[0][0]
+        if not only_dist or abs(actual_dist - only_dist) / only_dist > _EXTRAP_TOL:
+            return np.nan
         return dist_val_pairs[0][1]
     dists = [dv[0] for dv in dist_val_pairs]
     vals = [dv[1] for dv in dist_val_pairs]
     if actual_dist <= dists[0]:
+        if (dists[0] - actual_dist) / dists[0] > _EXTRAP_TOL:
+            return np.nan
         return vals[0]
     if actual_dist >= dists[-1]:
+        if (actual_dist - dists[-1]) / dists[-1] > _EXTRAP_TOL:
+            return np.nan
         return vals[-1]
     for i in range(len(dists) - 1):
         if dists[i] <= actual_dist <= dists[i + 1]:
