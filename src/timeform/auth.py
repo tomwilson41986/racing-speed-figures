@@ -61,6 +61,29 @@ def _human_pause(a: float = 1.5, b: float = 3.5) -> None:
     time.sleep(random.uniform(a, b))
 
 
+def parse_cookie_header(raw: str, domain_url: str = SITE_BASE) -> list:
+    """Turn a browser ``Cookie:`` header string into Playwright cookie dicts.
+
+    Accepts the whole header (``a=b; c=d; ...``) — copy it from DevTools rather
+    than picking out the one auth cookie. An optional ``Cookie:`` prefix is
+    tolerated. Each cookie is scoped to ``domain_url`` so it applies to the
+    Timeform pages we fetch.
+    """
+    raw = (raw or "").strip()
+    if raw.lower().startswith("cookie:"):
+        raw = raw.split(":", 1)[1].strip()
+    cookies = []
+    for part in raw.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        name, value = name.strip(), value.strip()
+        if name:
+            cookies.append({"name": name, "value": value, "url": domain_url})
+    return cookies
+
+
 class TimeformAuth:
     """Log into Timeform via Playwright and return an authenticated session."""
 
@@ -71,6 +94,7 @@ class TimeformAuth:
         headless: bool = True,
         executable_path: Optional[str] = None,
         proxy: Optional[str] = None,
+        cookie: Optional[str] = None,
     ):
         self._email = email or os.environ.get("TIMEFORM_USER") \
             or os.environ.get("TF_EMAIL", "")
@@ -79,10 +103,14 @@ class TimeformAuth:
         self._headless = headless
         self._executable_path = executable_path or os.environ.get("PW_EXECUTABLE_PATH")
         self._proxy = proxy or os.environ.get("PW_PROXY")
-        if not self._email or not self._password:
+        # A pre-authenticated session cookie skips the (CAPTCHA-gated) sign-in
+        # form entirely — the supported way to run the reconciliation.
+        self._cookie = cookie or os.environ.get("TIMEFORM_COOKIE", "")
+        if not self._cookie and not (self._email and self._password):
             raise ValueError(
-                "Timeform credentials required. Pass email/password or set "
-                "TIMEFORM_USER and TIMEFORM_PASS env vars."
+                "Timeform auth required. Set TIMEFORM_COOKIE (a logged-in session "
+                "cookie) — recommended, as the sign-in form has a CAPTCHA — or "
+                "TIMEFORM_USER / TIMEFORM_PASS."
             )
 
     @retry(
@@ -125,6 +153,35 @@ class TimeformAuth:
                 "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
         except Exception:  # pragma: no cover - best effort
             pass
+
+        # ── Preferred path: reuse a logged-in session cookie ──────────
+        # The sign-in form has an image CAPTCHA, so an automated form login
+        # cannot complete. A cookie captured from a real browser session skips
+        # the form entirely.
+        if self._cookie:
+            try:
+                cookies = parse_cookie_header(self._cookie)
+                if cookies:
+                    context.add_cookies(cookies)
+                page = context.new_page()
+                log.info("Trying TIMEFORM_COOKIE session (%d cookies)...", len(cookies))
+                page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45000)
+                self._settle_waf(page)
+                if self._is_authenticated(page):
+                    log.info("Authenticated via TIMEFORM_COOKIE — skipped the sign-in form.")
+                    return PlaywrightSession(pw, browser, context, page)
+                log.warning("TIMEFORM_COOKIE did not authenticate (expired/invalid?). "
+                            "Refresh it from a fresh browser login.")
+                page.close()
+            except Exception as e:
+                log.warning("Cookie auth failed: %s", e)
+            if not (self._email and self._password):
+                browser.close()
+                pw.stop()
+                raise RuntimeError(
+                    "TIMEFORM_COOKIE did not authenticate and no user/pass fallback "
+                    "is set. Refresh the cookie from a fresh Timeform login.")
+
         page = context.new_page()
         try:
             # 1. Land on the homepage first, like a person would.
@@ -208,6 +265,24 @@ class TimeformAuth:
             browser.close()
             pw.stop()
             raise
+
+    @staticmethod
+    def _is_authenticated(page) -> bool:
+        """Best-effort check that a cookie session is logged in (not on sign-in)."""
+        url = (page.url or "").lower()
+        if "sign-in" in url or "/account/login" in url:
+            return False
+        try:
+            html = (page.content() or "").lower()
+        except Exception:
+            return True  # page loaded and URL isn't the sign-in form
+        if any(m in html for m in ("sign out", "signout", "log out", "logout", "my timeform")):
+            return True
+        if "register-free-account" in html or ">sign in<" in html:
+            return False
+        # Reachable, non-redirected page: the per-meeting _session_expired check
+        # in the capture step will still catch a stale cookie.
+        return True
 
     @staticmethod
     def _settle_waf(page) -> None:
