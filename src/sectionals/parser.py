@@ -20,7 +20,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
 
-from .normalize import distance_band_m, distance_to_m, going_group, normalise_name
+from .normalize import (
+    distance_band_m,
+    distance_to_m,
+    going_group,
+    normalise_name,
+    normalise_track,
+)
 
 log = logging.getLogger(__name__)
 
@@ -191,6 +197,116 @@ def _runner_lines(text: str) -> List[RunnerSectional]:
     return runners
 
 
+# ── coordinate extraction (the layout the real PDFs actually use) ─────
+# The saved files are browser print-outs of the ATR race page, one per tab, so
+# page.extract_text() interleaves columns into unusable soup — which is why the
+# line heuristics above never matched anything.  The *Sectional Times* tab is a
+# clean coordinate table though: a header row
+#
+#   Pos | SilkHorse | Start-5f | 5f-4f | 4f-3f | 3f-2f | 2f-1f | 1f-Finish | Finish
+#
+# and, per runner, a row of split times aligned under those headers with the
+# position, cloth number and horse name on the following rows a couple of points
+# lower.  Everything below keys off that header.
+_SPLIT_HDR = re.compile(r"^(?:Start-(\d{1,2})f|(\d{1,2})f-(?:\d{1,2}f|Finish))$", re.I)
+_NUM = re.compile(r"^\d{1,2}\.\d{1,2}$")
+_CLOTH = re.compile(r"^(\d{1,2})\.$")
+
+#: A split time must sit within this many points of its header column.
+_COL_TOL = 6.0
+#: Rows belonging to one runner sit within this many points of the split row.
+_BLOCK_SPAN = 4.0
+
+
+def _words(pdf_path: str) -> List[dict]:
+    import pdfplumber  # lazy: heavy dep, only needed for parsing
+
+    out: List[dict] = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            out.extend(page.extract_words(extra_attrs=["size"]))
+    return out
+
+
+def _split_columns(words: List[dict]):
+    """Return (header_top, [x0 per split column], furlongs) or None."""
+    by_top = {}
+    for w in words:
+        by_top.setdefault(round(w["top"], 1), []).append(w)
+    for top in sorted(by_top):
+        row = sorted(by_top[top], key=lambda w: w["x0"])
+        hdrs = [w for w in row if _SPLIT_HDR.match(w["text"])]
+        if len(hdrs) < 3:
+            continue
+        first = _SPLIT_HDR.match(hdrs[0]["text"])
+        # 'Start-5f' means five furlong markers remain, so the race is 6f.
+        start = first.group(1)
+        furlongs = int(start) + 1 if start else len(hdrs)
+        return top, [w["x0"] for w in hdrs], furlongs
+    return None
+
+
+def _runner_blocks(pdf_path: str) -> List[RunnerSectional]:
+    """Recover per-runner sectionals from the Sectional Times tab."""
+    words = _words(pdf_path)
+    cols = _split_columns(words)
+    if not cols:
+        return []
+    hdr_top, xs, _ = cols
+
+    by_top = {}
+    for w in words:
+        if w["top"] > hdr_top + 1:
+            by_top.setdefault(round(w["top"], 1), []).append(w)
+
+    runners: List[RunnerSectional] = []
+    for top in sorted(by_top):
+        row = sorted(by_top[top], key=lambda w: w["x0"])
+        splits = []
+        for x in xs:
+            hit = [w for w in row
+                   if _NUM.match(w["text"]) and abs(w["x0"] - x) <= _COL_TOL]
+            splits.append(to_seconds(hit[0]["text"]) if hit else None)
+        if sum(s is not None for s in splits) < len(xs) - 1:
+            continue  # not a split row
+
+        block = [w for t, ws in by_top.items() if 0 < t - top <= _BLOCK_SPAN
+                 for w in ws]
+        pos = next((int(w["text"]) for w in block
+                    if w["x0"] < xs[0] - 45 and w["text"].isdigit()), None)
+        name_words, cloth = [], None
+        for w in sorted((w for w in block if xs[0] - 45 <= w["x0"] < xs[0] - 2),
+                        key=lambda w: w["x0"]):
+            m = _CLOTH.match(w["text"])
+            if m and cloth is None:
+                cloth = int(m.group(1))
+                continue
+            if w["text"].startswith("(") or not re.match(r"^[A-Za-z'()\-]", w["text"]):
+                continue
+            name_words.append(w["text"])
+        name = " ".join(name_words).strip()
+        if not name:
+            continue
+
+        known = [s for s in splits if s is not None]
+        overall = sum(known) if len(known) == len(xs) else None
+        final_f = splits[-1]
+        # Finishing speed: how the closing furlong compares with the horse's own
+        # average furlong. Above 100% = finished faster than it averaged.
+        fsp = None
+        if overall and final_f:
+            fsp = round((overall / len(xs)) / final_f * 100, 2)
+        runners.append(RunnerSectional(
+            horse=name,
+            finish_pos=pos,
+            overall_time_s=overall,
+            final_furlong_s=final_f,
+            finishing_speed_pct=fsp,
+            splits=known,
+        ))
+    return runners
+
+
 def parse_pdf(pdf_path: str, *, track: str, race_date: str,
               race_time: Optional[str] = None,
               distance_unit: str = "f") -> RaceSectionals:
@@ -205,9 +321,21 @@ def parse_pdf(pdf_path: str, *, track: str, race_date: str,
     meta = _race_meta(text, distance_unit)
     result.distance_m = meta["distance_m"]
     result.going = meta["going"]
-    result.runners = _runner_lines(text)
+
+    # Coordinates first — the print-outs defeat line-based extraction.
+    try:
+        result.runners = _runner_blocks(pdf_path)
+    except Exception as e:  # pragma: no cover - defensive
+        log.warning("Coordinate parse failed for %s: %s", pdf_path, e)
+        result.runners = []
+    if result.runners and result.distance_m is None:
+        cols = _split_columns(_words(pdf_path))
+        if cols:
+            result.distance_m = distance_to_m(str(cols[2]), "f")
     if not result.runners:
-        result.error = "no runner sectionals recognised (calibrate parser vs real PDF)"
+        result.runners = _runner_lines(text)
+    if not result.runners:
+        result.error = "no runner sectionals recognised"
     return result
 
 
@@ -221,7 +349,10 @@ def to_store_rows(rs: RaceSectionals, source_file: str, country: Optional[str] =
         rows.append({
             "race_date": rs.race_date,
             "track": rs.track,
-            "track_norm": None,           # store fills from track
+            # Must be filled here: upsert_runner uses setdefault, which does
+            # nothing when the key is present-but-None, and the column is NOT
+            # NULL. Never surfaced before because the parser returned no rows.
+            "track_norm": normalise_track(rs.track),
             "country": country,
             "race_time": rs.race_time,
             "race_key": rs.race_key,
