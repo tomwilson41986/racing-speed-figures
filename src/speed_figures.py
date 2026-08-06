@@ -24,8 +24,11 @@ Pipeline stages:
 
 import pandas as pd
 import numpy as np
+import logging
 import os
 import warnings
+
+log = logging.getLogger(__name__)
 
 try:
     from sklearn.ensemble import GradientBoostingRegressor
@@ -754,6 +757,51 @@ def _parse_std_keys(lookup_dict):
 # value at all.  Matches src/france/speed_figures.py, which has always had it.
 _EXTRAP_TOL = 0.05
 
+#: A going-corrected winning time this far from the course/distance standard is
+#: not a fast or slow race, it is bad data.  Measured on the 75 Timeform-paired
+#: days: winners run between -12.4% and +12.3% of standard at the 0.1st/99.9th
+#: percentile, and only two of 1,772 exceed 20% — Leopardstown 2026-05-10 (8f
+#: recorded in 74.17s, faster than any mile ever run) and Fairyhouse 2026-05-28
+#: (10f in 322.50s against a 137.68s standard).  Those two produced figures of
+#: +541 and -1748, which the calibration then mapped to roughly +236 and
+#: -11,956 — published, in the daily email, flagged high confidence.
+MAX_TIME_DEVIATION_FRAC = 0.20
+
+
+def drop_implausible_times(winners, *, label="winners"):
+    """Drop winners whose going-corrected time cannot be real.
+
+    Guards the *finishing time*, which nothing else checks.  ``interpolate_lookup``
+    already guards the other side of the subtraction — a standard time borrowed
+    from too distant a distance — but a mis-parsed or mis-attributed race time
+    passes straight through into ``BASE_RATING - deviation_lbs`` and lands in
+    the published figure.  Every runner in the race inherits it, because the
+    beaten-lengths stage derives them all from the winner.
+    """
+    if "standard_time" not in winners.columns or len(winners) == 0:
+        return winners
+    frac = (winners["deviation_seconds"] / winners["standard_time"]).abs()
+    bad = frac > MAX_TIME_DEVIATION_FRAC
+    n = int(bad.sum())
+    if n:
+        worst = winners.loc[bad].assign(_f=frac[bad]).nlargest(
+            min(n, 3), "_f"
+        )
+        for _, row in worst.iterrows():
+            log.warning(
+                "Implausible time (%s): %s %.2ff — %.2fs vs %.2fs standard "
+                "(%+.0f%%); race left unrated",
+                label,
+                row.get("courseName", "?"),
+                row.get("distance", float("nan")),
+                row.get("finishingTime", float("nan")),
+                row.get("standard_time", float("nan")),
+                (row["deviation_seconds"] / row["standard_time"]) * 100,
+            )
+        log.warning("Dropped %d of %d %s on the time-plausibility guard",
+                    n, len(winners), label)
+    return winners[~bad].copy()
+
 
 def _interp_single(actual_dist, dist_val_pairs):
     """Linearly interpolate a value for actual_dist given sorted (dist, val) pairs.
@@ -1222,6 +1270,9 @@ def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
     w["deviation_seconds"] = w["corrected_time"] - w["standard_time"]
     w["deviation_lengths"] = w["deviation_seconds"] / SECONDS_PER_LENGTH
 
+    # Reject physically impossible times before they become figures.
+    w = drop_implausible_times(w, label="batch winners")
+
     # Course-specific lbs-per-length interpolated to actual distance
     w["lpl"] = interpolate_lookup(w, lpl_dict)
     missing_lpl = w["lpl"].isna()
@@ -1517,7 +1568,8 @@ def calibrate_figures(df):
             df.loc[surf_mask, "figure_calibrated"] = df.loc[
                 surf_mask, "figure_final"
             ]
-            cal_params[surface] = (1.0, 0.0, 0.0, 0.0, {}, {}, {}, 0.0, {}, {})
+            cal_params[surface] = (1.0, 0.0, 0.0, 0.0, {}, {}, {}, 0.0, {}, {},
+                                   (float("-inf"), float("inf")))
             continue
 
         x = fit["figure_final"].values
@@ -1745,6 +1797,11 @@ def calibrate_figures(df):
         cal_params[surface] = (
             a, b, a2, x_mean, class_offset_dict, course_dist_offset_dict,
             going_offset_dict, ga_coeff, bl_offset_dict, age_offset_dict,
+            # The range the quadratic was fitted over.  Carried through to the
+            # artifacts so the live engine can apply the same curvature clamp
+            # this function applies below; without it live extrapolates x²
+            # without bound.
+            (float(x.min()), float(x.max())),
         )
         if class_offset_dict:
             offsets_str = ", ".join(
@@ -2606,10 +2663,11 @@ def run_pipeline():
     cal_artifacts = {}
     for surface, params in cal_params.items():
         (a, b, a2, x_mean, cls_off, cd_off, go_off,
-         ga_c, bl_off, age_off) = params
+         ga_c, bl_off, age_off, fit_range) = params
         cal_artifacts[surface] = {
             "a": float(a), "b": float(b), "a2": float(a2),
             "x_mean": float(x_mean),
+            "fit_lo": float(fit_range[0]), "fit_hi": float(fit_range[1]),
             "class_offsets": {str(k): float(v) for k, v in cls_off.items()},
             "course_dist_offsets": {
                 str(k): float(v) for k, v in cd_off.items()

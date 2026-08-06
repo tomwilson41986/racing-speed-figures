@@ -57,6 +57,7 @@ from speed_figures import (
     get_wfa_allowance,
     compute_class_adjustment,
     interpolate_lookup,
+    drop_implausible_times,
 )
 
 # House-style reporting engine (shared by every email — see src/reporting/)
@@ -1435,6 +1436,13 @@ class LiteRatingEngine:
         w["deviation_seconds"] = w["corrected_time"] - w["standard_time"]
         w["deviation_lengths"] = w["deviation_seconds"] / SECONDS_PER_LENGTH
 
+        # Reject physically impossible times before they become figures.
+        w = drop_implausible_times(w, label="live winners")
+        if len(w) == 0:
+            log.warning("No winners with a plausible time — cannot compute figures")
+            self._winner_figs = {}
+            return df
+
         # Course-specific LPL interpolated to actual distance
         w["lpl"] = interpolate_lookup(w, self.lpl_dict)
         missing_lpl = w["lpl"].isna()
@@ -1722,9 +1730,19 @@ class LiteRatingEngine:
             a2 = params["a2"]
             x_mean = params["x_mean"]
 
-            # Quadratic calibration
+            # Quadratic calibration.  The curvature term is clamped to the
+            # range the quadratic was fitted over, exactly as
+            # speed_figures.calibrate_figures does — beyond it the figure
+            # continues on the linear slope `a` instead of running away down
+            # an unbounded parabola.  Live was missing this clamp: on the 75
+            # Timeform-paired days, 63 Turf runners (0.51%) fell outside the
+            # fitted range and the unclamped curve moved them by up to
+            # ~10,800 lb.  Artifacts written before fit_lo/fit_hi existed fall
+            # back to no clamp, which is the old behaviour.
             if a2 != 0:
-                x_c = x - x_mean
+                lo = params.get("fit_lo", -np.inf)
+                hi = params.get("fit_hi", np.inf)
+                x_c = np.clip(x, lo, hi) - x_mean
                 cal_vals = a * x + a2 * x_c ** 2 + b
             else:
                 cal_vals = a * x + b
