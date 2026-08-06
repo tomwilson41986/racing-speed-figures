@@ -246,9 +246,8 @@ def _split_columns(words: List[dict]):
     return None
 
 
-def _runner_blocks(pdf_path: str) -> List[RunnerSectional]:
+def _runner_blocks(words: List[dict]) -> List[RunnerSectional]:
     """Recover per-runner sectionals from the Sectional Times tab."""
-    words = _words(pdf_path)
     cols = _split_columns(words)
     if not cols:
         return []
@@ -322,14 +321,17 @@ def parse_pdf(pdf_path: str, *, track: str, race_date: str,
     result.distance_m = meta["distance_m"]
     result.going = meta["going"]
 
-    # Coordinates first — the print-outs defeat line-based extraction.
+    # Coordinates first — the print-outs defeat line-based extraction.  The
+    # day's ingest hands this every PDF in the folder, so the page is read once
+    # and the words reused rather than reopened per lookup.
     try:
-        result.runners = _runner_blocks(pdf_path)
+        words = _words(pdf_path)
+        result.runners = _runner_blocks(words)
     except Exception as e:  # pragma: no cover - defensive
         log.warning("Coordinate parse failed for %s: %s", pdf_path, e)
-        result.runners = []
+        words, result.runners = [], []
     if result.runners and result.distance_m is None:
-        cols = _split_columns(_words(pdf_path))
+        cols = _split_columns(words)
         if cols:
             result.distance_m = distance_to_m(str(cols[2]), "f")
     if not result.runners:
