@@ -43,9 +43,33 @@ def _sa_json_path() -> str:
 
 
 def get_reader():
-    """Build a GDriveReader from the service account (lazy import of google libs)."""
-    from .gdrive_reader import GDriveReader
-    return GDriveReader(_sa_json_path())
+    """Return a Drive reader — service account if configured, else anonymous.
+
+    The root folder is shared as "anyone with the link can view", so Drive will
+    serve both its listing and its files without credentials.  Falling back to
+    that keeps the daily jobs running when ``GDRIVE_SA_JSON`` is unset, instead
+    of failing the whole workflow on a missing secret.  The service account is
+    still preferred: it is unaffected by the owner tightening the link share,
+    and is not rate-limited the way the anonymous endpoints are.
+    """
+    try:
+        sa_path = _sa_json_path()
+    except RuntimeError:
+        from .drive_public import PublicDriveReader
+        log.info("GDRIVE_SA_JSON not set — reading Drive anonymously (link-shared)")
+        return PublicDriveReader()
+
+    try:
+        from .gdrive_reader import GDriveReader
+        return GDriveReader(sa_path)
+    except Exception as exc:
+        from .drive_public import PublicDriveReader
+        log.warning(
+            "Service-account Drive reader unavailable (%s) — falling back to "
+            "the anonymous link-shared reader",
+            exc,
+        )
+        return PublicDriveReader()
 
 
 def date_folder_name(date: str) -> str:
