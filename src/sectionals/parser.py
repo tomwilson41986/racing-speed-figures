@@ -214,8 +214,13 @@ _CLOTH = re.compile(r"^(\d{1,2})\.$")
 
 #: A split time must sit within this many points of its header column.
 _COL_TOL = 6.0
-#: Rows belonging to one runner sit within this many points of the split row.
-_BLOCK_SPAN = 4.0
+#: Rows belonging to one runner sit within this many points of its split row —
+#: on *either* side of it.  The renderer does not keep a consistent order: on
+#: Yarmouth 18:10 five runners carry their name below the split times and five
+#: carry it above, so searching downwards only found exactly half of them.
+#: Runner blocks are never closer than ~6.7pt, and a name never further than
+#: ~1.2pt from its own splits, so this window cannot reach a neighbour.
+_BLOCK_SPAN = 3.0
 
 
 def _words(pdf_path: str) -> List[dict]:
@@ -269,8 +274,11 @@ def _runner_blocks(words: List[dict]) -> List[RunnerSectional]:
         if sum(s is not None for s in splits) < len(xs) - 1:
             continue  # not a split row
 
-        block = [w for t, ws in by_top.items() if 0 < t - top <= _BLOCK_SPAN
-                 for w in ws]
+        # The split row itself is included: some runners carry their name on it
+        # (Yarmouth 18:40, TROUBLESOME GUEST), and the x ranges below keep the
+        # split times out of the name and position anyway.
+        block = [w for t, ws in by_top.items()
+                 if abs(t - top) <= _BLOCK_SPAN for w in ws]
         pos = next((int(w["text"]) for w in block
                     if w["x0"] < xs[0] - 45 and w["text"].isdigit()), None)
         name_words, cloth = [], None

@@ -14,6 +14,7 @@ Geometry and values are taken from Brighton 14:30 on 2026-08-05.
 import pytest
 
 from src.sectionals.parser import (
+    _runner_blocks,
     _split_columns,
     parse_pdf,
 )
@@ -102,6 +103,62 @@ class TestParseRealPdf:
         winner = next(r for r in race.runners if r.finish_pos == 1)
         assert winner.final_furlong_s == pytest.approx(winner.splits[-1])
         assert winner.final_furlong_s > min(winner.splits)
+
+
+class TestNameRowAboveTheSplits:
+    """Yarmouth 18:10 — the renderer does not keep a consistent row order.
+
+    Five of these ten runners have their name below the split times and five
+    have it above. Cross-checked against Timeform's own result PDF for the same
+    race, which independently reports ten runners.
+    """
+
+    @pytest.fixture
+    def race(self, atr_sectional_pdf_mixed_rows):
+        return parse_pdf(str(atr_sectional_pdf_mixed_rows), track="Yarmouth",
+                         race_date="2026-08-05", race_time="1810")
+
+    def test_the_whole_field_is_recovered(self, race):
+        assert len(race.runners) == 10
+
+    def test_positions_are_one_to_ten_with_no_gaps(self, race):
+        assert sorted(r.finish_pos for r in race.runners) == list(range(1, 11))
+
+    def test_the_winner_is_first_and_matches_the_printed_time(self, race):
+        winner = next(r for r in race.runners if r.finish_pos == 1)
+        assert winner.horse == "SPEED OF SOUND"
+        assert winner.overall_time_s == pytest.approx(70.81, abs=0.01)
+
+    def test_overall_times_increase_down_the_finishing_order(self, race):
+        by_pos = sorted(race.runners, key=lambda r: r.finish_pos)
+        times = [r.overall_time_s for r in by_pos]
+        assert times == sorted(times)
+
+    def test_finishing_speed_separates_the_closers_from_the_faders(self, race):
+        winner = next(r for r in race.runners if r.finish_pos == 1)
+        last = next(r for r in race.runners if r.finish_pos == 10)
+        assert winner.finishing_speed_pct > 100 > last.finishing_speed_pct
+
+
+def test_a_name_sharing_the_split_row_is_still_read():
+    """Yarmouth 18:40 puts TROUBLESOME GUEST's name on the split row itself.
+
+    Excluding that row from the name search dropped the runner entirely, so the
+    block window must include it — the x ranges keep the times out of the name.
+    """
+    words = _header_words()
+    # Name on its own row below (the common case)...
+    words += _runner_words([16.43, 10.71, 10.77, 10.90, 11.64, 11.20],
+                           pos=1, cloth=2, name="BEAUTY BOX", top=154.5)
+    # ...and a runner whose name shares the split row.
+    same_row = [_w(f"{s:.2f}", x, 183.1)
+                for s, x in zip([16.28, 10.69, 10.79, 11.04, 11.88, 11.30], COL_X)]
+    same_row += [_w("4.", 177.0, 183.1), _w("TROUBLESOME", 179.0, 183.1),
+                 _w("GUEST", 197.0, 183.1), _w("4", 165.0, 184.2)]
+    words += same_row
+
+    runners = _runner_blocks(words)
+    assert {r.horse for r in runners} == {"BEAUTY BOX", "TROUBLESOME GUEST"}
 
 
 def test_a_timeform_result_pdf_yields_no_sectionals():

@@ -19,3 +19,15 @@ def atr_sectional_pdf():
     """
     return os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "fixtures", "atr_sectional_brighton_1430.pdf")
+
+
+@pytest.fixture(scope="session")
+def atr_sectional_pdf_mixed_rows():
+    """Yarmouth 18:10, 2026-08-05 — a ten-runner field.
+
+    Five runners carry their name *below* the split times and five carry it
+    *above*. Searching downwards only returned exactly half the field, silently,
+    so this layout is worth a fixture of its own.
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "fixtures", "atr_sectional_yarmouth_1810.pdf")
