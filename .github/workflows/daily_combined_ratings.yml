@@ -43,7 +43,17 @@ jobs:
         id: d
         run: |
           DATE_ARG="${{ github.event.inputs.date }}"
-          if [ -z "$DATE_ARG" ]; then DATE_ARG=$(date -u +%Y-%m-%d); fi
+          if [ -z "$DATE_ARG" ]; then
+            # Anchor to the scheduled hour, not the wall clock. GitHub delays
+            # scheduled runs under load -- routinely ~1h in this repo, and on
+            # 2026-08-06 by four hours, which pushed this past midnight UTC so
+            # `date -u` resolved to the 7th. The run rated a day that had not
+            # been run yet, 6 August was skipped entirely, and nothing failed.
+            # Backing off 6h keeps a 21:00 UTC cron on its own day for a delay of
+            # up to ~9h, and can never resolve early because the run cannot
+            # start before its cron fires.
+            DATE_ARG=$(date -u -d '6 hours ago' +%Y-%m-%d)
+          fi
           echo "date=$DATE_ARG" >> "$GITHUB_OUTPUT"
 
       # ── UK / Ireland pipeline (compute only) ──────────────────────
