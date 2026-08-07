@@ -110,8 +110,12 @@ def record_pdf(session: Session, *, file_id: str, file_name: str, race_date: str
 def upsert_runner(session: Session, data: dict) -> None:
     """Insert/update one parsed runner (keyed by race_key + normalised horse)."""
     data = dict(data)
-    data.setdefault("horse_norm", normalise_name(data.get("horse", "")))
-    data.setdefault("track_norm", normalise_track(data.get("track", "")))
+    # Both columns are NOT NULL, so a caller passing an explicit None must be
+    # backfilled too — setdefault alone only covers a missing key.
+    if not data.get("horse_norm"):
+        data["horse_norm"] = normalise_name(data.get("horse", ""))
+    if not data.get("track_norm"):
+        data["track_norm"] = normalise_track(data.get("track", ""))
     key = (data["race_key"], data["horse_norm"])
     row = session.scalar(
         select(SectionalRunner).where(

@@ -74,11 +74,43 @@ class TestInterpolateLookup:
         out = interpolate_lookup(self._df([5.5]), lookup)
         assert out.iloc[0] == pytest.approx(66.0)
 
-    def test_clamps_outside_known_range(self):
+    def test_clamps_small_extrapolation_within_tolerance(self):
+        # Within the 5% guard we still clamp to the nearest known value.
         lookup = {"ASCOT_5.0_Turf": 60.0, "ASCOT_6.0_Turf": 72.0}
-        out = interpolate_lookup(self._df([4.0, 7.0]), lookup)
+        out = interpolate_lookup(self._df([4.8, 6.25]), lookup)
         assert out.iloc[0] == pytest.approx(60.0)
         assert out.iloc[1] == pytest.approx(72.0)
+
+    def test_far_outside_known_range_is_nan(self):
+        # Previously these CLAMPED, so a race far off the distance grid
+        # silently borrowed the nearest standard time however distant it was
+        # (e.g. a 2m race scored against a 1m6f standard).  Because
+        # raw_figure = 100 - (corrected_time - standard_time)/0.2 * lpl, that
+        # is a tens-to-hundreds-of-pounds error, not a rounding error.
+        # Now guarded at 5%, matching src/france/speed_figures.py.
+        lookup = {"ASCOT_5.0_Turf": 60.0, "ASCOT_6.0_Turf": 72.0}
+        out = interpolate_lookup(self._df([4.0, 7.0]), lookup)
+        assert np.isnan(out.iloc[0])
+        assert np.isnan(out.iloc[1])
+
+    def test_single_known_distance_is_guarded_too(self):
+        # A course/surface with only one known distance must not supply that
+        # value to an arbitrarily different distance.
+        lookup = {"ASCOT_8.0_Turf": 100.0}
+        out = interpolate_lookup(self._df([8.2, 16.0]), lookup)
+        assert out.iloc[0] == pytest.approx(100.0)
+        assert np.isnan(out.iloc[1])
+
+    def test_uk_guard_matches_france(self):
+        # The French pipeline has always had this guard; the UK one is now
+        # identical.  live_ratings.py imports the UK version, so batch and
+        # live share it.
+        from src.france.speed_figures import _interp_single as fr_interp
+        from src.speed_figures import _interp_single as uk_interp
+        pairs = [(5.0, 60.0), (6.0, 72.0)]
+        for d in (4.0, 4.8, 5.5, 6.25, 7.0):
+            a, b = uk_interp(d, pairs), fr_interp(d, pairs)
+            assert (np.isnan(a) and np.isnan(b)) or a == pytest.approx(b)
 
     def test_unknown_course_is_nan(self):
         lookup = {"YORK_5.0_Turf": 58.0}

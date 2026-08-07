@@ -24,8 +24,11 @@ Pipeline stages:
 
 import pandas as pd
 import numpy as np
+import logging
 import os
 import warnings
+
+log = logging.getLogger(__name__)
 
 try:
     from sklearn.ensemble import GradientBoostingRegressor
@@ -750,18 +753,139 @@ def _parse_std_keys(lookup_dict):
     return dict(cs_map)
 
 
+# Beyond this fractional distance outside the known grid we refuse to supply a
+# value at all.  Matches src/france/speed_figures.py, which has always had it.
+_EXTRAP_TOL = 0.05
+
+#: A going-corrected winning time this far from the course/distance standard is
+#: not a fast or slow race, it is bad data.  Measured on the 75 Timeform-paired
+#: days: winners run between -12.4% and +12.3% of standard at the 0.1st/99.9th
+#: percentile, and only two of 1,772 exceed 20% — Leopardstown 2026-05-10 (8f
+#: recorded in 74.17s, faster than any mile ever run) and Fairyhouse 2026-05-28
+#: (10f in 322.50s against a 137.68s standard).  Those two produced figures of
+#: +541 and -1748, which the calibration then mapped to roughly +236 and
+#: -11,956 — published, in the daily email, flagged high confidence.
+MAX_TIME_DEVIATION_FRAC = 0.20
+
+
+def calibration_offset_keys(df):
+    """Canonical keys for the calibration's per-group offsets.
+
+    Built here and only here.  The batch pipeline fits these offsets and the
+    live engine looks them up, so the two must agree character for character —
+    and a mismatch is invisible: every lookup misses, ``fillna(0)`` swallows it,
+    and the figures come out silently uncorrected.  That has already happened
+    once, when live matched class offsets on int-strings ("4") against batch
+    keys written as floats ("4.0") and dropped every one of them, a ±20 lb
+    swing between Class 1 and Class 7.
+
+    Returns a dict of Series aligned to ``df``'s index.
+    """
+    course = df["courseName"].astype(str)
+    dist = pd.to_numeric(df["distance"], errors="coerce").round(0)
+    # Int64 renders 8.0 as "8", matching the historic .astype(int) keys, and
+    # missing distances as "<NA>" rather than raising.
+    cd = course + "_" + dist.astype("Int64").astype(str)
+
+    # Irish cards carry no class, so they share the "NA" bucket rather than
+    # silently taking the offset of whichever class happens to be 0.  A caller
+    # without the column at all gets that same bucket, not an exception.
+    if "raceClass" in df.columns:
+        cls_lbl = (pd.to_numeric(df["raceClass"], errors="coerce")
+                   .astype("Int64").astype(str).fillna("NA"))
+    else:
+        cls_lbl = pd.Series("NA", index=df.index)
+
+    if "meetingDate" in df.columns:
+        quarter = pd.to_datetime(df["meetingDate"], errors="coerce").dt.quarter
+        q_lbl = "Q" + quarter.astype("Int64").astype(str)
+    else:
+        q_lbl = pd.Series("NA", index=df.index)
+
+    return {
+        "course_dist": cd,
+        "course_dist_class": cd + "|" + cls_lbl,
+        "course_dist_quarter": cd + "|" + q_lbl,
+    }
+
+
+def drop_implausible_times(winners, *, label="winners"):
+    """Drop winners whose going-corrected time cannot be real.
+
+    Guards the *finishing time*, which nothing else checks.  ``interpolate_lookup``
+    already guards the other side of the subtraction — a standard time borrowed
+    from too distant a distance — but a mis-parsed or mis-attributed race time
+    passes straight through into ``BASE_RATING - deviation_lbs`` and lands in
+    the published figure.  Every runner in the race inherits it, because the
+    beaten-lengths stage derives them all from the winner.
+    """
+    if "standard_time" not in winners.columns or len(winners) == 0:
+        return winners
+    frac = (winners["deviation_seconds"] / winners["standard_time"]).abs()
+    bad = frac > MAX_TIME_DEVIATION_FRAC
+    n = int(bad.sum())
+    if n:
+        worst = winners.loc[bad].assign(_f=frac[bad]).nlargest(
+            min(n, 3), "_f"
+        )
+        for _, row in worst.iterrows():
+            log.warning(
+                "Implausible time (%s): %s %.2ff — %.2fs vs %.2fs standard "
+                "(%+.0f%%); race left unrated",
+                label,
+                row.get("courseName", "?"),
+                row.get("distance", float("nan")),
+                row.get("finishingTime", float("nan")),
+                row.get("standard_time", float("nan")),
+                (row["deviation_seconds"] / row["standard_time"]) * 100,
+            )
+        log.warning("Dropped %d of %d %s on the time-plausibility guard",
+                    n, len(winners), label)
+    return winners[~bad].copy()
+
+
 def _interp_single(actual_dist, dist_val_pairs):
     """Linearly interpolate a value for actual_dist given sorted (dist, val) pairs.
 
-    Clamps to nearest known value if outside the range (no extrapolation).
+    Returns NaN if actual_dist is more than 5% beyond the known distance range;
+    clamps to the nearest known value for small extrapolations inside that guard.
+
+    BUG FIX: this used to clamp unconditionally, so a race at a distance with no
+    nearby standard time silently borrowed the nearest one, however far away.
+    Because raw_figure = 100 - (corrected_time - standard_time)/0.2 * lpl, a
+    standard time from a materially different distance is not a small error, it
+    is tens to hundreds of pounds.  Fingerprints in our own 112-day audit
+    history (identical standard time at very different distances):
+    CHESTER 16.27f and 18.64f both 223.9193s; GOODWOOD 16.06f and 20.62f both
+    223.0334s; NEWMARKET (JULY) 14.11f and 16.00f both 192.6134s.
+    12 of 2960 winners (0.41%) got an implausible raw figure this way, 10 of
+    them at 16f+ where the distance grid runs out.  Published consequences
+    included a Newcastle 2m winner rated -71.9 and a Newmarket July 2m winner
+    rated 34.6 — every one of them labelled figure_confidence='high'.
+
+    compute_winner_figures already filters on standard_time.notna(), so an
+    off-grid race now becomes unrated rather than catastrophically wrong.
+    src/france/speed_figures.py has carried exactly this guard all along; this
+    only brings the UK interpolator into line.  live_ratings.py imports
+    interpolate_lookup from this module, so one edit covers batch and live.
+
+    NOTE: this changes nothing on the Timeform-compared sample — none of those
+    12 races is off-grid.  It is a correctness fix, not an accuracy tune.
     """
     if len(dist_val_pairs) == 1:
+        only_dist = dist_val_pairs[0][0]
+        if not only_dist or abs(actual_dist - only_dist) / only_dist > _EXTRAP_TOL:
+            return np.nan
         return dist_val_pairs[0][1]
     dists = [dv[0] for dv in dist_val_pairs]
     vals = [dv[1] for dv in dist_val_pairs]
     if actual_dist <= dists[0]:
+        if (dists[0] - actual_dist) / dists[0] > _EXTRAP_TOL:
+            return np.nan
         return vals[0]
     if actual_dist >= dists[-1]:
+        if (actual_dist - dists[-1]) / dists[-1] > _EXTRAP_TOL:
+            return np.nan
         return vals[-1]
     for i in range(len(dists) - 1):
         if dists[i] <= actual_dist <= dists[i + 1]:
@@ -1187,6 +1311,9 @@ def compute_winner_figures(df, std_times, going_allowances, lpl_dict):
     w["deviation_seconds"] = w["corrected_time"] - w["standard_time"]
     w["deviation_lengths"] = w["deviation_seconds"] / SECONDS_PER_LENGTH
 
+    # Reject physically impossible times before they become figures.
+    w = drop_implausible_times(w, label="batch winners")
+
     # Course-specific lbs-per-length interpolated to actual distance
     w["lpl"] = interpolate_lookup(w, lpl_dict)
     missing_lpl = w["lpl"].isna()
@@ -1482,7 +1609,15 @@ def calibrate_figures(df):
             df.loc[surf_mask, "figure_calibrated"] = df.loc[
                 surf_mask, "figure_final"
             ]
-            cal_params[surface] = (1.0, 0.0, 0.0, 0.0, {}, {}, {}, 0.0, {}, {})
+            cal_params[surface] = {
+                "a": 1.0, "b": 0.0, "a2": 0.0, "x_mean": 0.0,
+                "class_offsets": {}, "course_dist_offsets": {},
+                "course_dist_class_offsets": {},
+                "course_dist_quarter_offsets": {},
+                "going_offsets": {}, "ga_coeff": 0.0,
+                "bl_offsets": {}, "age_offsets": {},
+                "fit_lo": float("-inf"), "fit_hi": float("inf"),
+            }
             continue
 
         x = fit["figure_final"].values
@@ -1560,10 +1695,9 @@ def calibrate_figures(df):
 
         # Per course×distance residual correction (with shrinkage).
         # Directly corrects standard-time errors per track/distance combo.
-        cd_key = (
-            fit["courseName"] + "_" +
-            fit["distance"].round(0).astype(int).astype(str)
-        )
+        fit_keys = calibration_offset_keys(fit)
+        all_keys = calibration_offset_keys(df.loc[surf_mask])
+        cd_key = fit_keys["course_dist"]
         cd_groups = pd.Series(
             residuals2, index=fit.index
         ).groupby(cd_key)
@@ -1576,12 +1710,36 @@ def calibrate_figures(df):
         cd_shrunk = cd_shrunk.clip(-10, 10)
         course_dist_offset_dict = cd_shrunk.to_dict()
 
-        all_cd_key = (
-            df.loc[surf_mask, "courseName"] + "_" +
-            df.loc[surf_mask, "distance"].round(0).astype(int).astype(str)
-        )
-        surf_cd_adj = all_cd_key.map(course_dist_offset_dict).fillna(0)
+        surf_cd_adj = all_keys["course_dist"].map(
+            course_dist_offset_dict
+        ).fillna(0)
         df.loc[surf_mask, "figure_calibrated"] += surf_cd_adj.values
+
+        # Two finer splits of that same key.  A course/distance combo does not
+        # sit at one offset all year: it moves with the class of race run over
+        # it and with the season.  Both were tested by refitting the whole
+        # chain on years < Y and scoring year Y, six folds — together they take
+        # MAE from 8.459 to 8.085 and within-10 from 67.4% to 69.3%, improving
+        # in all six.  A third split (× going) made it fractionally worse and
+        # was left out.
+        residuals_cd = residuals2 - (
+            cd_key.map(course_dist_offset_dict).fillna(0).values
+        )
+        cd_extra_offsets = {}
+        for family in ("course_dist_class", "course_dist_quarter"):
+            grp = pd.Series(residuals_cd, index=fit.index).groupby(
+                fit_keys[family]
+            )
+            shrunk = (grp.mean() * grp.count() / (grp.count() + SHRINKAGE_K)
+                      ).clip(-10, 10)
+            offsets = shrunk.to_dict()
+            cd_extra_offsets[family] = offsets
+            df.loc[surf_mask, "figure_calibrated"] += (
+                all_keys[family].map(offsets).fillna(0).values
+            )
+            residuals_cd = residuals_cd - (
+                fit_keys[family].map(offsets).fillna(0).values
+            )
 
         # Per-going-group residual correction (with shrinkage).
         # Captures residual going biases after GA correction.
@@ -1603,13 +1761,9 @@ def calibrate_figures(df):
                 going_map[g] = grp
 
         fit_going_grp = fit["going"].map(going_map).fillna("Good")
-        fit_cd_key = (
-            fit["courseName"] + "_" +
-            fit["distance"].round(0).astype(int).astype(str)
-        )
-        residuals3 = residuals2 - (
-            fit_cd_key.map(course_dist_offset_dict).fillna(0).values
-        )
+        # residuals_cd already has the course×distance offset and its two finer
+        # splits removed, so the going layer fits on what they leave behind.
+        residuals3 = residuals_cd
         going_grp_groups = pd.Series(
             residuals3, index=fit.index
         ).groupby(fit_going_grp)
@@ -1707,10 +1861,22 @@ def calibrate_figures(df):
         surf_age_adj = all_age.map(age_offset_dict).fillna(0)
         df.loc[surf_mask, "figure_calibrated"] += surf_age_adj.values
 
-        cal_params[surface] = (
-            a, b, a2, x_mean, class_offset_dict, course_dist_offset_dict,
-            going_offset_dict, ga_coeff, bl_offset_dict, age_offset_dict,
-        )
+        cal_params[surface] = {
+            "a": a, "b": b, "a2": a2, "x_mean": x_mean,
+            "class_offsets": class_offset_dict,
+            "course_dist_offsets": course_dist_offset_dict,
+            "course_dist_class_offsets": cd_extra_offsets["course_dist_class"],
+            "course_dist_quarter_offsets": cd_extra_offsets["course_dist_quarter"],
+            "going_offsets": going_offset_dict,
+            "ga_coeff": ga_coeff,
+            "bl_offsets": bl_offset_dict,
+            "age_offsets": age_offset_dict,
+            # The range the quadratic was fitted over.  Carried through to the
+            # artifacts so the live engine can apply the same curvature clamp
+            # this function applies below; without it live extrapolates x²
+            # without bound.
+            "fit_lo": float(x.min()), "fit_hi": float(x.max()),
+        }
         if class_offset_dict:
             offsets_str = ", ".join(
                 f"C{k}:{v:+.1f}" for k, v in sorted(
@@ -2569,21 +2735,18 @@ def run_pipeline():
     import pickle
 
     cal_artifacts = {}
+    OFFSET_FAMILIES = (
+        "class_offsets", "course_dist_offsets", "course_dist_class_offsets",
+        "course_dist_quarter_offsets", "going_offsets", "bl_offsets",
+        "age_offsets",
+    )
     for surface, params in cal_params.items():
-        (a, b, a2, x_mean, cls_off, cd_off, go_off,
-         ga_c, bl_off, age_off) = params
-        cal_artifacts[surface] = {
-            "a": float(a), "b": float(b), "a2": float(a2),
-            "x_mean": float(x_mean),
-            "class_offsets": {str(k): float(v) for k, v in cls_off.items()},
-            "course_dist_offsets": {
-                str(k): float(v) for k, v in cd_off.items()
-            },
-            "going_offsets": {str(k): float(v) for k, v in go_off.items()},
-            "ga_coeff": float(ga_c),
-            "bl_offsets": {str(k): float(v) for k, v in bl_off.items()},
-            "age_offsets": {str(k): float(v) for k, v in age_off.items()},
-        }
+        art = {k: float(params[k])
+               for k in ("a", "b", "a2", "x_mean", "ga_coeff", "fit_lo", "fit_hi")}
+        for family in OFFSET_FAMILIES:
+            art[family] = {str(k): float(v)
+                           for k, v in params.get(family, {}).items()}
+        cal_artifacts[surface] = art
 
     course_counts = all_figs["courseName"].value_counts()
     course_freq = (course_counts / len(all_figs)).to_dict()

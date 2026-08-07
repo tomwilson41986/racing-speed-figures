@@ -57,6 +57,8 @@ from speed_figures import (
     get_wfa_allowance,
     compute_class_adjustment,
     interpolate_lookup,
+    drop_implausible_times,
+    calibration_offset_keys,
 )
 
 # House-style reporting engine (shared by every email — see src/reporting/)
@@ -114,16 +116,40 @@ NH_RACE_TYPES = {
 GOING_GA_ESTIMATES = GOING_GA_PRIOR
 
 # ─── Going group mapping (for calibration offsets) ────────────────
+# BUG FIX (going vocabulary gap).  These tables were missing three going
+# descriptions that the live HRB feed actually emits, all of which differ only
+# in the capitalisation of "To" from a label that IS present:
+#     "Good To Soft"      5.59% of audited runners  (had "Good to Soft")
+#     "Soft To Heavy"     1.32%                     (had "Sft/Hvy")
+#     "Yielding To Soft"  0.91%                     (had "Yld/Sft")
+# Measured over all 29,552 runners in output/uk_audit/*: 7.82% of runners
+# carried a going label absent from both tables.  An unmapped label silently
+# fell through .fillna("Good") / .fillna(3), so genuinely soft ground was fed
+# to the calibration as "Good" and to the GBR as going_num 3 — a mis-mapped
+# going grade, in the wrong direction (soft ground rated as quicker than it
+# was).  GOING_GA_PRIOR in speed_figures.py already carried all three keys, so
+# the going ALLOWANCE was right; only the calibration group and the GBR
+# feature were wrong, which is why this never showed up as a going-feed error.
+#
+# The lookups below are also made case/whitespace-insensitive so a future
+# feed-side capitalisation change cannot reintroduce this class of bug, and
+# unmapped labels are now logged instead of being defaulted in silence.
 GOING_GROUPS = {
     "Firm": ["Hard", "Firm", "Fast"],
-    "GdFm": ["Gd/Frm", "Good To Firm", "Good to Firm", "Std/Fast"],
+    "GdFm": [
+        "Gd/Frm", "Good To Firm", "Good to Firm", "Std/Fast",
+        "Standard To Fast", "Standard to Fast",
+    ],
     "Good": ["Good", "Standard", "Std"],
     "GdSft": [
-        "Gd/Sft", "Good to Soft", "Good To Yielding",
+        "Gd/Sft", "Good to Soft", "Good To Soft", "Good To Yielding",
         "Good to Yielding", "Std/Slow", "Standard/Slow",
         "Standard To Slow", "Standard to Slow", "Slow",
     ],
-    "Soft": ["Soft", "Yielding", "Yld/Sft", "Sft/Hvy", "Hvy/Sft"],
+    "Soft": [
+        "Soft", "Yielding", "Yld/Sft", "Yielding To Soft", "Yielding to Soft",
+        "Sft/Hvy", "Soft To Heavy", "Soft to Heavy", "Hvy/Sft",
+    ],
     "Heavy": ["Heavy"],
 }
 GOING_MAP = {}
@@ -135,13 +161,54 @@ for _grp, _goings in GOING_GROUPS.items():
 GOING_ORDINAL = {
     "Hard": 1, "Firm": 1, "Fast": 1,
     "Gd/Frm": 2, "Good To Firm": 2, "Good to Firm": 2, "Std/Fast": 2,
+    "Standard To Fast": 2, "Standard to Fast": 2,
     "Good": 3, "Standard": 3, "Std": 3,
-    "Gd/Sft": 4, "Good to Soft": 4, "Good To Yielding": 4,
+    "Gd/Sft": 4, "Good to Soft": 4, "Good To Soft": 4, "Good To Yielding": 4,
     "Good to Yielding": 4, "Std/Slow": 4, "Standard/Slow": 4,
     "Standard To Slow": 4, "Standard to Slow": 4, "Slow": 4,
     "Soft": 5, "Yielding": 5, "Yld/Sft": 5, "Sft/Hvy": 5, "Hvy/Sft": 5,
+    "Yielding To Soft": 5, "Yielding to Soft": 5,
+    "Soft To Heavy": 5, "Soft to Heavy": 5,
     "Heavy": 6,
 }
+
+# Case/whitespace-insensitive views of the two tables above.
+_GOING_MAP_CI = {k.strip().lower(): v for k, v in GOING_MAP.items()}
+_GOING_ORDINAL_CI = {k.strip().lower(): v for k, v in GOING_ORDINAL.items()}
+# Labels already reported as unmapped, so we warn once per label per run.
+_GOING_WARNED = set()
+
+
+def _going_lookup(series, table_ci, default, what):
+    """Map a going-description Series through a case-insensitive table.
+
+    Falls back to `default` as before, but LOGS any label it had to default,
+    rather than defaulting silently.  The silent default is what allowed the
+    "Good To Soft" family (7.82% of audited runners) to be scored as Good.
+    """
+    norm = series.astype(str).str.strip().str.lower()
+    out = norm.map(table_ci)
+    missing = out.isna() & norm.ne("") & norm.ne("nan")
+    if missing.any():
+        for lbl in sorted(series[missing].astype(str).unique()):
+            if (what, lbl) not in _GOING_WARNED:
+                _GOING_WARNED.add((what, lbl))
+                log.warning(
+                    "Unmapped going description %r — defaulting %s to %r. "
+                    "Add it to GOING_GROUPS/GOING_ORDINAL in live_ratings.py.",
+                    lbl, what, default,
+                )
+    return out.fillna(default)
+
+
+def going_group(series):
+    """Going description -> calibration going group (default 'Good')."""
+    return _going_lookup(series, _GOING_MAP_CI, "Good", "going group")
+
+
+def going_ordinal(series):
+    """Going description -> ordinal GBR feature (default 3 = Good)."""
+    return _going_lookup(series, _GOING_ORDINAL_CI, 3, "going ordinal")
 
 # ─── Beaten-distance text codes (lengths) ─────────────────────────
 BEATEN_DIST_CODES = {
@@ -652,10 +719,49 @@ def _transform_hrb_data(df):
     log.info("Transforming HRB data...")
 
     out = pd.DataFrame()
-    # Normalize date format to YYYY-MM-DD (HRB can use DD/MM/YYYY or YYYY-MM-DD)
-    out["meetingDate"] = pd.to_datetime(
-        df["racedate"], dayfirst=True, format="mixed", errors="coerce"
-    ).dt.strftime("%Y-%m-%d")
+    # Normalize date format to YYYY-MM-DD (HRB can use DD/MM/YYYY or YYYY-MM-DD).
+    #
+    # BUG FIX (day/month transposition).  This was previously a single
+    #     pd.to_datetime(df["racedate"], dayfirst=True, format="mixed")
+    # call.  With format="mixed", pandas infers a format per element and
+    # honours dayfirst=True even for ISO YYYY-MM-DD strings, inferring
+    # "%Y-%d-%m".  HRB supplies ISO, so every raceday with day-of-month <= 12
+    # had its day and month transposed: 2026-08-03 -> 2026-03-08 (month 3),
+    # 2026-08-01 -> 2026-01-08 (month 1).  Dates with day > 12 were parsed
+    # correctly, which is why the defect survived unnoticed.
+    #
+    # EVIDENCE: meetingDate feeds `month` (line ~1111), which indexes the WFA
+    # table and the sex-allowance season band.  Replaying get_wfa_allowance
+    # over the published audits reproduces wfa_adj from the WRONG month
+    # 212/212 rows on 2026-08-03 and 449/449 on 2026-08-01, and from the true
+    # month only 94/212 and 269/449 (the rows where WFA is 0 either way).
+    # On 2026-08-01 the lookup landed on month 1, which WFA_2YO_TURF has no
+    # key for, so all 72 two-year-olds received exactly 0.0 WFA.
+    # 31 of 112 audited racedays (28%) are affected.  The batch pipeline
+    # (speed_figures.py, plain to_datetime) was never affected, so this was
+    # also a train/serve skew: calibration was fitted on correct-month WFA
+    # and served wrong-month WFA.
+    #
+    # dayfirst=True must be RETAINED for the non-ISO layout: 2 of the 9 raw
+    # HRB files on disk use DD/MM/YYYY (results_2026-2-19.csv, -2-20.csv),
+    # where "05/02/2026" genuinely means 5 February.  So parse ISO strictly
+    # first and fall back to the dayfirst parser only for what ISO rejects.
+    _racedate = df["racedate"].astype(str).str.strip()
+    _iso = pd.to_datetime(_racedate, format="ISO8601", errors="coerce")
+    _parsed = _iso.fillna(
+        pd.to_datetime(_racedate, dayfirst=True, format="mixed", errors="coerce")
+    )
+    _bad = _parsed.isna() & _racedate.ne("") & _racedate.ne("nan")
+    if _bad.any():
+        # Never fail silently: an unparseable date used to become NaT and then
+        # sail on into a wrong-month WFA lookup.
+        log.warning(
+            "Could not parse %d racedate value(s), e.g. %s — these rows will "
+            "not be rated.",
+            int(_bad.sum()),
+            sorted(_racedate[_bad].unique())[:5],
+        )
+    out["meetingDate"] = _parsed.dt.strftime("%Y-%m-%d")
     out["courseName"] = df["track"].str.strip().str.upper().map(
         lambda c: HRB_TO_TIMEFORM_COURSE.get(c, c)
     )
@@ -1331,6 +1437,13 @@ class LiteRatingEngine:
         w["deviation_seconds"] = w["corrected_time"] - w["standard_time"]
         w["deviation_lengths"] = w["deviation_seconds"] / SECONDS_PER_LENGTH
 
+        # Reject physically impossible times before they become figures.
+        w = drop_implausible_times(w, label="live winners")
+        if len(w) == 0:
+            log.warning("No winners with a plausible time — cannot compute figures")
+            self._winner_figs = {}
+            return df
+
         # Course-specific LPL interpolated to actual distance
         w["lpl"] = interpolate_lookup(w, self.lpl_dict)
         missing_lpl = w["lpl"].isna()
@@ -1618,9 +1731,19 @@ class LiteRatingEngine:
             a2 = params["a2"]
             x_mean = params["x_mean"]
 
-            # Quadratic calibration
+            # Quadratic calibration.  The curvature term is clamped to the
+            # range the quadratic was fitted over, exactly as
+            # speed_figures.calibrate_figures does — beyond it the figure
+            # continues on the linear slope `a` instead of running away down
+            # an unbounded parabola.  Live was missing this clamp: on the 75
+            # Timeform-paired days, 63 Turf runners (0.51%) fell outside the
+            # fitted range and the unclamped curve moved them by up to
+            # ~10,800 lb.  Artifacts written before fit_lo/fit_hi existed fall
+            # back to no clamp, which is the old behaviour.
             if a2 != 0:
-                x_c = x - x_mean
+                lo = params.get("fit_lo", -np.inf)
+                hi = params.get("fit_hi", np.inf)
+                x_c = np.clip(x, lo, hi) - x_mean
                 cal_vals = a * x + a2 * x_c ** 2 + b
             else:
                 cal_vals = a * x + b
@@ -1641,21 +1764,25 @@ class LiteRatingEngine:
                 rc = pd.to_numeric(df.loc[mask, "raceClass"], errors="coerce")
                 cal_vals += rc.map(class_off_f).fillna(0).values
 
-            # Course x distance offsets
-            cd_offsets = params.get("course_dist_offsets", {})
-            if cd_offsets:
-                cd_key = (
-                    df.loc[mask, "courseName"]
-                    + "_"
-                    + df.loc[mask, "distance"].round(0).astype(int).astype(str)
-                )
-                cal_vals += cd_key.map(cd_offsets).fillna(0).values
+            # Course × distance offsets, and the two finer splits of that key.
+            # Keys come from the shared builder in speed_figures so batch and
+            # live cannot drift apart — a mismatch here is silent, since every
+            # lookup simply misses and fillna(0) swallows it.
+            keys = calibration_offset_keys(df.loc[mask])
+            for family, key_name in (
+                ("course_dist_offsets", "course_dist"),
+                ("course_dist_class_offsets", "course_dist_class"),
+                ("course_dist_quarter_offsets", "course_dist_quarter"),
+            ):
+                offsets = params.get(family, {})
+                if offsets:
+                    cal_vals += keys[key_name].map(offsets).fillna(0).values
 
             # Going group offsets
             going_offsets = params.get("going_offsets", {})
             if going_offsets:
                 going_grp = (
-                    df.loc[mask, "going"].map(GOING_MAP).fillna("Good")
+                    going_group(df.loc[mask, "going"])
                 )
                 cal_vals += going_grp.map(going_offsets).fillna(0).values
 
@@ -1735,7 +1862,7 @@ class LiteRatingEngine:
         ]
 
         # Temporary feature columns
-        df["going_num"] = df["going"].map(GOING_ORDINAL).fillna(3)
+        df["going_num"] = going_ordinal(df["going"])
         df["course_freq"] = df["courseName"].map(course_freq).fillna(0)
         df["ga_value"] = df["going_allowance"].fillna(0)
 
@@ -1843,7 +1970,7 @@ class LiteRatingEngine:
             # Going correction
             going_corr = params.get("going_corrections", {})
             if going_corr:
-                going_grp = df.loc[mask, "going"].map(GOING_MAP).fillna("Good")
+                going_grp = going_group(df.loc[mask, "going"])
                 going_adj = going_grp.map(going_corr).fillna(0).values
                 total_adj += going_adj
 

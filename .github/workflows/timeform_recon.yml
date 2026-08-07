@@ -1,12 +1,22 @@
 name: Timeform TFig Reconciliation
 
-# Every morning after racing, pull the previous day's Timeform TFigs, compare
-# them to our UK/IRE figures for that day, email a comparison report, and update
-# the rolling correction. Runs at 10:00 UTC — late enough for Timeform to finish
-# publishing the previous day's TFigs, and well before the 21:00 combined email.
+# Every morning after racing, read the previous day's Timeform "Race Result"
+# PDFs from Google Drive, compare their Tfig column to our UK/IRE figures for
+# that day, email a comparison report, and update the rolling correction. Runs
+# at 10:00 UTC — late enough for the day's PDFs to be saved to Drive, and well
+# before the 21:00 combined email.
 #
-# First-time setup: run this workflow manually with capture_only=true to dump the
-# real logged-in HTML/JSON as an artifact, then finalise the parser selectors.
+# SOURCE: Google Drive, not the Timeform website. timeform.com's sign-in form is
+# behind an image CAPTCHA (and an Azure Front Door WAF that challenges datacenter
+# IPs), so an automated login can never complete from CI. The account owner saves
+# the Timeform result PDFs to the same Drive folder the sectionals pipeline reads
+# — <root>/DD.MM.YY/<Track>/Race Result HH_MM COURSE Weekday DD Month.pdf — and
+# those carry the Tfig column we reconcile against. Auth is the same
+# GDRIVE_SA_JSON service account as sectional_ratings.yml; share the folder
+# read-only with the service-account email.
+#
+# The legacy Playwright scrape lives on behind `source: scrape`, which installs
+# Chromium + xvfb on demand. It is not expected to work.
 
 on:
   schedule:
@@ -17,8 +27,14 @@ on:
         description: 'Race date (YYYY-MM-DD), empty = yesterday'
         required: false
         default: ''
+      source:
+        description: 'TFig source: drive (Google Drive PDFs) | scrape (legacy, dead) | raw'
+        required: false
+        default: 'drive'
+        type: choice
+        options: ['drive', 'scrape', 'raw']
       capture_only:
-        description: 'Only dump raw HTML/JSON artifact (no reconcile/email)'
+        description: 'Legacy scrape only: dump raw HTML/JSON artifact, no reconcile/email'
         required: false
         default: 'false'
       send_email:
@@ -32,6 +48,9 @@ permissions:
 jobs:
   timeform-recon:
     runs-on: ubuntu-latest
+    env:
+      # Default source for scheduled runs; workflow_dispatch can override it.
+      SOURCE: ${{ github.event.inputs.source || 'drive' }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -43,13 +62,15 @@ jobs:
 
       - name: Install dependencies
         # pandas/numpy are not in requirements.txt (the other pipelines install
-        # them explicitly), so add them here alongside pytest.
+        # them explicitly), so add them here alongside pytest. pdfplumber and the
+        # google-api client are already in requirements.txt.
         run: pip install -r requirements.txt pandas numpy pytest
 
       - name: Install Chromium for Playwright (+ xvfb)
-        # xvfb provides a virtual display so Chromium can run *headed*. A headed
-        # browser is far less detectable than headless, which is what gets the
-        # login past Timeform's Azure Front Door WAF from a datacenter IP.
+        # Only for the legacy scrape source — the Drive path never touches a
+        # browser, so the default run skips this entirely (~2 min saved, and it
+        # cannot fail the job on browser setup).
+        if: env.SOURCE == 'scrape' || github.event.inputs.capture_only == 'true'
         run: |
           python -m playwright install chromium --with-deps
           sudo apt-get install -y xvfb
@@ -66,34 +87,40 @@ jobs:
 
       - name: Timeform reconciliation
         env:
-          TIMEFORM_USER: ${{ secrets.TIMEFORM_USER }}
-          TIMEFORM_PASS: ${{ secrets.TIMEFORM_PASS }}
-          # The sign-in FORM has an image CAPTCHA, so an automated form login
-          # cannot complete. Set TIMEFORM_COOKIE to a logged-in session cookie
-          # (copy the whole Cookie header from a browser where you're signed in);
-          # the pipeline reuses it and skips the form. Refresh it when it expires.
-          TIMEFORM_COOKIE: ${{ secrets.TIMEFORM_COOKIE }}
-          # Timeform also sits behind Azure Front Door WAF, which challenges
-          # datacenter IPs — the headed/xvfb run below clears that. PW_PROXY (a
-          # residential proxy) is an alternative for the WAF.
-          PW_PROXY: ${{ secrets.PW_PROXY }}
+          # Service account with read access to the Daily Sectional Reports
+          # folder — the same secret sectional_ratings.yml uses.
+          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           # Send the report to the account owner. Add addresses (comma-separated)
           # to widen distribution once the numbers are trusted.
           RATINGS_RECIPIENTS: racingsquared@gmail.com
+          # Legacy scrape credentials — unused by the default Drive path.
+          TIMEFORM_USER: ${{ secrets.TIMEFORM_USER }}
+          TIMEFORM_PASS: ${{ secrets.TIMEFORM_PASS }}
+          TIMEFORM_COOKIE: ${{ secrets.TIMEFORM_COOKIE }}
+          PW_PROXY: ${{ secrets.PW_PROXY }}
         run: |
+          set -euo pipefail
           D="${{ steps.d.outputs.date }}"
-          # Run headed under a virtual display (xvfb) so the login clears the WAF.
-          # With a proxy supplied, a plain headless run through it is enough.
-          HEADED="--headful"
-          if [ -n "$PW_PROXY" ]; then HEADED=""; fi
+          FLAG=""
+          if [ "${{ github.event.inputs.send_email }}" = "false" ]; then FLAG="--no-email"; fi
+
           if [ "${{ github.event.inputs.capture_only }}" = "true" ]; then
+            # Legacy: dump the raw logged-in HTML/JSON only.
+            HEADED="--headful"
+            if [ -n "${PW_PROXY:-}" ]; then HEADED=""; fi
             xvfb-run -a python -m src.timeform.cli -v capture-html --date "$D" $HEADED
+          elif [ "$SOURCE" = "scrape" ]; then
+            # Legacy: headed under a virtual display so the login clears the WAF.
+            HEADED="--headful"
+            if [ -n "${PW_PROXY:-}" ]; then HEADED=""; fi
+            xvfb-run -a python -m src.timeform.cli -v run --date "$D" \
+              --source scrape $HEADED $FLAG
           else
-            FLAG=""
-            if [ "${{ github.event.inputs.send_email }}" = "false" ]; then FLAG="--no-email"; fi
-            xvfb-run -a python -m src.timeform.cli -v run --date "$D" $HEADED $FLAG
+            # Default: Google Drive PDFs. No browser, no display, no login.
+            python -m src.timeform.cli -v list-pdfs --date "$D" || true
+            python -m src.timeform.cli -v run --date "$D" --source "$SOURCE" $FLAG
           fi
 
       - name: Upload raw capture artifact
@@ -102,6 +129,19 @@ jobs:
         with:
           name: timeform-raw-${{ github.run_id }}
           path: output/timeform_recon/raw/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload reconciliation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: timeform-report-${{ github.run_id }}
+          path: |
+            output/timeform_recon/*.csv
+            output/timeform_recon/*.md
+            output/timeform_recon/*.html
+            output/timeform_recon/correction.json
           retention-days: 30
           if-no-files-found: warn
 

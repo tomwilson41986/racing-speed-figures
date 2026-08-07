@@ -13,12 +13,13 @@ check: how well yesterday's live figures actually tracked Timeform, day by day.
 ## What runs
 
 `.github/workflows/timeform_recon.yml` runs at **10:00 UTC** each morning (late
-enough for Timeform to finish publishing the previous day's TFigs; still well
-before the 21:00 combined live email). It:
+enough for the previous day's PDFs to be saved to Drive; still well before the
+21:00 combined live email). It:
 
-1. logs into Timeform and loads `results/yesterday`;
-2. parses each meeting's runners + TFigs (preferring a JSON feed if the site
-   exposes one, falling back to HTML selectors);
+1. reads the previous day's Timeform **"Race Result" PDFs from Google Drive**
+   (`<root>/DD.MM.YY/<Track>/Race Result HH_MM COURSE Weekday DD Month.pdf`);
+2. parses each PDF's runner table by font/coordinate clustering
+   (`src/timeform/tfig_pdf.py`) to recover the TFR and **Tfig** columns;
 3. matches them to our figures for that date
    (`output/uk_audit/<date>/audit_full_<date>.csv`) using the shared
    `src/sectionals/matching.py` name/track join;
@@ -33,22 +34,48 @@ before the 21:00 combined live email). It:
 | `<date>.csv` | per matched runner: `our_fig, tfig, diff, outlier` |
 | `<date>.md` / `<date>.html` | the rendered comparison report |
 | `correction.json` | current rolling bias/scale + whether it would apply |
-| `raw/<date>/` | dumped HTML/screenshots/JSON — **gitignored**, uploaded as a CI artifact |
+| `raw/<date>/` | legacy scrape dump — **gitignored**, uploaded as a CI artifact |
 
 `bias` is `ours − Timeform`: **positive means we rate higher than Timeform.**
 
+## Where the TFigs come from (and why not the website)
+
+`timeform.com`'s sign-in form is behind an **image CAPTCHA**, and the site sits
+behind an Azure Front Door WAF that challenges datacenter IPs. An automated
+login cannot complete from CI, so the scrape never ran successfully.
+
+The account owner already saves the Timeform result PDFs to Google Drive daily,
+into the same folder the sectionals pipeline reads
+(`SECTIONALS_DRIVE_FOLDER_ID`, default `1tR8_Hhq3vBAuohj48fYtVT8arY8WlsDr`),
+laid out as `<root>/DD.MM.YY/<Track>/`. Those PDFs carry the TFR and Tfig
+columns, so `src/timeform/drive_source.py` replaces the scrape.
+
+Three unrelated document families share each track folder and **only the first
+is Timeform**:
+
+| filename shape | source | used? |
+|---|---|---|
+| `Race Result HH_MM COURSE Weekday DD Month.pdf` | Timeform | **yes** |
+| `<Course> Racing Results _ <date> HH_MM.pdf` | Racing TV | no (no Tfig) |
+| `HH_MM _ <Course> _ <date> _ At The Races*.pdf` | At The Races | no (`src/sectionals`) |
+
+`drive_source.is_timeform_result_pdf()` is the filter; the accept/reject list is
+pinned by `tests/timeform/test_drive_source.py`.
+
 ## First-time setup
 
-1. Add two GitHub repository secrets (Settings → Secrets and variables →
-   Actions): **`TIMEFORM_USER`** and **`TIMEFORM_PASS`**. `SMTP_USER` / `SMTP_PASS`
-   already exist for the daily emails.
-2. Run the workflow once manually (Actions → *Timeform TFig Reconciliation* →
-   *Run workflow*) with **`capture_only = true`**. Download the
-   `timeform-raw-<run_id>` artifact — it contains the real logged-in HTML/JSON.
-   The parser selectors in `src/timeform/results.py` were written defensively but
-   are finalised against that capture (fixtures live in
-   `tests/timeform/fixtures/`).
-3. Once the parser matches a good share of runners, let the daily schedule run.
+1. The workflow needs one secret: **`GDRIVE_SA_JSON`** — the same
+   service-account JSON `sectional_ratings.yml` uses. Share the Drive folder
+   read-only with the service-account email. `SMTP_USER` / `SMTP_PASS` already
+   exist for the daily emails.
+2. Check what the source sees for a date:
+   `python -m src.timeform.cli list-pdfs --date 2026-08-03`.
+3. Let the daily schedule run.
+
+The legacy scrape path is still selectable (`--source scrape`, or the
+`source` input on *Run workflow*); it installs Chromium + xvfb on demand and is
+not expected to work. `TIMEFORM_USER` / `TIMEFORM_PASS` / `TIMEFORM_COOKIE` /
+`PW_PROXY` are only read on that path.
 
 ## The correction (report-only by default)
 
@@ -71,24 +98,39 @@ weeks, and only enable auto-correction once the matching and bias look stable.
 ## Running it by hand
 
 ```bash
-# Dump the real page structure (needs network + creds; runs in CI):
-python -m src.timeform.cli capture-html --date yesterday
+# Which Drive PDFs would be used for a date (needs GDRIVE_SA_JSON):
+python -m src.timeform.cli list-pdfs --date 2026-08-03
 
-# Full run: fetch, reconcile, store, email:
-python -m src.timeform.cli run --date 2026-07-07
+# Full run from Drive: fetch, parse, reconcile, store, email:
+python -m src.timeform.cli run --date 2026-08-03
 
-# Reprocess an already-captured day offline (no network), no email:
-python -m src.timeform.cli run --date 2026-07-07 --from-raw --no-email
+# Same, without sending the email:
+python -m src.timeform.cli run --date 2026-08-03 --no-email
+
+# Legacy scrape (dead — image CAPTCHA) and legacy raw-dump replay:
+python -m src.timeform.cli run --date 2026-07-07 --source scrape
+python -m src.timeform.cli run --date 2026-07-07 --source raw --no-email
 
 # Offline unit tests (no network):
 python -m pytest tests/timeform/ -q
 ```
 
-## Design note — why the scraper is defensive
+`--source` is `drive` (default) | `scrape` | `raw`. `--from-raw` still works as
+a deprecated alias for `--source raw`.
 
-`timeform.com` is unreachable from the dev sandbox (egress policy), so the
-network layer (`auth.py`, `client.py`) can only be exercised in CI. All
-parsing/matching/scoring (`results.py`, `reconcile.py`, `correction.py`,
-`store.py`) is pure and fully unit-tested offline; the client dumps all raw
-material to disk on every run so selectors can be refined from a real capture
-rather than guessed.
+## Design note — parsing the PDFs
+
+`page.extract_text()` interleaves the Timeform result table's columns (horse
+name and pedigree overlap) and is not reliably parseable, and the x-coordinates
+are content-driven so nothing can be keyed off a fixed column position. So
+`src/timeform/tfig_pdf.py` works from `extract_words(use_text_flow=True)` with
+font names and sizes: runners are anchored on the bold size-3.00 name tokens,
+and the TFR/Tfig pair is separated by clustering x-centres and cross-checking
+against the `TFR` header token — never by magnitude, because TFR < Tfig
+genuinely occurs.
+
+Everything downstream of the source (`reconcile.py`, `correction.py`,
+`store.py`, `report.py`) is source-agnostic and fully unit-tested offline. A
+single unparseable PDF is logged and skipped rather than aborting the day; a day
+with **no** Timeform PDFs fails the run loudly instead of writing a hollow
+zero-match row into `history.csv`.
