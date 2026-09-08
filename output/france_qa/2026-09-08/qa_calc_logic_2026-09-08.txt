@@ -1,0 +1,980 @@
+France Speed Figures — Calculation Logic QA
+Date: 2026-09-08   Run source: workflow
+Generated: 2026-09-08T21:13:54Z
+================================================================================
+
+FORMULA REFERENCE
+----------------------------------------
+  BASE_RATING          = 100
+  BASE_WEIGHT_LBS      = 126
+  SECONDS_PER_LENGTH   = 0.2
+  BL_ATTENUATION_THRESH= 20.0
+  BL_ATTENUATION_FACTOR= 0.5
+
+  corrected_time       = finishingTime - (going_allowance * distance)
+  deviation_seconds    = corrected_time - standard_time
+  deviation_lengths    = deviation_seconds / SECONDS_PER_LENGTH
+  deviation_lbs        = deviation_lengths * lpl
+  raw_figure (winner)  = BASE_RATING - deviation_lbs
+  raw_figure (others)  = winner_figure - lbs_behind
+  figure_after_weight  = raw_figure + (weightCarried - BASE_WEIGHT_LBS)
+  figure_after_wfa     = figure_after_weight + wfa_adj
+  figure_calibrated    = figure_after_wfa * scale + shift
+  figure_final         = figure_calibrated
+
+================================================================================
+RACE: LYO Race 1  (id=2026-09-08_LYO_1)
+  Distance: 1600m  Going: Bon souple  Surface: Turf  Class: 5
+  standard_time=98.5156s  going_allowance=-0.000192 s/m  lpl=2.4581 lbs/L
+------------------------------------------------------------
+  WINNER: MISS CHOCO
+    finishingTime        = 100.1000s
+    corrected_time       = 100.1000 - (-0.0002 * 1600) = 100.4067
+    deviation_seconds    = 100.4067 - 98.5156 = 1.8911
+    deviation_lengths    = 1.8911 / 0.2 = 9.4556
+    deviation_lbs        = 9.4556 * 2.4581 = 23.2425
+    raw_figure           = 100 - 23.2425 = 76.7575
+    weight_adj           = -1.4390
+    figure_after_weight  = 75.3185
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 87.3185
+    figure_calibrated    = 55.1527
+    figure_final         = 55.1527
+
+     2. BAILA NAK
+    beaten_lengths       = 0.7500L
+    lbs_behind           = 0.7500 * 2.4581 = 1.8435
+    raw_figure           = 76.7575 - 1.8435 = 74.9140
+    weight_adj           = -1.4390
+    figure_after_weight  = 73.4750
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 85.4750
+    figure_calibrated    = 53.9101
+    figure_final         = 53.9101
+
+     3. LATZIA
+    beaten_lengths       = 2.2500L
+    lbs_behind           = 2.2500 * 2.4581 = 5.5306
+    raw_figure           = 76.7575 - 5.5306 = 71.2269
+    weight_adj           = -1.4390
+    figure_after_weight  = 69.7879
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 81.7879
+    figure_calibrated    = 51.4250
+    figure_final         = 51.4250
+
+     4. KLEINE STER
+    beaten_lengths       = 2.3000L
+    lbs_behind           = 2.3000 * 2.4581 = 5.6535
+    raw_figure           = 76.7575 - 5.6535 = 71.1040
+    weight_adj           = -1.4390
+    figure_after_weight  = 69.6650
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 81.6650
+    figure_calibrated    = 51.3422
+    figure_final         = 51.3422
+
+     5. BARRAMUNDI
+    beaten_lengths       = 2.3500L
+    lbs_behind           = 2.3500 * 2.4581 = 5.7764
+    raw_figure           = 76.7575 - 5.7764 = 70.9811
+    weight_adj           = 1.8680
+    figure_after_weight  = 72.8490
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 84.8490
+    figure_calibrated    = 53.4882
+    figure_final         = 53.4882
+
+     6. ZELROMY
+    beaten_lengths       = 6.3500L
+    lbs_behind           = 6.3500 * 2.4581 = 15.6087
+    raw_figure           = 76.7575 - 15.6087 = 61.1488
+    weight_adj           = -1.4390
+    figure_after_weight  = 59.7099
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 71.7099
+    figure_calibrated    = 44.6325
+    figure_final         = 44.6325
+
+     7. OLLA
+    beaten_lengths       = 6.6000L
+    lbs_behind           = 6.6000 * 2.4581 = 16.2232
+    raw_figure           = 76.7575 - 16.2232 = 60.5343
+    weight_adj           = 1.8680
+    figure_after_weight  = 62.4023
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 74.4023
+    figure_calibrated    = 46.4471
+    figure_final         = 46.4471
+
+     8. DREAM FAMILY
+    beaten_lengths       = 10.1000L
+    lbs_behind           = 10.1000 * 2.4581 = 24.8264
+    raw_figure           = 76.7575 - 24.8264 = 51.9311
+    weight_adj           = 1.8680
+    figure_after_weight  = 53.7991
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 65.7991
+    figure_calibrated    = 40.6486
+    figure_final         = 40.6486
+
+     9. FIFTY SHADES
+    beaten_lengths       = 23.1000L
+    bl_attenuated        = 21.7042L  (threshold exceeded)
+    lbs_behind           = 21.7042 * 2.4581 = 53.3503
+    raw_figure           = 76.7575 - 53.3503 = 23.4072
+    weight_adj           = 1.8680
+    figure_after_weight  = 25.2752
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 37.2752
+    figure_calibrated    = N/A
+    figure_final         = N/A
+
+
+================================================================================
+RACE: LYO Race 2  (id=2026-09-08_LYO_2)
+  Distance: 1600m  Going: Bon souple  Surface: Turf  Class: 5
+  standard_time=98.5156s  going_allowance=-0.000192 s/m  lpl=2.5982 lbs/L
+------------------------------------------------------------
+  WINNER: NOVA LUXOR
+    finishingTime        = 94.7000s
+    corrected_time       = 94.7000 - (-0.0002 * 1600) = 95.0067
+    deviation_seconds    = 95.0067 - 98.5156 = -3.5089
+    deviation_lengths    = -3.5089 / 0.2 = -17.5444
+    deviation_lbs        = -17.5444 * 2.5982 = -45.5842
+    raw_figure           = 100 - -45.5842 = 113.3106
+    weight_adj           = 1.8680
+    figure_after_weight  = 115.1785
+    wfa_adj              = 2.9536
+    figure_after_wfa     = 118.1321
+    figure_calibrated    = 75.9210
+    figure_final         = 75.9210
+
+     2. STRATEGE
+    beaten_lengths       = 4.5000L
+    lbs_behind           = 4.5000 * 2.5982 = 11.6920
+    raw_figure           = 113.3106 - 11.6920 = 101.6186
+    weight_adj           = -2.5413
+    figure_after_weight  = 99.0773
+    wfa_adj              = 2.9536
+    figure_after_wfa     = 102.0309
+    figure_calibrated    = 65.0688
+    figure_final         = 65.0688
+
+     3. DANCE GONE
+    beaten_lengths       = 5.0000L
+    lbs_behind           = 5.0000 * 2.5982 = 12.9911
+    raw_figure           = 113.3106 - 12.9911 = 100.3195
+    weight_adj           = -1.4390
+    figure_after_weight  = 98.8805
+    wfa_adj              = 2.9536
+    figure_after_wfa     = 101.8340
+    figure_calibrated    = 64.9361
+    figure_final         = 64.9361
+
+     4. VATICAN
+    beaten_lengths       = 5.7500L
+    lbs_behind           = 5.7500 * 2.5982 = 14.9398
+    raw_figure           = 113.3106 - 14.9398 = 98.3708
+    weight_adj           = 1.8680
+    figure_after_weight  = 100.2388
+    wfa_adj              = 2.9536
+    figure_after_wfa     = 103.1923
+    figure_calibrated    = 65.8516
+    figure_final         = 65.8516
+
+     5. PALO SANTO
+    beaten_lengths       = 6.7500L
+    lbs_behind           = 6.7500 * 2.5982 = 17.5380
+    raw_figure           = 113.3106 - 17.5380 = 95.7726
+    weight_adj           = 1.8680
+    figure_after_weight  = 97.6405
+    wfa_adj              = 2.9536
+    figure_after_wfa     = 100.5941
+    figure_calibrated    = 64.1004
+    figure_final         = 64.1004
+
+     6. AZALEAH
+    beaten_lengths       = 8.0000L
+    lbs_behind           = 8.0000 * 2.5982 = 20.7858
+    raw_figure           = 113.3106 - 20.7858 = 92.5248
+    weight_adj           = -5.8482
+    figure_after_weight  = 86.6766
+    wfa_adj              = 2.9536
+    figure_after_wfa     = 89.6301
+    figure_calibrated    = 56.7107
+    figure_final         = 56.7107
+
+     7. HIGHBOURNE IMPACT
+    beaten_lengths       = 8.0500L
+    lbs_behind           = 8.0500 * 2.5982 = 20.9157
+    raw_figure           = 113.3106 - 20.9157 = 92.3949
+    weight_adj           = -2.5413
+    figure_after_weight  = 89.8536
+    wfa_adj              = 2.9536
+    figure_after_wfa     = 92.8072
+    figure_calibrated    = 58.8520
+    figure_final         = 58.8520
+
+     8. MADAME MAGIC
+    beaten_lengths       = 8.8000L
+    lbs_behind           = 8.8000 * 2.5982 = 22.8644
+    raw_figure           = 113.3106 - 22.8644 = 90.4462
+    weight_adj           = -1.4390
+    figure_after_weight  = 89.0073
+    wfa_adj              = 2.9536
+    figure_after_wfa     = 91.9608
+    figure_calibrated    = 58.2816
+    figure_final         = 58.2816
+
+     9. ZERIBA
+    beaten_lengths       = 15.8000L
+    lbs_behind           = 15.8000 * 2.5982 = 41.0519
+    raw_figure           = 113.3106 - 41.0519 = 72.2587
+    weight_adj           = -1.4390
+    figure_after_weight  = 70.8197
+    wfa_adj              = 2.9536
+    figure_after_wfa     = 73.7732
+    figure_calibrated    = 46.0232
+    figure_final         = 46.0232
+
+    10. MERI SIVA
+    beaten_lengths       = 35.8000L
+    bl_attenuated        = 28.0542L  (threshold exceeded)
+    lbs_behind           = 28.0542 * 2.5982 = 72.8911
+    raw_figure           = 113.3106 - 72.8911 = 40.4194
+    weight_adj           = -1.4390
+    figure_after_weight  = 38.9805
+    wfa_adj              = 2.9536
+    figure_after_wfa     = 41.9340
+    figure_calibrated    = N/A
+    figure_final         = N/A
+
+    11. NINGER DES CHAMPS
+    beaten_lengths       = 39.8000L
+    bl_attenuated        = 30.0542L  (threshold exceeded)
+    lbs_behind           = 30.0542 * 2.5982 = 78.0876
+    raw_figure           = 113.3106 - 78.0876 = 35.2230
+    weight_adj           = -1.4390
+    figure_after_weight  = 33.7840
+    wfa_adj              = 2.9536
+    figure_after_wfa     = 36.7376
+    figure_calibrated    = N/A
+    figure_final         = N/A
+
+
+================================================================================
+RACE: LYO Race 3  (id=2026-09-08_LYO_3)
+  Distance: 1600m  Going: Bon souple  Surface: Turf  Class: 3
+  standard_time=98.5156s  going_allowance=-0.000192 s/m  lpl=2.5288 lbs/L
+------------------------------------------------------------
+  WINNER: SKYRIDGE
+    finishingTime        = 97.3000s
+    corrected_time       = 97.3000 - (-0.0002 * 1600) = 97.6067
+    deviation_seconds    = 97.6067 - 98.5156 = -0.9089
+    deviation_lengths    = -0.9089 / 0.2 = -4.5444
+    deviation_lbs        = -4.5444 * 2.5288 = -11.4918
+    raw_figure           = 100 - -11.4918 = 111.4918
+    weight_adj           = -0.3367
+    figure_after_weight  = 111.1551
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 123.1551
+    figure_calibrated    = 79.3066
+    figure_final         = 79.3066
+
+     2. MASTER MAN
+    beaten_lengths       = 0.2500L
+    lbs_behind           = 0.2500 * 2.5288 = 0.6322
+    raw_figure           = 111.4918 - 0.6322 = 110.8596
+    weight_adj           = -0.3367
+    figure_after_weight  = 110.5229
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 122.5229
+    figure_calibrated    = 78.8805
+    figure_final         = 78.8805
+
+     3. SAN GIORGIO
+    beaten_lengths       = 0.5000L
+    lbs_behind           = 0.5000 * 2.5288 = 1.2644
+    raw_figure           = 111.4918 - 1.2644 = 110.2274
+    weight_adj           = -0.3367
+    figure_after_weight  = 109.8907
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 121.8907
+    figure_calibrated    = 78.4543
+    figure_final         = 78.4543
+
+     4. BE MY FRIEND
+    beaten_lengths       = 2.5000L
+    lbs_behind           = 2.5000 * 2.5288 = 6.3220
+    raw_figure           = 111.4918 - 6.3220 = 105.1698
+    weight_adj           = -0.3367
+    figure_after_weight  = 104.8331
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 116.8331
+    figure_calibrated    = 75.0455
+    figure_final         = 75.0455
+
+     5. PALAIS BYZANTIN
+    beaten_lengths       = 6.0000L
+    lbs_behind           = 6.0000 * 2.5288 = 15.1728
+    raw_figure           = 111.4918 - 15.1728 = 96.3190
+    weight_adj           = -0.3367
+    figure_after_weight  = 95.9824
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 107.9824
+    figure_calibrated    = 69.0801
+    figure_final         = 69.0801
+
+     6. AZAMRA
+    beaten_lengths       = 6.2500L
+    lbs_behind           = 6.2500 * 2.5288 = 15.8050
+    raw_figure           = 111.4918 - 15.8050 = 95.6868
+    weight_adj           = -3.6436
+    figure_after_weight  = 92.0432
+    wfa_adj              = 12.0000
+    figure_after_wfa     = 104.0432
+    figure_calibrated    = 66.4251
+    figure_final         = 66.4251
+
+
+================================================================================
+RACE: LYO Race 4  (id=2026-09-08_LYO_4)
+  Distance: 2000m  Going: Bon souple  Surface: Turf  Class: 5
+  standard_time=131.0600s  going_allowance=-0.000192 s/m  lpl=1.9389 lbs/L
+------------------------------------------------------------
+  WINNER: LEDESMA
+    finishingTime        = 130.3100s
+    corrected_time       = 130.3100 - (-0.0002 * 2000) = 130.6933
+    deviation_seconds    = 130.6933 - 131.0600 = -0.3667
+    deviation_lengths    = -0.3667 / 0.2 = -1.8333
+    deviation_lbs        = -1.8333 * 1.9389 = -3.5546
+    raw_figure           = 100 - -3.5546 = 101.0379
+    weight_adj           = 1.8680
+    figure_after_weight  = 102.9059
+    wfa_adj              = 1.0581
+    figure_after_wfa     = 103.9640
+    figure_calibrated    = 66.3717
+    figure_final         = 66.3717
+
+     2. MAGUELONE
+    beaten_lengths       = 0.5000L
+    lbs_behind           = 0.5000 * 1.9389 = 0.9694
+    raw_figure           = 101.0379 - 0.9694 = 100.0685
+    weight_adj           = 1.8680
+    figure_after_weight  = 101.9365
+    wfa_adj              = 1.0581
+    figure_after_wfa     = 102.9945
+    figure_calibrated    = 65.7183
+    figure_final         = 65.7183
+
+     3. CITOYEN
+    beaten_lengths       = 2.0000L
+    lbs_behind           = 2.0000 * 1.9389 = 3.8777
+    raw_figure           = 101.0379 - 3.8777 = 97.1602
+    weight_adj           = 1.8680
+    figure_after_weight  = 99.0282
+    wfa_adj              = 1.0581
+    figure_after_wfa     = 100.0862
+    figure_calibrated    = 63.7581
+    figure_final         = 63.7581
+
+     4. CHILADA
+    beaten_lengths       = 3.5000L
+    lbs_behind           = 3.5000 * 1.9389 = 6.7860
+    raw_figure           = 101.0379 - 6.7860 = 94.2519
+    weight_adj           = -1.4390
+    figure_after_weight  = 92.8129
+    wfa_adj              = 1.0581
+    figure_after_wfa     = 93.8710
+    figure_calibrated    = 59.5691
+    figure_final         = 59.5691
+
+     5. INVENTER
+    beaten_lengths       = 9.0000L
+    lbs_behind           = 9.0000 * 1.9389 = 17.4498
+    raw_figure           = 101.0379 - 17.4498 = 83.5881
+    weight_adj           = 1.8680
+    figure_after_weight  = 85.4561
+    wfa_adj              = 1.0581
+    figure_after_wfa     = 86.5142
+    figure_calibrated    = 54.6105
+    figure_final         = 54.6105
+
+     6. SQUARE DU CROISIC
+    beaten_lengths       = 10.0000L
+    lbs_behind           = 10.0000 * 1.9389 = 19.3887
+    raw_figure           = 101.0379 - 19.3887 = 81.6493
+    weight_adj           = 1.8680
+    figure_after_weight  = 83.5172
+    wfa_adj              = 1.0581
+    figure_after_wfa     = 84.5753
+    figure_calibrated    = 53.3038
+    figure_final         = 53.3038
+
+     7. NEW PEARL
+    beaten_lengths       = 10.5000L
+    lbs_behind           = 10.5000 * 1.9389 = 20.3581
+    raw_figure           = 101.0379 - 20.3581 = 80.6798
+    weight_adj           = -1.4390
+    figure_after_weight  = 79.2409
+    wfa_adj              = 1.0581
+    figure_after_wfa     = 80.2989
+    figure_calibrated    = 50.4215
+    figure_final         = 50.4215
+
+     8. BOY DOCTOBRE
+    beaten_lengths       = 13.5000L
+    lbs_behind           = 13.5000 * 1.9389 = 26.1747
+    raw_figure           = 101.0379 - 26.1747 = 74.8633
+    weight_adj           = -2.5413
+    figure_after_weight  = 72.3220
+    wfa_adj              = 1.0581
+    figure_after_wfa     = 73.3800
+    figure_calibrated    = 45.7581
+    figure_final         = 45.7581
+
+     9. CHARMYE
+    beaten_lengths       = 26.5000L
+    bl_attenuated        = 23.4042L  (threshold exceeded)
+    lbs_behind           = 23.4042 * 1.9389 = 45.3777
+    raw_figure           = 101.0379 - 45.3777 = 55.6603
+    weight_adj           = -1.4390
+    figure_after_weight  = 54.2213
+    wfa_adj              = 1.0581
+    figure_after_wfa     = 55.2794
+    figure_calibrated    = N/A
+    figure_final         = N/A
+
+
+================================================================================
+RACE: LYO Race 5  (id=2026-09-08_LYO_5)
+  Distance: 2000m  Going: Bon souple  Surface: Turf  Class: 6
+  standard_time=131.0600s  going_allowance=-0.000192 s/m  lpl=1.9471 lbs/L
+------------------------------------------------------------
+  WINNER: TRIPTAJIKA
+    finishingTime        = 129.7600s
+    corrected_time       = 129.7600 - (-0.0002 * 2000) = 130.1433
+    deviation_seconds    = 130.1433 - 131.0600 = -0.9167
+    deviation_lengths    = -0.9167 / 0.2 = -4.5833
+    deviation_lbs        = -4.5833 * 1.9471 = -8.9241
+    raw_figure           = 100 - -8.9241 = 100.0000
+    weight_adj           = 1.8680
+    figure_after_weight  = 101.8680
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 101.8680
+    figure_calibrated    = 64.9590
+    figure_final         = 64.9590
+
+     2. SEKKU
+    beaten_lengths       = 0.7500L
+    lbs_behind           = 0.7500 * 1.9471 = 1.4603
+    raw_figure           = 100.0000 - 1.4603 = 98.5397
+    weight_adj           = -0.3367
+    figure_after_weight  = 98.2030
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 98.2030
+    figure_calibrated    = 62.4888
+    figure_final         = 62.4888
+
+     3. MALYA
+    beaten_lengths       = 2.5000L
+    lbs_behind           = 2.5000 * 1.9471 = 4.8677
+    raw_figure           = 100.0000 - 4.8677 = 95.1323
+    weight_adj           = 5.1749
+    figure_after_weight  = 100.3072
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 100.3072
+    figure_calibrated    = 63.9070
+    figure_final         = 63.9070
+
+     4. KALEOBAYANE
+    beaten_lengths       = 3.2500L
+    lbs_behind           = 3.2500 * 1.9471 = 6.3280
+    raw_figure           = 100.0000 - 6.3280 = 93.6720
+    weight_adj           = 0.7656
+    figure_after_weight  = 94.4376
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 94.4376
+    figure_calibrated    = 59.9510
+    figure_final         = 59.9510
+
+     5. SPIRIT GREY
+    beaten_lengths       = 4.2500L
+    lbs_behind           = 4.2500 * 1.9471 = 8.2751
+    raw_figure           = 100.0000 - 8.2751 = 91.7249
+    weight_adj           = 6.2772
+    figure_after_weight  = 98.0021
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 98.0021
+    figure_calibrated    = 62.3534
+    figure_final         = 62.3534
+
+     6. MANDOKI
+    beaten_lengths       = 4.5000L
+    lbs_behind           = 4.5000 * 1.9471 = 8.7619
+    raw_figure           = 100.0000 - 8.7619 = 91.2381
+    weight_adj           = 5.1749
+    figure_after_weight  = 96.4130
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 96.4130
+    figure_calibrated    = 61.2824
+    figure_final         = 61.2824
+
+     7. KISS QUEEN
+    beaten_lengths       = 4.6500L
+    lbs_behind           = 4.6500 * 1.9471 = 9.0539
+    raw_figure           = 100.0000 - 9.0539 = 90.9461
+    weight_adj           = -12.4621
+    figure_after_weight  = 78.4840
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 78.4840
+    figure_calibrated    = 49.1982
+    figure_final         = 49.1982
+
+     8. MOMO NELSON
+    beaten_lengths       = 5.9000L
+    lbs_behind           = 5.9000 * 1.9471 = 11.4878
+    raw_figure           = 100.0000 - 11.4878 = 88.5122
+    weight_adj           = 2.9703
+    figure_after_weight  = 91.4825
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 91.4825
+    figure_calibrated    = 57.9592
+    figure_final         = 57.9592
+
+     9. VINO
+    beaten_lengths       = 6.1500L
+    lbs_behind           = 6.1500 * 1.9471 = 11.9746
+    raw_figure           = 100.0000 - 11.9746 = 88.0254
+    weight_adj           = -6.9505
+    figure_after_weight  = 81.0749
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 81.0749
+    figure_calibrated    = 50.9445
+    figure_final         = 50.9445
+
+    10. CARQUEIRANNE
+    beaten_lengths       = 14.6500L
+    lbs_behind           = 14.6500 * 1.9471 = 28.5248
+    raw_figure           = 100.0000 - 28.5248 = 71.4752
+    weight_adj           = -2.5413
+    figure_after_weight  = 68.9339
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 68.9339
+    figure_calibrated    = 42.7615
+    figure_final         = 42.7615
+
+
+================================================================================
+RACE: LYO Race 6  (id=2026-09-08_LYO_6)
+  Distance: 2000m  Going: Bon souple  Surface: Turf  Class: 5
+  standard_time=131.0600s  going_allowance=-0.000192 s/m  lpl=1.9548 lbs/L
+------------------------------------------------------------
+  WINNER: BEST SHALAA
+    finishingTime        = 129.2500s
+    corrected_time       = 129.2500 - (-0.0002 * 2000) = 129.6333
+    deviation_seconds    = 129.6333 - 131.0600 = -1.4267
+    deviation_lengths    = -1.4267 / 0.2 = -7.1333
+    deviation_lbs        = -7.1333 * 1.9548 = -13.9440
+    raw_figure           = 100 - -13.9440 = 104.0716
+    weight_adj           = 5.1749
+    figure_after_weight  = 109.2465
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 109.2465
+    figure_calibrated    = 69.9322
+    figure_final         = 69.9322
+
+     2. AGOUREIL
+    beaten_lengths       = 0.5000L
+    lbs_behind           = 0.5000 * 1.9548 = 0.9774
+    raw_figure           = 104.0716 - 0.9774 = 103.0943
+    weight_adj           = -2.5413
+    figure_after_weight  = 100.5530
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 100.5530
+    figure_calibrated    = 64.0727
+    figure_final         = 64.0727
+
+     3. GOLD AND CASH
+    beaten_lengths       = 0.7500L
+    lbs_behind           = 0.7500 * 1.9548 = 1.4661
+    raw_figure           = 104.0716 - 1.4661 = 102.6056
+    weight_adj           = -0.3367
+    figure_after_weight  = 102.2689
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 102.2689
+    figure_calibrated    = 65.2292
+    figure_final         = 65.2292
+
+     4. SUN SONG
+    beaten_lengths       = 0.7800L
+    lbs_behind           = 0.7800 * 1.9548 = 1.5247
+    raw_figure           = 104.0716 - 1.5247 = 102.5469
+    weight_adj           = -4.7459
+    figure_after_weight  = 97.8010
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 97.8010
+    figure_calibrated    = 62.2179
+    figure_final         = 62.2179
+
+     5. MAHJOUBA
+    beaten_lengths       = 0.8100L
+    lbs_behind           = 0.8100 * 1.9548 = 1.5834
+    raw_figure           = 104.0716 - 1.5834 = 102.4883
+    weight_adj           = -4.7459
+    figure_after_weight  = 97.7424
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 97.7424
+    figure_calibrated    = 62.1784
+    figure_final         = 62.1784
+
+     6. THREE DREAMS
+    beaten_lengths       = 1.8100L
+    lbs_behind           = 1.8100 * 1.9548 = 3.5381
+    raw_figure           = 104.0716 - 3.5381 = 100.5335
+    weight_adj           = 2.9703
+    figure_after_weight  = 103.5038
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 103.5038
+    figure_calibrated    = 66.0616
+    figure_final         = 66.0616
+
+     7. LAMIRAL DARHAAN
+    beaten_lengths       = 2.5600L
+    lbs_behind           = 2.5600 * 1.9548 = 5.0042
+    raw_figure           = 104.0716 - 5.0042 = 99.0674
+    weight_adj           = 6.2772
+    figure_after_weight  = 105.3446
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 105.3446
+    figure_calibrated    = 67.3023
+    figure_final         = 67.3023
+
+     8. MR HARPIN
+    beaten_lengths       = 4.0600L
+    lbs_behind           = 4.0600 * 1.9548 = 7.9364
+    raw_figure           = 104.0716 - 7.9364 = 96.1353
+    weight_adj           = -3.6436
+    figure_after_weight  = 92.4917
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 92.4917
+    figure_calibrated    = 58.6394
+    figure_final         = 58.6394
+
+     9. KAPETANIOS
+    beaten_lengths       = 4.3100L
+    lbs_behind           = 4.3100 * 1.9548 = 8.4250
+    raw_figure           = 104.0716 - 8.4250 = 95.6466
+    weight_adj           = 2.9703
+    figure_after_weight  = 98.6169
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 98.6169
+    figure_calibrated    = 62.7678
+    figure_final         = 62.7678
+
+    10. LILY DES CHAMPS
+    beaten_lengths       = 7.3100L
+    lbs_behind           = 7.3100 * 1.9548 = 14.2893
+    raw_figure           = 104.0716 - 14.2893 = 89.7823
+    weight_adj           = 0.7656
+    figure_after_weight  = 90.5480
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 90.5480
+    figure_calibrated    = 57.3293
+    figure_final         = 57.3293
+
+    11. FUJI HANA
+    beaten_lengths       = 13.3100L
+    lbs_behind           = 13.3100 * 1.9548 = 26.0179
+    raw_figure           = 104.0716 - 26.0179 = 78.0537
+    weight_adj           = -3.6436
+    figure_after_weight  = 74.4101
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 74.4101
+    figure_calibrated    = 46.4524
+    figure_final         = 46.4524
+
+
+================================================================================
+RACE: LYO Race 7  (id=2026-09-08_LYO_7)
+  Distance: 1350m  Going: Bon souple  Surface: Turf  Class: 5
+  standard_time=83.3049s  going_allowance=-0.000192 s/m  lpl=2.9848 lbs/L
+------------------------------------------------------------
+  WINNER: FRANCISCANO
+    finishingTime        = 81.9200s
+    corrected_time       = 81.9200 - (-0.0002 * 1350) = 82.1788
+    deviation_seconds    = 82.1788 - 83.3049 = -1.1261
+    deviation_lengths    = -1.1261 / 0.2 = -5.6307
+    deviation_lbs        = -5.6307 * 2.9848 = -16.8068
+    raw_figure           = 100 - -16.8068 = 104.9076
+    weight_adj           = 11.7887
+    figure_after_weight  = 116.6963
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 116.6963
+    figure_calibrated    = 74.9533
+    figure_final         = 74.9533
+
+     2. BELL SONG
+    beaten_lengths       = 4.0000L
+    lbs_behind           = 4.0000 * 2.9848 = 11.9393
+    raw_figure           = 104.9076 - 11.9393 = 92.9683
+    weight_adj           = 1.8680
+    figure_after_weight  = 94.8362
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 94.8362
+    figure_calibrated    = 60.2196
+    figure_final         = 60.2196
+
+     3. VIDEO GAMES
+    beaten_lengths       = 5.0000L
+    lbs_behind           = 5.0000 * 2.9848 = 14.9241
+    raw_figure           = 104.9076 - 14.9241 = 89.9834
+    weight_adj           = -4.7459
+    figure_after_weight  = 85.2375
+    wfa_adj              = 2.2892
+    figure_after_wfa     = 87.5267
+    figure_calibrated    = 55.2930
+    figure_final         = 55.2930
+
+     4. BOSQUET
+    beaten_lengths       = 5.7500L
+    lbs_behind           = 5.7500 * 2.9848 = 17.1628
+    raw_figure           = 104.9076 - 17.1628 = 87.7448
+    weight_adj           = -11.3598
+    figure_after_weight  = 76.3851
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 76.3851
+    figure_calibrated    = 47.7835
+    figure_final         = 47.7835
+
+     5. STUNNING HERO
+    beaten_lengths       = 5.8000L
+    lbs_behind           = 5.8000 * 2.9848 = 17.3120
+    raw_figure           = 104.9076 - 17.3120 = 87.5956
+    weight_adj           = 9.5841
+    figure_after_weight  = 97.1797
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 97.1797
+    figure_calibrated    = 61.7991
+    figure_final         = 61.7991
+
+     6. TANIS
+    beaten_lengths       = 7.8000L
+    lbs_behind           = 7.8000 * 2.9848 = 23.2817
+    raw_figure           = 104.9076 - 23.2817 = 81.6259
+    weight_adj           = 12.8911
+    figure_after_weight  = 94.5170
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 94.5170
+    figure_calibrated    = 60.0045
+    figure_final         = 60.0045
+
+     7. STELLAR CHOP
+    beaten_lengths       = 8.0500L
+    lbs_behind           = 8.0500 * 2.9848 = 24.0279
+    raw_figure           = 104.9076 - 24.0279 = 80.8797
+    weight_adj           = 7.3795
+    figure_after_weight  = 88.2592
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 88.2592
+    figure_calibrated    = 55.7867
+    figure_final         = 55.7867
+
+     8. BREIZH MOON
+    beaten_lengths       = 8.0800L
+    lbs_behind           = 8.0800 * 2.9848 = 24.1174
+    raw_figure           = 104.9076 - 24.1174 = 80.7902
+    weight_adj           = 15.0957
+    figure_after_weight  = 95.8859
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 95.8859
+    figure_calibrated    = 60.9271
+    figure_final         = 60.9271
+
+     9. SECRET FEELING
+    beaten_lengths       = 8.1100L
+    lbs_behind           = 8.1100 * 2.9848 = 24.2070
+    raw_figure           = 104.9076 - 24.2070 = 80.7006
+    weight_adj           = -3.6436
+    figure_after_weight  = 77.0570
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 77.0570
+    figure_calibrated    = 48.2364
+    figure_final         = 48.2364
+
+    10. SHY FEELING
+    beaten_lengths       = 8.8600L
+    lbs_behind           = 8.8600 * 2.9848 = 26.4456
+    raw_figure           = 104.9076 - 26.4456 = 78.4620
+    weight_adj           = 15.0957
+    figure_after_weight  = 93.5577
+    wfa_adj              = 2.2892
+    figure_after_wfa     = 95.8469
+    figure_calibrated    = 60.9008
+    figure_final         = 60.9008
+
+    11. ETERNEL
+    beaten_lengths       = 9.8600L
+    lbs_behind           = 9.8600 * 2.9848 = 29.4304
+    raw_figure           = 104.9076 - 29.4304 = 75.4772
+    weight_adj           = 10.6864
+    figure_after_weight  = 86.1636
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 86.1636
+    figure_calibrated    = 54.3743
+    figure_final         = 54.3743
+
+    12. HAARICIA
+    beaten_lengths       = 20.8600L
+    bl_attenuated        = 20.5842L  (threshold exceeded)
+    lbs_behind           = 20.5842 * 2.9848 = 61.4404
+    raw_figure           = 104.9076 - 61.4404 = 43.4672
+    weight_adj           = -10.2575
+    figure_after_weight  = 33.2098
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 33.2098
+    figure_calibrated    = N/A
+    figure_final         = N/A
+
+
+================================================================================
+RACE: LYO Race 8  (id=2026-09-08_LYO_8)
+  Distance: 1600m  Going: Bon souple  Surface: Turf  Class: 5
+  standard_time=98.5156s  going_allowance=-0.000192 s/m  lpl=2.5082 lbs/L
+------------------------------------------------------------
+  WINNER: HE TOUCHED ME
+    finishingTime        = 98.1000s
+    corrected_time       = 98.1000 - (-0.0002 * 1600) = 98.4067
+    deviation_seconds    = 98.4067 - 98.5156 = -0.1089
+    deviation_lengths    = -0.1089 / 0.2 = -0.5444
+    deviation_lbs        = -0.5444 * 2.5082 = -1.3654
+    raw_figure           = 100 - -1.3654 = 100.3987
+    weight_adj           = -2.5413
+    figure_after_weight  = 97.8574
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 97.8574
+    figure_calibrated    = 62.2559
+    figure_final         = 62.2559
+
+     2. AMIDARGENT
+    beaten_lengths       = 0.5000L
+    lbs_behind           = 0.5000 * 2.5082 = 1.2541
+    raw_figure           = 100.3987 - 1.2541 = 99.1446
+    weight_adj           = -1.4390
+    figure_after_weight  = 97.7056
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 97.7056
+    figure_calibrated    = 62.1536
+    figure_final         = 62.1536
+
+     3. LINFASOMMER
+    beaten_lengths       = 1.2500L
+    lbs_behind           = 1.2500 * 2.5082 = 3.1352
+    raw_figure           = 100.3987 - 3.1352 = 97.2635
+    weight_adj           = 7.3795
+    figure_after_weight  = 104.6430
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 104.6430
+    figure_calibrated    = 66.8294
+    figure_final         = 66.8294
+
+     4. SALALAH
+    beaten_lengths       = 2.0000L
+    lbs_behind           = 2.0000 * 2.5082 = 5.0163
+    raw_figure           = 100.3987 - 5.0163 = 95.3823
+    weight_adj           = 6.2772
+    figure_after_weight  = 101.6595
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 101.6595
+    figure_calibrated    = 64.8185
+    figure_final         = 64.8185
+
+     5. LADY VITESSE
+    beaten_lengths       = 2.0300L
+    lbs_behind           = 2.0300 * 2.5082 = 5.0916
+    raw_figure           = 100.3987 - 5.0916 = 95.3071
+    weight_adj           = -5.8482
+    figure_after_weight  = 89.4589
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 89.4589
+    figure_calibrated    = 56.5953
+    figure_final         = 56.5953
+
+     6. ALLURRE
+    beaten_lengths       = 4.5300L
+    lbs_behind           = 4.5300 * 2.5082 = 11.3620
+    raw_figure           = 100.3987 - 11.3620 = 89.0367
+    weight_adj           = 8.4818
+    figure_after_weight  = 97.5185
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 97.5185
+    figure_calibrated    = 62.0275
+    figure_final         = 62.0275
+
+     7. ROCQUEMONT
+    beaten_lengths       = 4.5800L
+    lbs_behind           = 4.5800 * 2.5082 = 11.4874
+    raw_figure           = 100.3987 - 11.4874 = 88.9113
+    weight_adj           = -3.6436
+    figure_after_weight  = 85.2677
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 85.2677
+    figure_calibrated    = 53.7704
+    figure_final         = 53.7704
+
+     8. NOVA HOPE
+    beaten_lengths       = 5.8300L
+    lbs_behind           = 5.8300 * 2.5082 = 14.6226
+    raw_figure           = 100.3987 - 14.6226 = 85.7760
+    weight_adj           = 6.2772
+    figure_after_weight  = 92.0532
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 92.0532
+    figure_calibrated    = 58.3439
+    figure_final         = 58.3439
+
+     9. SAINT FIACRE
+    beaten_lengths       = 6.5800L
+    lbs_behind           = 6.5800 * 2.5082 = 16.5038
+    raw_figure           = 100.3987 - 16.5038 = 83.8949
+    weight_adj           = -10.2575
+    figure_after_weight  = 73.6375
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 73.6375
+    figure_calibrated    = 45.9317
+    figure_final         = 45.9317
+
+    10. MAX VERST
+    beaten_lengths       = 8.5800L
+    lbs_behind           = 8.5800 * 2.5082 = 21.5201
+    raw_figure           = 100.3987 - 21.5201 = 78.8786
+    weight_adj           = 6.2772
+    figure_after_weight  = 85.1558
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 85.1558
+    figure_calibrated    = 53.6950
+    figure_final         = 53.6950
+
+    11. IZASTEP
+    beaten_lengths       = 8.6100L
+    lbs_behind           = 8.6100 * 2.5082 = 21.5954
+    raw_figure           = 100.3987 - 21.5954 = 78.8033
+    weight_adj           = 7.3795
+    figure_after_weight  = 86.1828
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 86.1828
+    figure_calibrated    = 54.3872
+    figure_final         = 54.3872
+
+    12. JOH SPIRIT
+    beaten_lengths       = 15.6100L
+    lbs_behind           = 15.6100 * 2.5082 = 39.1526
+    raw_figure           = 100.3987 - 39.1526 = 61.2461
+    weight_adj           = 9.5841
+    figure_after_weight  = 70.8303
+    wfa_adj              = 0.0000
+    figure_after_wfa     = 70.8303
+    figure_calibrated    = 44.0396
+    figure_final         = 44.0396
+
